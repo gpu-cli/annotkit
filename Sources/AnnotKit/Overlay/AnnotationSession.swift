@@ -25,6 +25,12 @@ public final class AnnotationSession: ObservableObject {
     private let timestamp: () -> String
     private let makeID: () -> String
 
+    /// Hover throttle. The hit-test is a cheap cross-process point query, but
+    /// `onContinuousHover` fires very frequently, so cap it at ~60fps to keep the
+    /// main thread responsive. Lives here so both platform hosts benefit.
+    private var lastHover = Date.distantPast
+    private let hoverInterval: TimeInterval = 1.0 / 60.0
+
     public init(
         source: ElementSource,
         sink: AnnotationSink,
@@ -44,11 +50,18 @@ public final class AnnotationSession: ObservableObject {
     public func stop() {
         mode = .idle
         hovered = nil
+        // Dismiss any open composer so it does not linger (and get clipped by a
+        // resized idle overlay) after leaving annotate mode.
+        selected = nil
     }
 
     /// Update the hover highlight for a screen point (AX top-left coordinates).
+    /// Throttled to ~60fps so rapid hover events do not flood the point query.
     public func hover(atAXPoint point: CGPoint) {
         guard mode == .annotating else { return }
+        let now = Date()
+        guard now.timeIntervalSince(lastHover) >= hoverInterval else { return }
+        lastHover = now
         hovered = source.hitTest(point)
     }
 

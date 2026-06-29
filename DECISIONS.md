@@ -11,7 +11,7 @@ Resolves the open decisions from the plan (planning/annotkit in the cli repo). P
 | Default element source | Accessibility hierarchy | The only strategy that surfaces SwiftUI `accessibilityIdentifier` values. |
 | Opt-in element source | View tree (NSView/UIView) | Surfaces concrete view class names; richer for AppKit/UIKit hosts. Collapses to hosting views in pure SwiftUI. |
 | `pathname` mapping | Host-supplied route, inferred fallback | A native app has no URL routes; the host sets a route, else infer from the key window title or identifier. |
-| Overlay coverage | Per window | One overlay per target window; multi-display handled by per-window placement. (Per-screen reconsidered if multi-window proves awkward.) |
+| Overlay coverage | Primary screen (MVP) | The overlay covers the primary display; SwiftUI-local points map to AX screen coordinates there. Full multi-display placement is deferred (cli-a99qm.4.2). |
 | Dev-only gating | `#if DEBUG` default + env override | On in DEBUG unless `ANNOTKIT_DISABLE`; off in release unless `ANNOTKIT_ENABLE`. Mirrors VirgilHUD `InspectMode`. |
 | MCP bridge in v1 | Deferred to F6 (optional) | The file and clipboard sinks cover the agent loop; the MCP/HTTP bridge is an optional later target, not part of the 1.0 critical path. |
 | Concurrency | Swift 6 language mode, strict | Public `Element`/`CapturedImage`/`AnnotationNote` are `Sendable`; `ElementSource`/`Annotation` are `@MainActor`. |

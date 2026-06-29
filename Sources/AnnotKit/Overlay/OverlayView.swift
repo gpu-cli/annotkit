@@ -9,6 +9,12 @@ import SwiftUI
 /// so tapping "Add note" can never re-select the element under the button. The
 /// whole overlay is `accessibilityHidden` so the AX point query sees through it
 /// to the app beneath.
+///
+/// MVP coordinate assumption: the catcher feeds SwiftUI-local points straight to
+/// the source, which equals AX screen coordinates only on the primary display at
+/// the global origin (the highlight uses the same `element.frame` space, so hit
+/// and highlight stay consistent there). Full multi-display placement is
+/// cli-a99qm.4.2.
 struct OverlayView: View {
     @ObservedObject var session: AnnotationSession
     let onToggle: () -> Void
