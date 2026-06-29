@@ -31,6 +31,16 @@ let package = Package(
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
+        ),
+        // macOS smoke probe: builds an off-screen window with identified
+        // controls and exercises the live AX adapter (snapshot / hitTest /
+        // selector). Doubles as the seed for the F7 example app.
+        .executableTarget(
+            name: "AnnotKitProbe",
+            dependencies: ["AnnotKit"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
         )
     ]
 )

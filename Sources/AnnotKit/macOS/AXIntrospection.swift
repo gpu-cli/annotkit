@@ -65,7 +65,8 @@ final class AXElementNode: SelectorMatchable {
             frame: frame,
             isVisible: isVisible,
             isActionable: isActionable,
-            path: path
+            path: path,
+            children: children.map { $0.toElement() }
         )
     }
 }

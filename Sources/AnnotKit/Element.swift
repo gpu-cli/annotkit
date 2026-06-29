@@ -39,6 +39,12 @@ public struct Element: Sendable, Hashable, Identifiable {
     /// stable role-path selector. See ``Selector``.
     public let path: [PathComponent]
 
+    /// Child elements. Populated for a tree snapshot (``WindowSnapshot/root``);
+    /// empty for a single located element returned by a hit test. Carrying the
+    /// subtree lets a consumer map ``Element`` onto a tree node type (for
+    /// example VirgilHUD's proto `Node`) without losing structure.
+    public let children: [Element]
+
     public init(
         id: String,
         role: String,
@@ -48,7 +54,8 @@ public struct Element: Sendable, Hashable, Identifiable {
         frame: CGRect,
         isVisible: Bool,
         isActionable: Bool,
-        path: [PathComponent]
+        path: [PathComponent],
+        children: [Element] = []
     ) {
         self.id = id
         self.role = role
@@ -59,6 +66,7 @@ public struct Element: Sendable, Hashable, Identifiable {
         self.isVisible = isVisible
         self.isActionable = isActionable
         self.path = path
+        self.children = children
     }
 }
 
