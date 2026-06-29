@@ -16,7 +16,9 @@ let package = Package(
         .iOS(.v17)
     ],
     products: [
-        .library(name: "AnnotKit", targets: ["AnnotKit"])
+        .library(name: "AnnotKit", targets: ["AnnotKit"]),
+        .library(name: "AnnotKitMCP", targets: ["AnnotKitMCP"]),
+        .executable(name: "annotkit-mcp", targets: ["annotkit-mcp"])
     ],
     targets: [
         .target(
@@ -25,9 +27,27 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // Optional agent bridge: a file-backed note store and a clean-room
+        // JSON-RPC / MCP dispatcher, plus a thin stdio executable. Kept out of
+        // the AnnotKit UI library so hosts that only want the toolbar do not
+        // pull it in.
+        .target(
+            name: "AnnotKitMCP",
+            dependencies: ["AnnotKit"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .executableTarget(
+            name: "annotkit-mcp",
+            dependencies: ["AnnotKitMCP"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
         .testTarget(
             name: "AnnotKitTests",
-            dependencies: ["AnnotKit"],
+            dependencies: ["AnnotKit", "AnnotKitMCP"],
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]

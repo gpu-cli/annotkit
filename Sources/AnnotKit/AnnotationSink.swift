@@ -25,7 +25,7 @@ public protocol AnnotationSink: Sendable {
 /// field names map onto the `AGENTATION_NOTES.md` format:
 /// `id`, `pathname` (here ``route``), `element` (here ``selector``),
 /// `Element Path`, `Selected Text`, and the comment.
-public struct AnnotationNote: Sendable, Hashable, Identifiable {
+public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     public let id: String
     /// The `pathname` analogue: a host-supplied route or screen name, with an
     /// inferred fallback (key-window title or identifier). See DECISIONS.md.

@@ -97,7 +97,7 @@ public struct PathComponent: Sendable, Hashable {
 
 /// A PNG capture of an element or window. `Sendable` so it can be handed back
 /// across the actor boundary from the async screenshot path.
-public struct CapturedImage: Sendable, Hashable {
+public struct CapturedImage: Sendable, Hashable, Codable {
     public let pngData: Data
     public let pixelWidth: Int
     public let pixelHeight: Int
