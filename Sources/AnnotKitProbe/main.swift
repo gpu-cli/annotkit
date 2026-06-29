@@ -91,8 +91,18 @@ final class ProbeDelegate: NSObject, NSApplicationDelegate {
         Annotation.install()
         check(Annotation.isInstalled, "Annotation.install() mounted the overlay")
 
-        print(pass ? "PROBE PASS" : "PROBE FAIL")
-        exit(pass ? 0 : 1)
+        // Screenshot of the Save button (async path).
+        Task { @MainActor in
+            if let hit = source.hitTest(axPoint),
+               let shot = try? await source.screenshot(of: hit) {
+                check(shot.pngData.count > 0,
+                      "screenshot produced \(shot.pngData.count) PNG bytes (\(shot.pixelWidth)x\(shot.pixelHeight))")
+            } else {
+                check(false, "screenshot failed")
+            }
+            print(pass ? "PROBE PASS" : "PROBE FAIL")
+            exit(pass ? 0 : 1)
+        }
     }
 
     static func collectIDs(_ elements: [Element]) -> [String] {
