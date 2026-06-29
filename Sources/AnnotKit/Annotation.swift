@@ -4,12 +4,12 @@ import Foundation
 ///
 ///     import AnnotKit
 ///     #if DEBUG
-///     Annotation.install()
+///     Annotation.install()            // macOS, or imperative iOS
 ///     #endif
 ///
-/// On macOS this mounts the overlay (``OverlayController``) with the default AX
-/// element source and the `AGENTATION_NOTES.md` file sink. iOS wiring lands in
-/// F5; until then `install()` is a logged no-op on iOS.
+/// SwiftUI iOS hosts can use `.installAnnotation()` instead. On macOS this mounts
+/// the overlay with the AX element source; on iOS, the UIKit view-tree source.
+/// Both default to the `AGENTATION_NOTES.md` file sink.
 @MainActor
 public enum Annotation {
     /// True once the overlay has actually mounted.
@@ -29,20 +29,29 @@ public enum Annotation {
 
     #if os(macOS)
     private static var controller: OverlayController?
+    #elseif os(iOS)
+    private static var controller: IOSOverlayController?
+    #endif
+
+    #if os(macOS) || os(iOS)
     private static var session: AnnotationSession? { controller?.session }
     #endif
 
-    /// Mount the toolbar. `source`/`sink` default to the macOS AX source and the
+    /// Mount the toolbar with the platform-default source and the
     /// `AGENTATION_NOTES.md` file sink.
     public static func install(source: ElementSource? = nil, sink: AnnotationSink? = nil) {
         guard isEnabled else { return }
         #if os(macOS)
         guard controller == nil else { return }
-        let session = AnnotationSession(
-            source: source ?? MacElementSource(),
-            sink: sink ?? NotesFileSink()
-        )
+        let session = AnnotationSession(source: source ?? MacElementSource(), sink: sink ?? NotesFileSink())
         let controller = OverlayController(session: session)
+        controller.mount()
+        Self.controller = controller
+        isInstalled = true
+        #elseif os(iOS)
+        guard controller == nil else { return }
+        let session = AnnotationSession(source: source ?? IOSElementSource(), sink: sink ?? NotesFileSink())
+        let controller = IOSOverlayController(session: session)
         controller.mount()
         Self.controller = controller
         isInstalled = true
@@ -51,18 +60,18 @@ public enum Annotation {
         #endif
     }
 
-    /// Enter annotate mode (toolbar active, clicks captured).
+    /// Enter annotate mode (toolbar active, clicks/taps captured).
     public static func start() {
-        #if os(macOS)
+        #if os(macOS) || os(iOS)
         controller?.start()
         #else
         notImplemented("start")
         #endif
     }
 
-    /// Leave annotate mode (toolbar idle, clicks pass through).
+    /// Leave annotate mode (toolbar idle, input passes through).
     public static func stop() {
-        #if os(macOS)
+        #if os(macOS) || os(iOS)
         controller?.stop()
         #else
         notImplemented("stop")
@@ -71,7 +80,7 @@ public enum Annotation {
 
     /// Copy pending notes to the pasteboard in `format` (without clearing them).
     public static func copy(format: OutputFormat = .markdown) {
-        #if os(macOS)
+        #if os(macOS) || os(iOS)
         if let pending = session?.pending {
             try? ClipboardSink(format: format).flush(pending)
         }
@@ -82,7 +91,7 @@ public enum Annotation {
 
     /// Discard pending notes.
     public static func clear() {
-        #if os(macOS)
+        #if os(macOS) || os(iOS)
         session?.clear()
         #else
         notImplemented("clear")

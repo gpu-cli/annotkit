@@ -1,0 +1,95 @@
+#if os(iOS)
+import SwiftUI
+import UIKit
+
+/// A pass-through overlay window: in idle mode every touch falls through to the
+/// app; in annotate mode the window captures touches so a tap selects an element
+/// (and the SwiftUI toolbar/composer remain interactive).
+final class PassThroughWindow: UIWindow {
+    var captureTouches = false
+
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hit = super.hitTest(point, with: event)
+        guard captureTouches else {
+            // Idle: only the toolbar/composer (non-root) views are interactive;
+            // taps on the bare hosting root pass through.
+            return hit === rootViewController?.view ? nil : hit
+        }
+        return hit
+    }
+}
+
+/// Hosts the annotation overlay on iOS via a ``PassThroughWindow`` at status-bar
+/// level, with a tap gesture that selects the element under the touch.
+@MainActor
+public final class IOSOverlayController: NSObject {
+    public let session: AnnotationSession
+    private var window: PassThroughWindow?
+
+    public init(session: AnnotationSession) {
+        self.session = session
+        super.init()
+    }
+
+    public func mount() {
+        guard window == nil, let scene = Self.activeScene else { return }
+        let window = PassThroughWindow(windowScene: scene)
+        window.windowLevel = .statusBar + 1
+        window.backgroundColor = .clear
+
+        let host = UIHostingController(rootView: OverlayView(
+            session: session,
+            onToggle: { [weak self] in self?.toggle() },
+            onFlush: { [weak self] in self?.flush() }
+        ))
+        host.view.backgroundColor = .clear
+        host.view.isAccessibilityElement = false
+        window.rootViewController = host
+
+        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+        tap.cancelsTouchesInView = false
+        window.addGestureRecognizer(tap)
+
+        window.isHidden = false
+        self.window = window
+    }
+
+    public func unmount() {
+        window?.isHidden = true
+        window = nil
+    }
+
+    public func toggle() {
+        session.mode == .annotating ? stop() : start()
+    }
+
+    public func start() {
+        session.start()
+        window?.captureTouches = true
+    }
+
+    public func stop() {
+        session.stop()
+        window?.captureTouches = false
+    }
+
+    private func flush() {
+        try? session.flush()
+    }
+
+    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
+        guard session.mode == .annotating, let view = gesture.view else { return }
+        let pointInWindow = gesture.location(in: view)
+        // Convert to screen coordinates for the source's hit test.
+        let screenPoint = view.window?.convert(pointInWindow, to: nil) ?? pointInWindow
+        session.select(atAXPoint: screenPoint)
+    }
+
+    private static var activeScene: UIWindowScene? {
+        UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }
+            .first { $0.activationState == .foregroundActive }
+            ?? UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first
+    }
+}
+#endif

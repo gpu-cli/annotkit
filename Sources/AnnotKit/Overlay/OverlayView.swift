@@ -1,11 +1,10 @@
-#if os(macOS)
 import SwiftUI
 
-/// The overlay's SwiftUI content: a highlight over the hovered/selected element,
-/// a note composer when an element is selected, and a floating toolbar. The
-/// overlay covers the primary screen; for the MVP an AX top-left frame maps
-/// directly to the view's top-left space (multi-display placement is F3's
-/// coverage task, cli-a99qm.4.2).
+/// The overlay's SwiftUI content, shared by the macOS and iOS hosts: a highlight
+/// over the hovered/selected element, a note composer when an element is
+/// selected, and a floating toolbar. The overlay covers the primary screen; for
+/// the MVP an element's top-left frame maps directly to the view's top-left
+/// space (multi-display placement is cli-a99qm.4.2).
 struct OverlayView: View {
     @ObservedObject var session: AnnotationSession
     let onToggle: () -> Void
@@ -65,8 +64,6 @@ struct OverlayView: View {
         .offset(x: composerOffset.x, y: composerOffset.y)
     }
 
-    /// Place the composer just below the selected element, clamped to stay on
-    /// screen-ish (kept simple for the MVP).
     private var composerOffset: CGPoint {
         guard let frame = session.selected?.frame else { return CGPoint(x: 24, y: 24) }
         return CGPoint(x: max(12, frame.minX), y: frame.maxY + 8)
@@ -101,4 +98,3 @@ struct OverlayView: View {
         }
     }
 }
-#endif
