@@ -1,0 +1,30 @@
+#if os(macOS)
+import CoreGraphics
+
+/// The default macOS ``ElementSource``: the accessibility-hierarchy strategy.
+/// Queries the host app's own AX tree (the only strategy that surfaces SwiftUI
+/// `accessibilityIdentifier` values), resolves a click to an element via the AX
+/// point query, generates a round-tripping selector with the shared
+/// ``SelectorEngine``, and captures element screenshots. The view-tree opt-in
+/// strategy is a separate source (F2.5).
+@MainActor
+public final class MacElementSource: ElementSource {
+    public init() {}
+
+    public func snapshot() -> [WindowSnapshot] {
+        AXIntrospection.snapshot()
+    }
+
+    public func hitTest(_ point: CGPoint) -> Element? {
+        AXIntrospection.hitTest(point)
+    }
+
+    public func selector(for element: Element) -> String {
+        AXIntrospection.selector(for: element)
+    }
+
+    public func screenshot(of element: Element?) async throws -> CapturedImage {
+        try AXScreenshot.capture(of: element)
+    }
+}
+#endif
