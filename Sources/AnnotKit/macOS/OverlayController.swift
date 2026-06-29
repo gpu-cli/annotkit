@@ -12,6 +12,10 @@ public final class OverlayController {
     public let session: AnnotationSession
     private var panel: NSPanel?
     private var monitor: Any?
+    /// Hover throttle. The hit-test uses the cheap AX point query (not a full
+    /// tree walk), so a light ~60fps cap is enough; no tree cache is needed.
+    private var lastHover = Date.distantPast
+    private let hoverInterval: TimeInterval = 1.0 / 60.0
 
     public init(session: AnnotationSession) {
         self.session = session
@@ -93,6 +97,9 @@ public final class OverlayController {
         let axPoint = ScreenSpace.flipPoint(NSEvent.mouseLocation, primaryHeight: height)
         switch event.type {
         case .mouseMoved:
+            let now = Date()
+            guard now.timeIntervalSince(lastHover) >= hoverInterval else { return }
+            lastHover = now
             session.hover(atAXPoint: axPoint)
         case .leftMouseDown:
             session.select(atAXPoint: axPoint)
