@@ -1,0 +1,36 @@
+// swift-tools-version: 6.1
+import PackageDescription
+
+// AnnotKit: native in-app annotation toolbar for AI coding agents.
+//
+// macOS 15 / iOS 17 floor. Swift 6 language mode is enforced from day one
+// (the plan calls for strict concurrency: the public Element is Sendable,
+// the introspection core is MainActor). F0 ships the public API surface
+// plus the pure-logic pieces (selector parse/generate/resolve and the
+// AX <-> Cocoa coordinate conversion); the platform adapters, overlay,
+// and sinks land in F1-F7.
+let package = Package(
+    name: "AnnotKit",
+    platforms: [
+        .macOS(.v15),
+        .iOS(.v17)
+    ],
+    products: [
+        .library(name: "AnnotKit", targets: ["AnnotKit"])
+    ],
+    targets: [
+        .target(
+            name: "AnnotKit",
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
+        .testTarget(
+            name: "AnnotKitTests",
+            dependencies: ["AnnotKit"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        )
+    ]
+)
