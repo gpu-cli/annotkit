@@ -31,8 +31,9 @@ public enum Annotation {
     /// choices once those land (macOS AX source, notes-file sink).
     public static func install(source: ElementSource? = nil, sink: AnnotationSink? = nil) {
         guard isEnabled else { return }
-        isInstalled = true
-        // Overlay host + capture session are wired in F3/F4.
+        // `isInstalled` flips to true only once the overlay host actually
+        // mounts (F3); until then this stays false so the flag never claims a
+        // mounted toolbar that does not exist.
         notImplemented("install")
     }
 
