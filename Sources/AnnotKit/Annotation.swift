@@ -7,12 +7,12 @@ import Foundation
 ///     Annotation.install()
 ///     #endif
 ///
-/// The surface is locked in F0; the overlay, capture session, and sinks are
-/// wired in F2-F4. Calls are no-ops (and log once) until then, so adopting the
-/// API early never crashes or paints over a host that has not been built out.
+/// On macOS this mounts the overlay (``OverlayController``) with the default AX
+/// element source and the `AGENTATION_NOTES.md` file sink. iOS wiring lands in
+/// F5; until then `install()` is a logged no-op on iOS.
 @MainActor
 public enum Annotation {
-    /// True once ``install(source:sink:)`` has run.
+    /// True once the overlay has actually mounted.
     public private(set) static var isInstalled = false
 
     /// Dev-only gate. In DEBUG, on unless `ANNOTKIT_DISABLE` is set; in release,
@@ -27,34 +27,74 @@ public enum Annotation {
         #endif
     }
 
-    /// Mount the toolbar. `source`/`sink` default to the platform's standard
-    /// choices once those land (macOS AX source, notes-file sink).
+    #if os(macOS)
+    private static var controller: OverlayController?
+    private static var session: AnnotationSession? { controller?.session }
+    #endif
+
+    /// Mount the toolbar. `source`/`sink` default to the macOS AX source and the
+    /// `AGENTATION_NOTES.md` file sink.
     public static func install(source: ElementSource? = nil, sink: AnnotationSink? = nil) {
         guard isEnabled else { return }
-        // `isInstalled` flips to true only once the overlay host actually
-        // mounts (F3); until then this stays false so the flag never claims a
-        // mounted toolbar that does not exist.
+        #if os(macOS)
+        guard controller == nil else { return }
+        let session = AnnotationSession(
+            source: source ?? MacElementSource(),
+            sink: sink ?? NotesFileSink()
+        )
+        let controller = OverlayController(session: session)
+        controller.mount()
+        Self.controller = controller
+        isInstalled = true
+        #else
         notImplemented("install")
+        #endif
     }
 
     /// Enter annotate mode (toolbar active, clicks captured).
-    public static func start() { notImplemented("start") }
+    public static func start() {
+        #if os(macOS)
+        controller?.start()
+        #else
+        notImplemented("start")
+        #endif
+    }
 
     /// Leave annotate mode (toolbar idle, clicks pass through).
-    public static func stop() { notImplemented("stop") }
+    public static func stop() {
+        #if os(macOS)
+        controller?.stop()
+        #else
+        notImplemented("stop")
+        #endif
+    }
 
-    /// Copy pending notes to the pasteboard in `format`.
-    public static func copy(format: OutputFormat = .markdown) { notImplemented("copy") }
+    /// Copy pending notes to the pasteboard in `format` (without clearing them).
+    public static func copy(format: OutputFormat = .markdown) {
+        #if os(macOS)
+        if let pending = session?.pending {
+            try? ClipboardSink(format: format).flush(pending)
+        }
+        #else
+        notImplemented("copy")
+        #endif
+    }
 
     /// Discard pending notes.
-    public static func clear() { notImplemented("clear") }
+    public static func clear() {
+        #if os(macOS)
+        session?.clear()
+        #else
+        notImplemented("clear")
+        #endif
+    }
 
     private static var warned: Set<String> = []
     private static func notImplemented(_ symbol: String) {
         guard !warned.contains(symbol) else { return }
         warned.insert(symbol)
         FileHandle.standardError.write(Data(
-            "[AnnotKit] \(symbol)() is API-only until the F2-F4 phases land.\n".utf8
+            "[AnnotKit] \(symbol)() is not yet implemented on this platform.\n".utf8
         ))
     }
 }

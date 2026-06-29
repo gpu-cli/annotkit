@@ -68,6 +68,29 @@ final class ProbeDelegate: NSObject, NSApplicationDelegate {
             check(false, "hitTest returned nil at \(axPoint)")
         }
 
+        // End-to-end: real adapter -> session -> file sink.
+        let notesPath = NSTemporaryDirectory() + "annotkit-probe-\(UUID().uuidString).md"
+        let session = AnnotationSession(
+            source: source,
+            sink: NotesFileSink(path: notesPath),
+            route: { "ProbeWindow" },
+            timestamp: { "2026-06-29T00:00:00Z" },
+            makeID: { "probe1" }
+        )
+        session.start()
+        session.select(atAXPoint: axPoint)
+        let note = session.addNote(comment: "contrast too low")
+        check(note != nil, "session.addNote produced a note (selector=\(note?.selector ?? "nil"))")
+        do { try session.flush() } catch { check(false, "flush threw: \(error)") }
+        let written = (try? String(contentsOfFile: notesPath, encoding: .utf8)) ?? ""
+        check(written.contains("## [probe1] ProbeWindow - #SaveButton"), "notes file has the agentation header line")
+        check(written.contains("contrast too low"), "notes file has the comment")
+        try? FileManager.default.removeItem(atPath: notesPath)
+
+        // Overlay mounts without crashing.
+        Annotation.install()
+        check(Annotation.isInstalled, "Annotation.install() mounted the overlay")
+
         print(pass ? "PROBE PASS" : "PROBE FAIL")
         exit(pass ? 0 : 1)
     }
