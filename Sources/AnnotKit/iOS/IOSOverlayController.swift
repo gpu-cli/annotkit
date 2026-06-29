@@ -46,10 +46,8 @@ public final class IOSOverlayController: NSObject {
         host.view.isAccessibilityElement = false
         window.rootViewController = host
 
-        let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
-        tap.cancelsTouchesInView = false
-        window.addGestureRecognizer(tap)
-
+        // Selection is driven by the SwiftUI catcher in OverlayView (so taps on
+        // the toolbar/composer do not select), not a window-level recognizer.
         window.isHidden = false
         self.window = window
     }
@@ -75,14 +73,6 @@ public final class IOSOverlayController: NSObject {
 
     private func flush() {
         try? session.flush()
-    }
-
-    @objc private func handleTap(_ gesture: UITapGestureRecognizer) {
-        guard session.mode == .annotating, let view = gesture.view else { return }
-        let pointInWindow = gesture.location(in: view)
-        // Convert to screen coordinates for the source's hit test.
-        let screenPoint = view.window?.convert(pointInWindow, to: nil) ?? pointInWindow
-        session.select(atAXPoint: screenPoint)
     }
 
     private static var activeScene: UIWindowScene? {

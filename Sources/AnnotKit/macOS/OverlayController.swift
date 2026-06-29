@@ -1,34 +1,28 @@
 #if os(macOS)
 import AppKit
-import CoreGraphics
 import SwiftUI
 
-/// Hosts the annotation overlay on macOS: a transparent, AX-excluded `NSPanel`
-/// at status-bar level that is click-through when idle and captures clicks in
-/// annotate mode. A local event monitor feeds mouse moves and clicks (converted
-/// to AX top-left coordinates) into the ``AnnotationSession``.
+/// Hosts the annotation overlay on macOS as a transparent, always-interactive
+/// `NSPanel` at status-bar level. The panel is sized to just the toolbar corner
+/// when idle (so the rest of the screen is the host app) and to the full screen
+/// while annotating (so the SwiftUI catcher can receive hover and clicks over the
+/// app). Interaction is handled in `OverlayView` via SwiftUI hit-testing, so the
+/// toolbar is always clickable and clicks on the overlay's own chrome never
+/// trigger element selection.
 @MainActor
 public final class OverlayController {
     public let session: AnnotationSession
     private var panel: NSPanel?
-    private var monitor: Any?
-    /// Hover throttle. The hit-test uses the cheap AX point query (not a full
-    /// tree walk), so a light ~60fps cap is enough; no tree cache is needed.
-    private var lastHover = Date.distantPast
-    private let hoverInterval: TimeInterval = 1.0 / 60.0
 
     public init(session: AnnotationSession) {
         self.session = session
     }
 
-    /// Create and show the overlay panel.
     public func mount() {
-        guard panel == nil else { return }
-        let frame = (NSScreen.main ?? NSScreen.screens.first)?.frame
-            ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+        guard panel == nil, let screen = NSScreen.main else { return }
 
         let panel = NSPanel(
-            contentRect: frame,
+            contentRect: frame(for: .idle, on: screen),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -37,8 +31,7 @@ public final class OverlayController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
-        panel.ignoresMouseEvents = true
-        panel.acceptsMouseMovedEvents = true
+        panel.ignoresMouseEvents = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
 
         let host = NSHostingView(rootView: OverlayView(
@@ -46,20 +39,16 @@ public final class OverlayController {
             onToggle: { [weak self] in self?.toggle() },
             onFlush: { [weak self] in self?.flush() }
         ))
-        // Keep the overlay out of our own AX tree so the hit-test never
-        // resolves to it.
+        // Keep the overlay out of the app's own AX tree so the point query sees
+        // through it (the SwiftUI root is also `accessibilityHidden`).
         host.setAccessibilityElement(false)
         panel.contentView = host
         panel.orderFrontRegardless()
 
         self.panel = panel
-        installMonitor()
     }
 
-    /// Remove the overlay and its event monitor.
     public func unmount() {
-        if let monitor { NSEvent.removeMonitor(monitor) }
-        monitor = nil
         panel?.orderOut(nil)
         panel = nil
     }
@@ -70,41 +59,38 @@ public final class OverlayController {
 
     public func start() {
         session.start()
-        panel?.ignoresMouseEvents = false
+        applyFrame()
     }
 
     public func stop() {
         session.stop()
-        panel?.ignoresMouseEvents = true
+        applyFrame()
     }
 
     private func flush() {
         try? session.flush()
     }
 
-    private func installMonitor() {
-        monitor = NSEvent.addLocalMonitorForEvents(matching: [.mouseMoved, .leftMouseDown]) { [weak self] event in
-            MainActor.assumeIsolated {
-                self?.handle(event)
-            }
-            return event
-        }
+    private func applyFrame() {
+        guard let panel, let screen = NSScreen.main else { return }
+        panel.setFrame(frame(for: session.mode, on: screen), display: true)
     }
 
-    private func handle(_ event: NSEvent) {
-        guard session.mode == .annotating else { return }
-        let height = (NSScreen.main ?? NSScreen.screens.first)?.frame.height ?? 0
-        let axPoint = ScreenSpace.flipPoint(NSEvent.mouseLocation, primaryHeight: height)
-        switch event.type {
-        case .mouseMoved:
-            let now = Date()
-            guard now.timeIntervalSince(lastHover) >= hoverInterval else { return }
-            lastHover = now
-            session.hover(atAXPoint: axPoint)
-        case .leftMouseDown:
-            session.select(atAXPoint: axPoint)
-        default:
-            break
+    private func frame(for mode: AnnotationSession.Mode, on screen: NSScreen) -> NSRect {
+        switch mode {
+        case .annotating:
+            return screen.frame
+        case .idle:
+            // Bottom-right corner, big enough for the toolbar (plus a pending
+            // badge and Save button), anchored so it does not move when the
+            // panel grows to full screen.
+            let size = NSSize(width: 380, height: 130)
+            return NSRect(
+                x: screen.frame.maxX - size.width,
+                y: screen.frame.minY,
+                width: size.width,
+                height: size.height
+            )
         }
     }
 }

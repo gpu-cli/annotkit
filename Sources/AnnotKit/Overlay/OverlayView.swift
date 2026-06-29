@@ -1,10 +1,14 @@
 import SwiftUI
 
-/// The overlay's SwiftUI content, shared by the macOS and iOS hosts: a highlight
-/// over the hovered/selected element, a note composer when an element is
-/// selected, and a floating toolbar. The overlay covers the primary screen; for
-/// the MVP an element's top-left frame maps directly to the view's top-left
-/// space (multi-display placement is cli-a99qm.4.2).
+/// The overlay's SwiftUI content, shared by the macOS and iOS hosts.
+///
+/// Interaction is driven entirely through SwiftUI hit-testing, which fixes the
+/// two ways a global click monitor went wrong: a full-screen catcher (active
+/// only in annotate mode, behind the chrome) receives hover and taps over the
+/// app, while the toolbar and composer sit on top and consume their own clicks,
+/// so tapping "Add note" can never re-select the element under the button. The
+/// whole overlay is `accessibilityHidden` so the AX point query sees through it
+/// to the app beneath.
 struct OverlayView: View {
     @ObservedObject var session: AnnotationSession
     let onToggle: () -> Void
@@ -14,7 +18,7 @@ struct OverlayView: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            Color.clear
+            catcher
 
             if let element = session.selected ?? session.hovered {
                 RoundedRectangle(cornerRadius: 3)
@@ -32,6 +36,29 @@ struct OverlayView: View {
             toolbar
         }
         .ignoresSafeArea()
+        .accessibilityHidden(true)
+    }
+
+    /// Full-screen hover/tap surface, active only while annotating. Behind the
+    /// chrome, so a tap on the toolbar/composer routes to those instead.
+    @ViewBuilder
+    private var catcher: some View {
+        if session.mode == .annotating {
+            Color.clear
+                .contentShape(Rectangle())
+                .onContinuousHover { phase in
+                    if case .active(let point) = phase {
+                        session.hover(atAXPoint: point)
+                    }
+                }
+                .gesture(
+                    SpatialTapGesture().onEnded { event in
+                        session.select(atAXPoint: event.location)
+                    }
+                )
+        } else {
+            Color.clear.allowsHitTesting(false)
+        }
     }
 
     private var composer: some View {

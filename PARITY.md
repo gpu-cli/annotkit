@@ -7,13 +7,13 @@ row; each asymmetry is closed by code or has a tracked mitigation.
 | Capability | macOS adapter | iOS adapter | Asymmetry / mitigation |
 |---|---|---|---|
 | Default element source | AX hierarchy (own pid) | AX hierarchy | none |
-| Opt-in element source | NSView tree | UIView tree + `.agentationTag()` | symmetric concept, platform views differ |
+| Opt-in element source | NSView tree | UIView tree (clean-room walk) | symmetric concept, platform views differ |
 | `accessibilityIdentifier` | via AX | via AX | none |
 | Concrete view class name | via NSView opt-in source | via UIView opt-in source | none |
 | Hit test | `AXUIElementCopyElementAtPosition` + NSView `hitTest` | `UIView.hitTest(_:with:)` | iOS has no global AX point query; uses view hitTest. Tracked: F5.2 |
 | Coordinate space | Cocoa bottom-left to AX top-left flip | UIKit top-left native | iOS needs no flip; shared `ScreenSpace` used only on macOS |
 | Screenshot | ScreenCaptureKit / `cacheDisplay` | `UIGraphicsImageRenderer` + `drawHierarchy` | both capture own hierarchy only; no cross-window or secure overlays |
-| Overlay host | borderless `NSWindow`/`NSPanel` | transparent `UIWindow` | shared SwiftUI overlay behind a window-host seam |
+| Overlay host | resizing `NSPanel` (toolbar corner idle, full screen annotating) | pass-through `UIWindow` | both interactive; selection via the shared SwiftUI catcher, not a global monitor |
 | Overlay AX-exclusion | mark window non-accessibility | mark window non-accessibility | none |
 | Selected-text capture | responder / `NSText` | `UIResponder` / `UITextInput` | symmetric concept |
 | Install API | `Annotation.install()` + SwiftUI modifier | same | none |

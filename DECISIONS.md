@@ -19,4 +19,4 @@ Resolves the open decisions from the plan (planning/annotkit in the cli repo). P
 ## IP hygiene (carried into the F7 legal gate)
 
 - Do not copy original Agentation source (PolyForm Shield 1.0.0, non-compete). Only the `AGENTATION_NOTES.md` file format is reused, reimplemented clean-room.
-- The `swift-agentation` iOS data sources (MIT) may be vendored in F5 with their license and attribution preserved.
+- The iOS adapter is a clean-room UIKit view-tree walker (`IOSElementSource`), not a vendored dependency. It reuses the shared selector engine, consistent with the one-engine / no-fork design, and carries no third-party code or license obligations.

@@ -91,7 +91,7 @@ final class ProbeDelegate: NSObject, NSApplicationDelegate {
         Annotation.install()
         check(Annotation.isInstalled, "Annotation.install() mounted the overlay")
 
-        // Screenshot of the Save button (async path).
+        // Screenshot of the Save button + AX-exclusion of the overlay (async).
         Task { @MainActor in
             if let hit = source.hitTest(axPoint),
                let shot = try? await source.screenshot(of: hit) {
@@ -100,6 +100,15 @@ final class ProbeDelegate: NSObject, NSApplicationDelegate {
             } else {
                 check(false, "screenshot failed")
             }
+
+            // Let the just-mounted overlay register, then confirm its own
+            // toolbar is excluded from the AX tree (so the point query sees
+            // through it to the app).
+            try? await Task.sleep(nanoseconds: 400_000_000)
+            let labels = Self.collectLabels(source.snapshot().map(\.root))
+            check(!labels.contains("Annotate") && !labels.contains("Annotating"),
+                  "overlay toolbar excluded from AX (accessibilityHidden); app still visible: SaveButton=\(Self.collectIDs(source.snapshot().map(\.root)).contains("SaveButton"))")
+
             print(pass ? "PROBE PASS" : "PROBE FAIL")
             exit(pass ? 0 : 1)
         }
@@ -110,6 +119,15 @@ final class ProbeDelegate: NSObject, NSApplicationDelegate {
         for element in elements {
             out.append(element.id)
             out.append(contentsOf: collectIDs(element.children))
+        }
+        return out
+    }
+
+    static func collectLabels(_ elements: [Element]) -> [String] {
+        var out: [String] = []
+        for element in elements {
+            out.append(element.label)
+            out.append(contentsOf: collectLabels(element.children))
         }
         return out
     }
