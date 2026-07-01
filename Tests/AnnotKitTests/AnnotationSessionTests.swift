@@ -55,20 +55,93 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertNil(session.selected, "selection clears after capture")
     }
 
-    func testFlushWritesAndClears() throws {
+    /// A session whose ids auto-increment (id1, id2, ...) so a captured set is
+    /// distinguishable in the exported file.
+    private func makeSession(path: String) -> AnnotationSession {
+        var counter = 0
+        return AnnotationSession(
+            source: StubSource(makeElement()), sink: NotesFileSink(path: path),
+            timestamp: { "T" }, makeID: { counter += 1; return "id\(counter)" }
+        )
+    }
+
+    private func capture(_ session: AnnotationSession, comment: String) {
+        session.select(atAXPoint: .zero)
+        session.addNote(comment: comment)
+    }
+
+    func testAddNoteAppendsAndRetains() {
+        let session = makeSession(path: "/dev/null")
+        session.start()
+        capture(session, comment: "one")
+        capture(session, comment: "two")
+        capture(session, comment: "three")
+        // addNote APPENDS; nothing auto-clears the retained set.
+        XCTAssertEqual(session.pending.map(\.id), ["id1", "id2", "id3"])
+        XCTAssertEqual(session.pending.map(\.comment), ["one", "two", "three"])
+    }
+
+    func testExportWritesFullSetAndRetains() throws {
         let path = NSTemporaryDirectory() + "annotkit-session-\(UUID().uuidString).md"
         defer { try? FileManager.default.removeItem(atPath: path) }
-        let session = AnnotationSession(
-            source: StubSource(makeElement()), sink: NotesFileSink(path: path),
-            timestamp: { "T" }, makeID: { "id1" }
-        )
+        let session = makeSession(path: path)
         session.start()
-        session.select(atAXPoint: .zero)
-        session.addNote(comment: "hello")
-        try session.flush()
-        XCTAssertTrue(session.pending.isEmpty)
+        capture(session, comment: "hello")
+        capture(session, comment: "world")
+
+        try session.export()
+        // Export retains the set (does NOT clear) so it can be exported/copied again.
+        XCTAssertEqual(session.pending.count, 2, "export must not clear the retained set")
         let contents = try String(contentsOfFile: path, encoding: .utf8)
-        XCTAssertTrue(contents.contains("## [id1]"))
-        XCTAssertTrue(contents.contains("hello"))
+        XCTAssertTrue(contents.contains("## [id1]") && contents.contains("hello"))
+        XCTAssertTrue(contents.contains("## [id2]") && contents.contains("world"))
+    }
+
+    func testCopyRendersFullSetWithoutClearing() throws {
+        let session = makeSession(path: "/dev/null")
+        session.start()
+        capture(session, comment: "alpha")
+        capture(session, comment: "beta")
+        // Copy is a render of the retained set through ClipboardSink; it reads
+        // `pending` and must not mutate it (same set stays copyable + exportable).
+        let copied = try ClipboardSink(format: .markdown).render(session.pending)
+        XCTAssertTrue(copied.contains("alpha") && copied.contains("beta"))
+        XCTAssertEqual(session.pending.count, 2, "copy must not clear the retained set")
+    }
+
+    func testOnlyClearEmptiesTheRetainedSet() throws {
+        let path = NSTemporaryDirectory() + "annotkit-clear-\(UUID().uuidString).md"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let session = makeSession(path: path)
+        session.start()
+        capture(session, comment: "keep me")
+        try session.export()
+        _ = try ClipboardSink().render(session.pending)
+        XCTAssertEqual(session.pending.count, 1, "neither export nor copy clears")
+        session.clear()
+        XCTAssertTrue(session.pending.isEmpty, "clear empties the set")
+    }
+
+    func testExportIsIdempotentAcrossReExportAndMoreNotes() throws {
+        let path = NSTemporaryDirectory() + "annotkit-idem-\(UUID().uuidString).md"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let session = makeSession(path: path)
+        session.start()
+        capture(session, comment: "one")
+
+        // Re-exporting the same set must not duplicate it.
+        try session.export()
+        try session.export()
+        var contents = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertEqual(contents.components(separatedBy: "## [id1]").count, 2, "note appears exactly once after double export")
+        XCTAssertEqual(contents.components(separatedBy: "# Agentation Notes").count, 2, "single header")
+
+        // Capturing more then re-exporting yields the FULL set, first note still once.
+        capture(session, comment: "two")
+        try session.export()
+        contents = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertEqual(contents.components(separatedBy: "## [id1]").count, 2, "first note still appears once")
+        XCTAssertTrue(contents.contains("## [id2]") && contents.contains("two"))
+        XCTAssertEqual(contents.components(separatedBy: "# Agentation Notes").count, 2, "still a single header")
     }
 }

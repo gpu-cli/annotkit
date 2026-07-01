@@ -51,7 +51,7 @@ public final class IOSOverlayController: NSObject {
                 surfaceSize: proxy.size,
                 onToggle: { [weak self] in self?.toggle() },
                 onCopy: { [weak self] in self?.copy() },
-                onFlush: { [weak self] in self?.flush() },
+                onExport: { [weak self] in self?.export() },
                 onClose: { [weak self] in self?.unmount() }
             )
         }
@@ -85,8 +85,8 @@ public final class IOSOverlayController: NSObject {
         window?.captureTouches = false
     }
 
-    private func flush() {
-        try? session.flush()
+    private func export() {
+        try? session.export()
     }
 
     private func copy() {

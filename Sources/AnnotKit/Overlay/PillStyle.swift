@@ -77,6 +77,18 @@ struct LucideIcon {
 
     static let check = LucideIcon(parts: [.path("M20 6 9 17l-5-5")])
 
+    /// Lucide `download` — export to a file. Drawn with straight strokes only
+    /// (the real glyph's rounded tray uses SVG arc commands the primitive parser
+    /// does not implement): an open-top tray plus a down arrow into it.
+    static let download = LucideIcon(parts: [
+        .line(CGPoint(x: 4, y: 15), CGPoint(x: 4, y: 20)),
+        .line(CGPoint(x: 4, y: 20), CGPoint(x: 20, y: 20)),
+        .line(CGPoint(x: 20, y: 20), CGPoint(x: 20, y: 15)),
+        .line(CGPoint(x: 12, y: 3), CGPoint(x: 12, y: 15)),
+        .line(CGPoint(x: 7, y: 10), CGPoint(x: 12, y: 15)),
+        .line(CGPoint(x: 17, y: 10), CGPoint(x: 12, y: 15)),
+    ])
+
     static let copy = LucideIcon(parts: [
         .rrect(CGRect(x: 8, y: 8, width: 14, height: 14), 2),
         .path("M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"),

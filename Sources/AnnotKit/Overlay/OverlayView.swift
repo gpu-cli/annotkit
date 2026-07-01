@@ -25,9 +25,12 @@ struct OverlayView: View {
     /// Window-local size of this surface, used to clamp the composer on-screen.
     let surfaceSize: CGSize
     let onToggle: () -> Void
-    /// Copy pending notes to the pasteboard (host wires ``ClipboardSink``).
+    /// Copy the retained notes to the pasteboard as markdown (host wires
+    /// ``ClipboardSink``). Non-clearing.
     let onCopy: () -> Void
-    let onFlush: () -> Void
+    /// Export the retained notes to `AGENTATION_NOTES.md` (host wires
+    /// ``NotesFileSink``). Non-clearing and idempotent.
+    let onExport: () -> Void
     /// Dismiss the whole overlay (macOS -> `unmount()`, iOS -> hide the window).
     let onClose: () -> Void
 
@@ -157,7 +160,7 @@ struct OverlayView: View {
                     session: session,
                     onToggle: onToggle,
                     onCopy: onCopy,
-                    onFlush: onFlush,
+                    onExport: onExport,
                     onClose: onClose
                 )
                 .padding(20)
@@ -171,20 +174,25 @@ struct OverlayView: View {
 /// capability — no dead buttons (CLAUDE.md) — so Agentation's `settings`/`eye`
 /// (no settings model, no preview capability here) are deliberately omitted.
 ///
-/// Left to right: annotate toggle (always), then — only while notes are pending —
-/// a count badge, copy, save, and a destructive clear, then a divider and a
-/// close/exit (always). Copy and save flow through host callbacks (they need a
-/// sink); toggle needs the controller (activation); clear reads/writes the
-/// session directly.
+/// Left to right: annotate toggle (always), then — only while notes exist — a
+/// count badge, then two DISTINCT persist actions (Copy to the clipboard as
+/// markdown, and Export to `AGENTATION_NOTES.md`), and a destructive clear, then
+/// a divider and a close/exit (always). Copy and Export never clear the retained
+/// set (only Clear does), so the same notes can be both copied and exported.
+/// Copy/Export flow through host callbacks (they need a sink); toggle needs the
+/// controller (activation); clear reads/writes the session directly.
+///
+/// The pill itself is rendered unconditionally and is NEVER gated on an entrance
+/// flag, so it stays visible across idle<->annotate and before/during/after
+/// capturing a note; only the note-action cluster animates in and out.
 private struct ToolbarView: View {
     @ObservedObject var session: AnnotationSession
     let onToggle: () -> Void
     let onCopy: () -> Void
-    let onFlush: () -> Void
+    let onExport: () -> Void
     let onClose: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var appeared = false
 
     private var annotating: Bool { session.mode == .annotating }
     private var hasNotes: Bool { !session.pending.isEmpty }
@@ -200,8 +208,8 @@ private struct ToolbarView: View {
 
             if hasNotes {
                 countBadge
-                PillButton(icon: .copy, tooltip: "Copy notes", action: onCopy)
-                PillButton(icon: .check, tooltip: "Save notes", action: onFlush)
+                PillButton(icon: .copy, tooltip: "Copy notes (Markdown)", action: onCopy)
+                PillButton(icon: .download, tooltip: "Export to AGENTATION_NOTES.md", action: onExport)
                 PillButton(icon: .trash, isDestructive: true, tooltip: "Clear notes") {
                     session.clear()
                 }
@@ -218,13 +226,8 @@ private struct ToolbarView: View {
                 .overlay(Capsule(style: .continuous).strokeBorder(PillStyle.border, lineWidth: 1))
         )
         .shadow(color: .black.opacity(0.4), radius: 12, y: 8)
-        .opacity(appeared ? 1 : 0)
-        .scaleEffect(appeared ? 1 : 0.96)
-        .onAppear {
-            guard !reduceMotion else { appeared = true; return }
-            withAnimation(.easeOut(duration: 0.18)) { appeared = true }
-        }
-        // Reveal/hide the note-action cluster smoothly as pending changes.
+        // Reveal/hide the note-action cluster smoothly as pending changes. The
+        // pill has no entrance opacity/scale gate: it must ALWAYS be visible.
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hasNotes)
     }
 

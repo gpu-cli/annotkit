@@ -86,8 +86,8 @@ public final class OverlayController: NSObject {
         syncFrameAndOrigin()
     }
 
-    private func flush() {
-        try? session.flush()
+    private func export() {
+        try? session.export()
     }
 
     private func copy() {
@@ -116,6 +116,12 @@ public final class OverlayController: NSObject {
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.ignoresMouseEvents = false
+        // Tag the panel WINDOW so `AXIntrospection` can skip it in the point
+        // query and the snapshot. Marking the SwiftUI content non-accessible is
+        // not enough: once the panel expands to the host's full frame it is a
+        // live `AXWindow` that the point query hits first, so the whole app
+        // resolves to the overlay's hosting view instead of the control beneath.
+        panel.setAccessibilityIdentifier(AXIntrospection.overlayWindowIdentifier)
 
         let hostingView = NSHostingView(rootView: makeRootView())
         // Keep the overlay out of the app's own AX tree so the point query sees
@@ -145,7 +151,7 @@ public final class OverlayController: NSObject {
             surfaceSize: surfaceSize,
             onToggle: { [weak self] in self?.toggle() },
             onCopy: { [weak self] in self?.copy() },
-            onFlush: { [weak self] in self?.flush() },
+            onExport: { [weak self] in self?.export() },
             onClose: { [weak self] in self?.unmount() }
         )
     }
@@ -197,10 +203,14 @@ public final class OverlayController: NSObject {
             // window-local y aligns with AX y).
             return host.frame
         case .idle:
-            // Bottom-right corner of the host window, big enough for the toolbar
-            // (plus a pending badge and Save button). Anchored to the window, so
-            // it rides along as the window moves and is recomputed on resize.
-            let size = NSSize(width: 380, height: 130)
+            // A small panel sized to the pill's real bounds, pinned to the host
+            // window's bottom-right corner, so the idle overlay covers only the
+            // toolbar and never swallows clicks meant for the host. Width fits the
+            // widest pill state (toggle + count badge + copy + export + clear +
+            // divider + close, ~200pt) plus its 20pt inset and the drop shadow;
+            // height fits the 44pt pill plus the same inset. Anchored to the
+            // window so it rides along on move and is recomputed on resize.
+            let size = NSSize(width: 240, height: 104)
             return NSRect(
                 x: host.frame.maxX - size.width,
                 y: host.frame.minY,

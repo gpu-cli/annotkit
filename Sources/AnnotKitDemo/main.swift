@@ -64,11 +64,37 @@ final class DemoAppDelegate: NSObject, NSApplicationDelegate {
         window.title = "AnnotKit Demo"
         window.contentView = NSHostingView(rootView: DemoView())
         window.center()
-        window.makeKeyAndOrderFront(nil)
         self.window = window
+
+        // `swift run` launches an unbundled binary, so a single activation often
+        // loses the race with the window server and the window opens behind the
+        // terminal. Bring it fully to the front, then retry briefly until it
+        // takes. (An embedded host is normally already frontmost; AnnotKit also
+        // self-activates in `OverlayController.start()` when annotation begins.)
+        bringToFront()
+        retryActivationIfNeeded(attemptsRemaining: 5)
 
         // Mount the annotation overlay (dev-only gate is on in a debug build).
         Annotation.install()
+    }
+
+    /// Full activation sequence for an unbundled `swift run` process.
+    private func bringToFront() {
+        NSApp.activate(ignoringOtherApps: true)
+        window?.makeKeyAndOrderFront(nil)
+        window?.orderFrontRegardless()
+    }
+
+    /// Activation from an unbundled binary can silently no-op if it fires before
+    /// the process is registered with the window server. Re-attempt on the main
+    /// queue until the app is active or we run out of attempts.
+    private func retryActivationIfNeeded(attemptsRemaining: Int) {
+        guard attemptsRemaining > 0, !NSApp.isActive else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+            guard let self, !NSApp.isActive else { return }
+            self.bringToFront()
+            self.retryActivationIfNeeded(attemptsRemaining: attemptsRemaining - 1)
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

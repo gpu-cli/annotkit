@@ -80,6 +80,16 @@ final class AXElementNode: SelectorMatchable {
 enum AXIntrospection {
     static let maxDepth = 200
 
+    /// AX identifier that ``OverlayController`` stamps on its overlay panel
+    /// window (`panel.setAccessibilityIdentifier(_:)`). The point query and the
+    /// snapshot both skip any window carrying it, so our own overlay never
+    /// shadows the host. This is required in addition to the SwiftUI content
+    /// being `accessibilityHidden`: when the panel expands to the host's full
+    /// frame it is a live `AXWindow` that `AXUIElementCopyElementAtPosition`
+    /// hit-tests first, so without excluding the panel WINDOW every hover/click
+    /// resolves to the overlay's own hosting view instead of the control beneath.
+    static let overlayWindowIdentifier = "com.annotkit.overlay-window"
+
     private static let actionableRoles: Set<String> = [
         "AXButton", "AXLink", "AXCheckBox", "AXRadioButton",
         "AXPopUpButton", "AXMenuButton", "AXMenuItem", "AXSlider"
@@ -98,12 +108,36 @@ enum AXIntrospection {
 
     // MARK: - Snapshot
 
-    /// Snapshot every window of the host app as an ``AXElementNode`` tree.
+    /// Snapshot every window of the host app as an ``AXElementNode`` tree,
+    /// excluding our own overlay panel window(s) so the overlay never appears as
+    /// a phantom window shadowing the host.
     static func snapshotNodes() -> [AXElementNode] {
         let app = appElement()
-        return elementArray(app, kAXWindowsAttribute).map { window in
-            buildNode(window, selfComponent: component(for: window, indexAmongRole: 0), parentPath: [], depth: 0)
+        return elementArray(app, kAXWindowsAttribute)
+            .filter { !isOverlayWindow($0) }
+            .map { window in
+                buildNode(window, selfComponent: component(for: window, indexAmongRole: 0), parentPath: [], depth: 0)
+            }
+    }
+
+    /// True when `window` is one of our own overlay panels, tagged by
+    /// ``OverlayController`` with ``overlayWindowIdentifier``.
+    private static func isOverlayWindow(_ window: AXUIElement) -> Bool {
+        string(window, kAXIdentifierAttribute) == overlayWindowIdentifier
+    }
+
+    /// True when `element` lives inside one of our overlay panel windows. Used to
+    /// reject a point-query hit that resolved into the overlay so we never return
+    /// the overlay's own hosting view instead of the host control.
+    private static func belongsToOverlayWindow(_ element: AXUIElement) -> Bool {
+        var current: AXUIElement? = element
+        var depth = 0
+        while let node = current, depth < maxDepth {
+            if string(node, kAXRoleAttribute) == "AXWindow" { return isOverlayWindow(node) }
+            current = copyValue(node, kAXParentAttribute).map { unsafeDowncast($0, to: AXUIElement.self) }
+            depth += 1
         }
+        return false
     }
 
     /// Public snapshot in terms of ``WindowSnapshot``.
@@ -188,20 +222,68 @@ enum AXIntrospection {
     /// Resolve a screen point (AX top-left coordinates) to an annotation target.
     /// Uses the native `AXUIElementCopyElementAtPosition` for the deepest
     /// element, then walks up to the nearest ancestor carrying a stable identity
-    /// (identifier or label), per docs/spike-ax-pointquery.md. The overlay window
-    /// must be excluded by the caller (marked non-accessibility) so it never
-    /// resolves to itself.
+    /// (identifier or label), per docs/spike-ax-pointquery.md.
+    ///
+    /// The native app-level query is the fast path: when it lands on a real host
+    /// element (idle corner overlay, or any point the overlay does not cover) it
+    /// is the most accurate hit-test, so it is kept. But the expanded overlay is
+    /// a full-window `AXWindow` sitting above the host, so while annotating the
+    /// native query hits the overlay's own hosting-view group instead of the
+    /// control beneath — that is the "everything resolves to the whole app" bug.
+    /// When the native hit belongs to our overlay we discard it and resolve the
+    /// point by descending the frontmost non-overlay window's AX subtree directly
+    /// (``hitBeneathOverlay(_:)``), which is what "queries beneath" the overlay.
+    /// (`AXUIElementCopyElementAtPosition` only hit-tests when given the
+    /// application element, so we cannot simply re-target it at the host window.)
     static func hitTest(_ point: CGPoint) -> Element? {
         let app = appElement()
         var hit: AXUIElement?
-        guard AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
-              let deepest = hit
-        else { return nil }
+        let deepest: AXUIElement
+        if AXUIElementCopyElementAtPosition(app, Float(point.x), Float(point.y), &hit) == .success,
+           let native = hit, !belongsToOverlayWindow(native) {
+            deepest = native
+        } else if let beneath = hitBeneathOverlay(point) {
+            deepest = beneath
+        } else {
+            return nil
+        }
 
         let chain = ancestorChain(from: deepest)
         guard !chain.isEmpty else { return nil }
-        let target = nearestIdentified(in: chain) ?? deepest
+        // Never fall back to the window or application container: escalating to
+        // AXWindow is what made a background click resolve to the whole app.
+        guard let target = nearestIdentified(in: chain) ?? deepestNonContainer(in: chain) else {
+            return nil
+        }
         return element(for: target, ancestorChain: chain)
+    }
+
+    /// Geometric hit-test beneath the overlay. The native point query cannot see
+    /// past our own full-window overlay panel, so descend the frontmost
+    /// non-overlay window whose frame contains `point` to the deepest descendant
+    /// that still contains it, walking `kAXChildren` by frame. `kAXWindows` is
+    /// front-to-back, so the first matching window is the frontmost real target.
+    private static func hitBeneathOverlay(_ point: CGPoint) -> AXUIElement? {
+        let app = appElement()
+        let windows = elementArray(app, kAXWindowsAttribute).filter { !isOverlayWindow($0) }
+        guard let window = windows.first(where: { frameScreen(of: $0).contains(point) }) else {
+            return nil
+        }
+        return deepestChild(of: window, containing: point, depth: 0)
+    }
+
+    /// Deepest descendant of `element` whose (non-empty) frame contains `point`.
+    /// Later children are drawn on top, so a topmost match wins; returns
+    /// `element` itself when no child contains the point.
+    private static func deepestChild(of element: AXUIElement, containing point: CGPoint, depth: Int) -> AXUIElement {
+        guard depth < maxDepth else { return element }
+        for child in elementArray(element, kAXChildrenAttribute).reversed() {
+            let frame = frameScreen(of: child)
+            if frame.width > 0, frame.height > 0, frame.contains(point) {
+                return deepestChild(of: child, containing: point, depth: depth + 1)
+            }
+        }
+        return element
     }
 
     /// Climb `kAXParentAttribute` from `element` up to the window, returning the
@@ -236,6 +318,20 @@ enum AXIntrospection {
             if actionable || !identifier.isEmpty || (!label.isEmpty && role != "AXGroup") {
                 return element
             }
+        }
+        return nil
+    }
+
+    /// Deepest element in the chain that is still a plausible target — anything
+    /// that is not the window or application container. Used only when no
+    /// identified/actionable ancestor exists, so a click on a plain leaf resolves
+    /// to that leaf rather than escalating to the whole window (which would then
+    /// show the window title in the composer header).
+    private static func deepestNonContainer(in rootFirstChain: [AXUIElement]) -> AXUIElement? {
+        for element in rootFirstChain.reversed() {
+            let role = string(element, kAXRoleAttribute) ?? ""
+            if role == "AXWindow" || role == "AXApplication" { continue }
+            return element
         }
         return nil
     }

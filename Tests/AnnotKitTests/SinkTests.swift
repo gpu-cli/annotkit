@@ -48,22 +48,37 @@ final class SinkTests: XCTestCase {
         XCTAssertTrue(try ClipboardSink(format: .json).render([note()]).contains("\"id\" : \"abc123\""))
     }
 
-    func testNotesFileSinkWritesAndAppends() throws {
+    func testNotesFileSinkWritesFullSetIdempotently() throws {
         let path = NSTemporaryDirectory() + "annotkit-sink-\(UUID().uuidString).md"
         defer { try? FileManager.default.removeItem(atPath: path) }
         let sink = NotesFileSink(path: path)
 
-        try sink.flush([note(id: "first")])
+        // Writing the full set produces the document under a single header.
+        try sink.flush([note(id: "first"), note(id: "second")])
         var contents = try String(contentsOfFile: path, encoding: .utf8)
         XCTAssertTrue(contents.contains("# Agentation Notes"))
         XCTAssertTrue(contents.contains("## [first]"))
-
-        try sink.flush([note(id: "second")])
-        contents = try String(contentsOfFile: path, encoding: .utf8)
-        // Both notes present; a single header.
-        XCTAssertTrue(contents.contains("## [first]"))
         XCTAssertTrue(contents.contains("## [second]"))
         XCTAssertEqual(contents.components(separatedBy: "# Agentation Notes").count, 2)
+
+        // Re-writing the SAME set overwrites (idempotent) — no duplication.
+        try sink.flush([note(id: "first"), note(id: "second")])
+        contents = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertEqual(contents.components(separatedBy: "## [first]").count, 2, "first appears exactly once")
+        XCTAssertEqual(contents.components(separatedBy: "# Agentation Notes").count, 2, "single header")
+
+        // Writing a superset replaces the file with the full current set, and the
+        // earlier notes are still present exactly once.
+        try sink.flush([note(id: "first"), note(id: "second"), note(id: "third")])
+        contents = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertTrue(contents.contains("## [third]"))
+        XCTAssertEqual(contents.components(separatedBy: "## [first]").count, 2)
+
+        // Writing a subset replaces (notes no longer in the set drop out).
+        try sink.flush([note(id: "third")])
+        contents = try String(contentsOfFile: path, encoding: .utf8)
+        XCTAssertFalse(contents.contains("## [first]"), "overwrite drops notes no longer in the set")
+        XCTAssertTrue(contents.contains("## [third]"))
     }
 
     func testEmptyFlushIsNoop() throws {

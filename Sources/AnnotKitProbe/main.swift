@@ -81,7 +81,7 @@ final class ProbeDelegate: NSObject, NSApplicationDelegate {
         session.select(atAXPoint: axPoint)
         let note = session.addNote(comment: "contrast too low")
         check(note != nil, "session.addNote produced a note (selector=\(note?.selector ?? "nil"))")
-        do { try session.flush() } catch { check(false, "flush threw: \(error)") }
+        do { try session.export() } catch { check(false, "export threw: \(error)") }
         let written = (try? String(contentsOfFile: notesPath, encoding: .utf8)) ?? ""
         check(written.contains("## [probe1] ProbeWindow - #SaveButton"), "notes file has the agentation header line")
         check(written.contains("contrast too low"), "notes file has the comment")

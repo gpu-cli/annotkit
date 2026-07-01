@@ -15,6 +15,7 @@ final class LucideIconTests: XCTestCase {
         ("pause", .pause),
         ("check", .check),
         ("copy", .copy),
+        ("download", .download),
         ("trash", .trash),
         ("close", .close),
     ]

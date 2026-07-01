@@ -3,9 +3,11 @@ import CoreGraphics
 import Foundation
 
 /// The platform-independent heart of the overlay: tracks annotate mode, the
-/// hovered and selected elements, and the list of pending notes, and turns a
-/// selected element plus a comment into an ``AnnotationNote`` that it flushes to
-/// the sink. The macOS/iOS overlay hosts drive this; it owns no UI, so it is
+/// hovered and selected elements, and the retained list of captured notes, and
+/// turns a selected element plus a comment into an ``AnnotationNote`` that it
+/// appends to that list. Notes PERSIST until ``clear()`` — capturing, copying,
+/// and exporting never drop them — so the same set can be copied and exported
+/// repeatedly. The macOS/iOS overlay hosts drive this; it owns no UI, so it is
 /// unit-testable without a window.
 @MainActor
 public final class AnnotationSession: ObservableObject {
@@ -15,6 +17,9 @@ public final class AnnotationSession: ObservableObject {
     }
 
     @Published public private(set) var mode: Mode = .idle
+    /// The retained set of captured notes. Grows via ``addNote(comment:selectedText:screenshot:)``
+    /// and is emptied ONLY by ``clear()`` — ``export()`` and copy read it without
+    /// mutating it, so the same set survives repeated copy/export.
     @Published public private(set) var pending: [AnnotationNote] = []
     @Published public private(set) var hovered: Element?
     @Published public private(set) var selected: Element?
@@ -102,10 +107,13 @@ public final class AnnotationSession: ObservableObject {
         return note
     }
 
-    /// Flush pending notes to the sink and clear them.
-    public func flush() throws {
+    /// Write the full retained set to the sink, WITHOUT clearing it. Notes
+    /// persist until ``clear()``, so the same set can be exported repeatedly (and
+    /// also copied). The file sink overwrites its file with the current set, so
+    /// re-exporting after more notes were captured replaces it with the full set —
+    /// idempotent, no duplicates.
+    public func export() throws {
         try sink.flush(pending)
-        pending.removeAll()
     }
 
     public func clear() {

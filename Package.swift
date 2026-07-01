@@ -72,6 +72,20 @@ let package = Package(
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
+        ),
+        // Off-screen overlay diagnostic harness. Unlike AnnotKitProbe (which only
+        // exercises the IDLE corner panel), this one calls `Annotation.install()`
+        // then `Annotation.start()` so the child panel EXPANDS to the full host
+        // window, then inspects the AX snapshot and the raw
+        // `AXUIElementCopyElementAtPosition` result THROUGH the expanded overlay.
+        // It exists to confirm/refute the "expanded panel shadows the host in the
+        // AX point query" hypothesis (issue 2). Reusable regression asset.
+        .executableTarget(
+            name: "AnnotKitOverlayProbe",
+            dependencies: ["AnnotKit"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
         )
     ]
 )
