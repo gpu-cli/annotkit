@@ -11,8 +11,7 @@ final class LucideIconTests: XCTestCase {
     private let grid = CGRect(x: 0, y: 0, width: 24, height: 24)
 
     private let icons: [(name: String, icon: LucideIcon)] = [
-        ("crosshair", .crosshair),
-        ("pause", .pause),
+        ("pencil", .pencil),
         ("check", .check),
         ("copy", .copy),
         ("download", .download),

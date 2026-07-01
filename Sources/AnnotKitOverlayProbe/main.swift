@@ -499,6 +499,13 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         pass1 = pass1 && cond
     }
 
+    // ---- Feature-1 pin-MODEL pass tracking (anchors + update + delete) ------
+    var passPins = true
+    func checkPins(_ cond: Bool, _ msg: String) {
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+        passPins = passPins && cond
+    }
+
     func phase2() {
         print("\n--- Phase 2: issue 1 — retention + copy/export + pill persistence (through the REAL overlay) ---")
         try? FileManager.default.removeItem(atPath: notesPath)
@@ -519,11 +526,31 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             panelState("BEFORE addNote", host: h2.window)
 
             // Capture TWO notes through the expanded overlay (addNote appends).
-            let axPoint = axCenter(of: h2.primary)
-            _ = session.select(atAXPoint: axPoint); session.addNote(comment: "issue-1 note A")
-            _ = session.select(atAXPoint: axPoint); session.addNote(comment: "issue-1 note B")
+            // Mirror OverlayView's REAL capture path: snapshot a WINDOW-LOCAL pin
+            // anchor (the selected element's AX top-left minus the host window's
+            // axOrigin) BEFORE addNote clears the selection, and hand it to addNote
+            // — the exact value Feature 1 stores on the note to place its numbered
+            // pin. Two DISTINCT controls yield two DISTINCT anchors, so we can prove
+            // each note owns its own anchor rather than sharing one.
+            let axOrigin = ScreenSpace.windowAXOrigin(
+                cocoaFrame: h2.window.frame,
+                primaryHeight: NSScreen.screens.first?.frame.height ?? 0
+            )
+            @MainActor func captureNote(_ comment: String, at view: NSView) -> AnnotationNote? {
+                let element = session.select(atAXPoint: axCenter(of: view))
+                let anchor = element.map {
+                    CGPoint(x: $0.frame.minX - axOrigin.x, y: $0.frame.minY - axOrigin.y)
+                }
+                return session.addNote(comment: comment, anchor: anchor)
+            }
+            let noteA = captureNote("issue-1 note A", at: h2.primary)
+            let noteB = captureNote("issue-1 note B", at: h2.secondary)
             print("  captured 2 notes -> pending=\(session.pending.count) mode=\(session.mode)")
             check1(session.pending.count == 2, "addNote APPENDS to a retained set (pending == 2)")
+
+            // Feature 1 (pin MODEL): each captured note must carry a window-local
+            // pin anchor, non-nil and inside the host window's bounds.
+            self.verifyPinAnchors(noteA: noteA, noteB: noteB, host: self.h2.window)
 
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
                 guard let self else { return }
@@ -569,7 +596,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
 
         guard let panel = h2.window.childWindows?.first else {
             check1(false, "child overlay panel STILL PRESENT after stop() (pill persists)")
-            finish()
+            verifyPinModel(session: session)
             return
         }
         check1(true, "child overlay panel still present after stop() (pill persists)")
@@ -590,14 +617,84 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("      idle hitTest(Demo.PrimaryButton) -> \(hit.map { "id=\($0.id) role=\($0.role)" } ?? "nil")")
         check1(hit?.id == "Demo.PrimaryButton", "host control still resolves through the idle overlay")
 
+        verifyPinModel(session: session)
+    }
+
+    // ---- Feature 1: pin anchors are present + inside the host window -------
+    /// Assert both freshly-captured notes carry a non-nil window-local anchor that
+    /// lands inside the host window's bounds, and that the two anchors DIFFER (so a
+    /// pin is per-note, not a single shared position).
+    func verifyPinAnchors(noteA: AnnotationNote?, noteB: AnnotationNote?, host: NSWindow) {
+        print("\n  Feature 1 — numbered-pin anchors (window-local, snapshot at addNote):")
+        guard let noteA, let noteB else {
+            checkPins(false, "both notes captured (addNote returned a note for each control)")
+            return
+        }
+        // Window-local space: origin at the host window's top-left, so a valid
+        // anchor sits within (0,0)...(width,height). Grown 1pt for float slack.
+        let bounds = CGRect(origin: .zero, size: host.frame.size).insetBy(dx: -1, dy: -1)
+        for (label, note) in [("note A (pin #1)", noteA), ("note B (pin #2)", noteB)] {
+            guard let anchor = note.anchor else {
+                checkPins(false, "\(label) carries a non-nil window-local anchor")
+                continue
+            }
+            print("      \(label) anchor=\(String(format: "(%.1f, %.1f)", anchor.x, anchor.y)) " +
+                  "host-local bounds=\(fmt(CGRect(origin: .zero, size: host.frame.size)))")
+            checkPins(true, "\(label) carries a non-nil window-local anchor")
+            checkPins(bounds.contains(anchor), "\(label) anchor is inside the host window bounds")
+        }
+        if let a = noteA.anchor, let b = noteB.anchor {
+            checkPins(a != b, "the two notes carry DISTINCT anchors (per-note, not a shared position)")
+        }
+    }
+
+    // ---- Feature 1: updateNote edits in place; deleteNote reflows -----------
+    /// Assert the pin popover's model ops: `updateNote` mutates the target note's
+    /// comment in place (id/order/count unchanged), and `deleteNote` drops a note
+    /// so the remaining indices AND the count re-flow (the pin number and count
+    /// badge derive from `pending`'s order/size, so this is automatic).
+    func verifyPinModel(session: AnnotationSession) {
+        print("\n  Feature 1 — pin edit (updateNote) + delete (deleteNote reflow):")
+        guard session.pending.count == 2 else {
+            checkPins(false, "two notes retained going into the pin-model checks (have \(session.pending.count))")
+            finish()
+            return
+        }
+        // pending order IS the reflow order: pending[0] renders as pin #1.
+        let first = session.pending[0]
+        let second = session.pending[1]
+
+        // updateNote (the popover's Save) edits the comment in place only.
+        session.updateNote(id: first.id, comment: "edited via pin popover")
+        let editedFirst = session.pending.first { $0.id == first.id }
+        checkPins(editedFirst?.comment == "edited via pin popover", "updateNote changes the target note's comment in place")
+        checkPins(session.pending.count == 2, "updateNote leaves the retained count unchanged (still 2)")
+        checkPins(session.pending.first?.id == first.id, "updateNote preserves order/identity (still pin #1)")
+        // updateNote on an unknown id is a no-op (does not append or clear).
+        session.updateNote(id: "no-such-id", comment: "ignored")
+        checkPins(session.pending.count == 2, "updateNote on an unknown id is a no-op")
+
+        // deleteNote (the popover's Delete) drops the FIRST note; the survivor
+        // reflows from pin #2 to pin #1 for free.
+        session.deleteNote(id: first.id)
+        checkPins(session.pending.count == 1, "deleteNote removes the note (count re-flows 2 -> 1)")
+        checkPins(!session.pending.contains { $0.id == first.id }, "the deleted note is gone from the retained set")
+        checkPins(session.pending.first?.id == second.id, "the survivor is the OTHER note, now reflowed to index 0 (pin #1)")
+        checkPins(session.pending.first?.anchor == second.anchor, "the survivor keeps its OWN captured anchor after the reflow")
+
+        // Deleting the last note empties the set, so the count badge would hide.
+        session.deleteNote(id: second.id)
+        checkPins(session.pending.isEmpty, "deleting the last note empties the retained set (count badge -> hidden)")
+
         finish()
     }
 
     func finish() {
         print("\n  issue-2 (per-control hit-test through the expanded overlay): \(passIssue2 ? "PASS" : "FAIL")")
         print("  issue-1 (retention / copy / export / pill persistence):       \(pass1 ? "PASS" : "FAIL")")
+        print("  Feature 1 (numbered-pin MODEL: anchors + update + delete/reflow): \(passPins ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {

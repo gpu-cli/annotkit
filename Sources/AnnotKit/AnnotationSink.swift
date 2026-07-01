@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// Output format for sinks that serialize notes as a blob (clipboard, logs).
@@ -40,6 +41,21 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     /// ISO-8601 timestamp, injected by the caller (kept out of pure logic so the
     /// model stays deterministic and testable).
     public var timestamp: String
+    /// Window-local top-left where the numbered pin is drawn in annotate mode
+    /// (the element's AX frame origin minus the host window's `axOrigin` AT
+    /// CAPTURE). UI-only: intentionally NOT persisted — it is omitted from
+    /// ``CodingKeys`` so the on-disk JSON store and the MCP payload stay
+    /// byte-for-byte unchanged, and older files still decode (`anchor` -> nil).
+    public var anchor: CGPoint?
+
+    /// Explicit keys that OMIT `anchor`: `JSONFileSink` and the MCP
+    /// `FileNotesStore` encode/decode `[AnnotationNote]` directly, so a naked
+    /// stored property would leak the pin position into the serialized record.
+    /// `anchor` decodes to nil when absent, so the store and old files round-trip
+    /// unchanged.
+    private enum CodingKeys: String, CodingKey {
+        case id, route, selector, elementPath, selectedText, comment, screenshot, timestamp
+    }
 
     public init(
         id: String,
@@ -49,7 +65,8 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         selectedText: String? = nil,
         comment: String,
         screenshot: CapturedImage? = nil,
-        timestamp: String
+        timestamp: String,
+        anchor: CGPoint? = nil
     ) {
         self.id = id
         self.route = route
@@ -59,5 +76,6 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         self.comment = comment
         self.screenshot = screenshot
         self.timestamp = timestamp
+        self.anchor = anchor
     }
 }

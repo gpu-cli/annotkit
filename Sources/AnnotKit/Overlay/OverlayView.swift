@@ -33,8 +33,19 @@ struct OverlayView: View {
     let onExport: () -> Void
     /// Dismiss the whole overlay (macOS -> `unmount()`, iOS -> hide the window).
     let onClose: () -> Void
+    /// Make the host panel key so the composer's text field accepts keystrokes.
+    /// macOS passes `panel.makeKey()` (the child panel is non-activating, so a
+    /// programmatic focus needs the window made key first); iOS uses the default
+    /// no-op because `@FocusState` alone raises the keyboard. See Feature 3.
+    /// A `var` (not `let`) so it stays a defaulted memberwise-init parameter that
+    /// the iOS host can omit.
+    var onFocusRequest: () -> Void = {}
 
     @State private var comment: String = ""
+    /// Drives first-responder focus of the composer field so a click on an
+    /// element lets the user type immediately (Feature 3). The same
+    /// `@FocusState` + `.onAppear` pattern backs the pin edit popover.
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -47,6 +58,13 @@ struct OverlayView: View {
                     .frame(width: element.frame.width, height: element.frame.height)
                     .offset(x: element.frame.minX - axOrigin.x, y: element.frame.minY - axOrigin.y)
                     .allowsHitTesting(false)
+            }
+
+            // Numbered comment pins (annotate-mode-only chrome). Layered ABOVE
+            // the catcher and BELOW the composer/toolbar, so each pin consumes its
+            // own hover/click and can never fall through to re-select the element.
+            if session.mode == .annotating {
+                AnnotationPins(session: session)
             }
 
             if session.selected != nil {
@@ -84,24 +102,46 @@ struct OverlayView: View {
     private var composer: some View {
         let placement = composerPlacement
         return VStack(alignment: .leading, spacing: 8) {
-            Text(session.selectionLabel ?? "Element")
-                .font(.headline)
-                .lineLimit(1)
+            HStack(spacing: 8) {
+                Text(session.selectionLabel ?? "Element")
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                // The field is multiline (Return inserts a newline), so surface
+                // the submit/cancel keys instead of relying on a bare Return.
+                Text("⌘⏎ save · esc cancel")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+            .frame(width: 260)
             TextField("Describe the change", text: $comment, axis: .vertical)
                 .textFieldStyle(.roundedBorder)
                 .lineLimit(2 ... 5)
                 .frame(width: 260)
+                .focused($composerFocused)
             HStack {
                 Button("Cancel") {
                     comment = ""
                     session.cancelSelection()
                 }
+                // Escape cancels the composer (reuses the Cancel action). The
+                // panel is key while typing, so the shortcut reaches this button.
+                .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Add note") {
-                    session.addNote(comment: comment)
+                    // Snapshot the pin anchor BEFORE addNote clears the selection:
+                    // element AX top-left minus axOrigin, the same window-local
+                    // transform the highlight uses, so the pin lands on the
+                    // element's top-left corner.
+                    let anchor = session.selected.map {
+                        CGPoint(x: $0.frame.minX - axOrigin.x, y: $0.frame.minY - axOrigin.y)
+                    }
+                    session.addNote(comment: comment, anchor: anchor)
                     comment = ""
                 }
-                .keyboardShortcut(.defaultAction)
+                // Multiline field: Return is a newline, ⌘Return submits.
+                .keyboardShortcut(.return, modifiers: .command)
                 .disabled(comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .frame(width: 260)
@@ -125,6 +165,26 @@ struct OverlayView: View {
         // to the next. Keyed on the selection (not `axOrigin`) so a host-window
         // drag keeps the composer glued instead of lagging behind.
         .animation(.spring(response: 0.28, dampingFraction: 0.9), value: session.selected)
+        // Focus on first appearance (nil -> element) and on element -> element
+        // switches (the composer is not re-inserted, so `.onAppear` won't fire).
+        .onAppear { focusComposer() }
+        .onChange(of: session.selected) { _, newValue in
+            if newValue == nil { composerFocused = false } else { focusComposer() }
+        }
+    }
+
+    /// Focus the composer text field, making the host panel key FIRST so the
+    /// non-activating child window accepts keystrokes. If focus does not stick on
+    /// first appearance on some macOS builds (a known `@FocusState`-set-during-
+    /// insertion race), the fallback is to defer the `composerFocused = true` to
+    /// the next runloop tick.
+    private func focusComposer() {
+        onFocusRequest()
+        composerFocused = true
+        // A @FocusState set in the same layout pass that inserts the field can be
+        // dropped on first appearance (the classic first-responder race); re-assert
+        // on the next main-actor tick so the first click reliably lands the cursor.
+        Task { @MainActor in composerFocused = true }
     }
 
     /// Estimated card size (260 field + 12 padding each side ≈ 284 wide; a
@@ -200,14 +260,13 @@ private struct ToolbarView: View {
     var body: some View {
         HStack(spacing: 2) {
             PillButton(
-                icon: annotating ? .pause : .crosshair,
+                icon: .pencil,
                 isActive: annotating,
                 tooltip: annotating ? "Stop annotating" : "Annotate",
                 action: onToggle
             )
 
             if hasNotes {
-                countBadge
                 PillButton(icon: .copy, tooltip: "Copy notes (Markdown)", action: onCopy)
                 PillButton(icon: .download, tooltip: "Export to AGENTATION_NOTES.md", action: onExport)
                 PillButton(icon: .trash, isDestructive: true, tooltip: "Clear notes") {
@@ -225,22 +284,33 @@ private struct ToolbarView: View {
                 .fill(PillStyle.background)
                 .overlay(Capsule(style: .continuous).strokeBorder(PillStyle.border, lineWidth: 1))
         )
+        // Count bubble on the WHOLE pill's top-left corner (not inline in the row,
+        // not on the toggle). Non-interactive so it never eats a pill click.
+        .overlay(alignment: .topLeading) {
+            if hasNotes {
+                countBadge
+                    .offset(x: -5, y: -5)
+                    .allowsHitTesting(false)
+            }
+        }
         .shadow(color: .black.opacity(0.4), radius: 12, y: 8)
         // Reveal/hide the note-action cluster smoothly as pending changes. The
         // pill has no entrance opacity/scale gate: it must ALWAYS be visible.
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hasNotes)
     }
 
-    /// Inline count of pending notes; reuses the accent so it reads as one family
-    /// with the highlight and the active toggle.
+    /// Compact count bubble that overlaps the pill's top-left corner. A ~18pt
+    /// accent capsule (grows for multi-digit counts) with white monospaced digits
+    /// and a thin dark ring for contrast; reuses the accent so it reads as one
+    /// family with the highlight and the numbered pins.
     private var countBadge: some View {
         Text("\(session.pending.count)")
-            .font(.caption2.monospacedDigit())
+            .font(.caption2.monospacedDigit().bold())
             .foregroundStyle(.white)
-            .padding(.horizontal, 6)
-            .frame(height: 18)
+            .padding(.horizontal, 5)
+            .frame(minWidth: 18, minHeight: 18)
             .background(Capsule().fill(Color.accentColor))
-            .padding(.horizontal, 2)
+            .overlay(Capsule().strokeBorder(Color.black.opacity(0.35), lineWidth: 1))
             .accessibilityLabel("\(session.pending.count) pending notes")
     }
 
@@ -253,8 +323,9 @@ private struct ToolbarView: View {
 }
 
 /// A single 28pt circular icon button in the pill: transparent when idle, a faint
-/// white wash on hover (red for destructive), accent-filled when its toggle is
-/// active. Each carries a tooltip (`.help`) and a matching accessibility label.
+/// white wash on hover (red for destructive), and a bright white glyph (no circle
+/// fill) when its toggle is active. Each carries a tooltip (`.help`) and a
+/// matching accessibility label.
 private struct PillButton: View {
     let icon: LucideIcon
     var isActive: Bool = false
@@ -271,8 +342,9 @@ private struct PillButton: View {
         return hovering ? PillStyle.iconHover : PillStyle.iconIdle
     }
 
+    // Active state is carried by `glyphColor` (white when active) with NO circle
+    // fill, so the annotate toggle reads as a bright glyph, not a blue chip.
     private var fillColor: Color {
-        if isActive { return Color.accentColor }
         if hovering { return isDestructive ? PillStyle.destructive : PillStyle.hoverBackground }
         return .clear
     }

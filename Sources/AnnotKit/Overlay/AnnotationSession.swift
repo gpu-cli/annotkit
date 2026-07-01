@@ -89,7 +89,8 @@ public final class AnnotationSession: ObservableObject {
     public func addNote(
         comment: String,
         selectedText: String? = nil,
-        screenshot: CapturedImage? = nil
+        screenshot: CapturedImage? = nil,
+        anchor: CGPoint? = nil
     ) -> AnnotationNote? {
         guard let element = selected else { return nil }
         let note = AnnotationNote(
@@ -100,11 +101,26 @@ public final class AnnotationSession: ObservableObject {
             selectedText: selectedText,
             comment: comment,
             screenshot: screenshot,
-            timestamp: timestamp()
+            timestamp: timestamp(),
+            anchor: anchor
         )
         pending.append(note)
         selected = nil
         return note
+    }
+
+    /// Edit a retained note's comment in place (the numbered-pin edit popover).
+    /// No-op if the id is no longer present.
+    public func updateNote(id: String, comment: String) {
+        guard let index = pending.firstIndex(where: { $0.id == id }) else { return }
+        pending[index].comment = comment
+    }
+
+    /// Remove a retained note (the numbered-pin delete action). The pin numbers
+    /// and the count badge are DERIVED from `pending`'s order and size, so
+    /// dropping a note reflows both for free — no explicit renumbering.
+    public func deleteNote(id: String) {
+        pending.removeAll { $0.id == id }
     }
 
     /// Write the full retained set to the sink, WITHOUT clearing it. Notes

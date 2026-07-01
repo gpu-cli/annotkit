@@ -152,7 +152,11 @@ public final class OverlayController: NSObject {
             onToggle: { [weak self] in self?.toggle() },
             onCopy: { [weak self] in self?.copy() },
             onExport: { [weak self] in self?.export() },
-            onClose: { [weak self] in self?.unmount() }
+            onClose: { [weak self] in self?.unmount() },
+            // Make the non-activating child panel key so the composer/pin-editor
+            // text fields accept keystrokes (a plain borderless panel that is not
+            // key silently drops typing).
+            onFocusRequest: { [weak self] in self?.panel?.makeKey() }
         )
     }
 

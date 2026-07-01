@@ -54,25 +54,22 @@ enum IconPart {
     case rrect(CGRect, CGFloat)
 }
 
-/// The six Lucide glyphs the toolbar pill uses, authored on the 24x24 viewBox.
-/// The `d` strings are copied from lucide.dev so the rendered shape matches the
-/// sibling Agentation nav bar; the rest use primitives (Lucide's `crosshair`
-/// circle, `pause`/`copy` rounded rects, and the straight strokes) so no
-/// elliptical-arc parsing is needed.
+/// The Lucide glyphs the toolbar pill uses, authored on the 24x24 viewBox. The
+/// `d` strings are copied from lucide.dev so the rendered shape matches the
+/// sibling Agentation nav bar; the rest use primitives (`copy`'s rounded rect and
+/// the straight strokes of `pencil`/`download`/`close`) so no elliptical-arc
+/// parsing is needed.
 struct LucideIcon {
     let parts: [IconPart]
 
-    static let crosshair = LucideIcon(parts: [
-        .circle(CGPoint(x: 12, y: 12), 10),
-        .line(CGPoint(x: 22, y: 12), CGPoint(x: 18, y: 12)),
-        .line(CGPoint(x: 6, y: 12), CGPoint(x: 2, y: 12)),
-        .line(CGPoint(x: 12, y: 6), CGPoint(x: 12, y: 2)),
-        .line(CGPoint(x: 12, y: 18), CGPoint(x: 12, y: 22)),
-    ])
-
-    static let pause = LucideIcon(parts: [
-        .rrect(CGRect(x: 6, y: 4, width: 4, height: 16), 1),
-        .rrect(CGRect(x: 14, y: 4, width: 4, height: 16), 1),
+    /// The annotate-toggle glyph (an annotate-indicative `pencil`). Authored from
+    /// straight strokes only — Lucide's real `pencil` and `square-dashed-mouse-
+    /// pointer` are arc-heavy, and the primitive `d`-parser implements no
+    /// elliptical arc (`A`) command, so this follows the existing `download`
+    /// precedent: a diagonal shaft with a triangular tip, plus a collar band.
+    static let pencil = LucideIcon(parts: [
+        .path("M4 20 L4 16 L14 6 L18 10 L8 20 Z"),
+        .line(CGPoint(x: 13, y: 7), CGPoint(x: 17, y: 11)),
     ])
 
     static let check = LucideIcon(parts: [.path("M20 6 9 17l-5-5")])
