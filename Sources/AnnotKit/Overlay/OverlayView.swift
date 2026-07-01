@@ -107,9 +107,8 @@ struct OverlayView: View {
                     .font(.headline)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                // The field is multiline (Return inserts a newline), so surface
-                // the submit/cancel keys instead of relying on a bare Return.
-                Text("⌘⏎ save · esc cancel")
+                // Enter submits; Shift+Enter inserts a newline; Esc cancels.
+                Text("⏎ save · ⇧⏎ newline")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize()
@@ -120,6 +119,13 @@ struct OverlayView: View {
                 .lineLimit(2 ... 5)
                 .frame(width: 260)
                 .focused($composerFocused)
+                // Enter submits the note; Shift+Enter falls through to insert a
+                // newline in the multiline field.
+                .onKeyPress(keys: [.return]) { key in
+                    if key.modifiers.contains(.shift) { return .ignored }
+                    addNote()
+                    return .handled
+                }
             HStack {
                 Button("Cancel") {
                     comment = ""
@@ -129,33 +135,23 @@ struct OverlayView: View {
                 // panel is key while typing, so the shortcut reaches this button.
                 .keyboardShortcut(.cancelAction)
                 Spacer()
-                Button("Add note") {
-                    // Snapshot the pin anchor BEFORE addNote clears the selection:
-                    // element AX top-left minus axOrigin, the same window-local
-                    // transform the highlight uses, so the pin lands on the
-                    // element's top-left corner.
-                    let anchor = session.selected.map {
-                        CGPoint(x: $0.frame.minX - axOrigin.x, y: $0.frame.minY - axOrigin.y)
-                    }
-                    session.addNote(comment: comment, anchor: anchor)
-                    comment = ""
-                }
-                // Multiline field: Return is a newline, ⌘Return submits.
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Add note") { addNote() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .frame(width: 260)
         }
         .padding(12)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        // Accent caret in the gap, tying the card back to the highlighted
-        // element: it uses the same accent as the highlight stroke, points up
-        // when the card is below (down when flipped above), and slides
-        // horizontally (`caretDX`) to line up with the element's center. Added
-        // before the shadow so the card and caret cast one unified shadow.
+        // Caret in the gap, tying the card back to the highlighted element. It
+        // uses the SAME material as the card so it reads as the card's pointer
+        // (not an accent), points up when the card is below (down when flipped
+        // above), and slides horizontally (`caretDX`) to line up with the
+        // element's center. Added before the shadow so card and caret cast one
+        // unified shadow.
         .overlay(alignment: placement.caretPointsUp ? .top : .bottom) {
             ComposerCaret(pointsUp: placement.caretPointsUp)
-                .fill(Color.accentColor)
+                .fill(.regularMaterial)
                 .frame(width: 16, height: 8)
                 .offset(x: placement.caretDX, y: placement.caretPointsUp ? -7 : 7)
         }
@@ -185,6 +181,20 @@ struct OverlayView: View {
         // dropped on first appearance (the classic first-responder race); re-assert
         // on the next main-actor tick so the first click reliably lands the cursor.
         Task { @MainActor in composerFocused = true }
+    }
+
+    /// Capture the pending note. Snapshots the pin anchor BEFORE `addNote` clears
+    /// the selection (element AX top-left minus axOrigin — the same window-local
+    /// transform the highlight uses — so the pin lands on the element's top-left
+    /// corner), then resets the field. Enter submits; Shift+Enter inserts a
+    /// newline (handled in the field's `onKeyPress`).
+    private func addNote() {
+        guard !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        let anchor = session.selected.map {
+            CGPoint(x: $0.frame.minX - axOrigin.x, y: $0.frame.minY - axOrigin.y)
+        }
+        session.addNote(comment: comment, anchor: anchor)
+        comment = ""
     }
 
     /// Estimated card size (260 field + 12 padding each side ≈ 284 wide; a
@@ -253,6 +263,7 @@ private struct ToolbarView: View {
     let onClose: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var justCopied = false
 
     private var annotating: Bool { session.mode == .annotating }
     private var hasNotes: Bool { !session.pending.isEmpty }
@@ -260,14 +271,19 @@ private struct ToolbarView: View {
     var body: some View {
         HStack(spacing: 2) {
             PillButton(
-                icon: .pencil,
+                icon: annotating ? .pencilOff : .pencil,
                 isActive: annotating,
                 tooltip: annotating ? "Stop annotating" : "Annotate",
                 action: onToggle
             )
 
             if hasNotes {
-                PillButton(icon: .copy, tooltip: "Copy notes (Markdown)", action: onCopy)
+                PillButton(
+                    icon: justCopied ? .check : .copy,
+                    glyphTint: justCopied ? PillStyle.success : nil,
+                    tooltip: justCopied ? "Copied" : "Copy notes (Markdown)",
+                    action: { onCopy(); flashCopied() }
+                )
                 PillButton(icon: .download, tooltip: "Export to AGENTATION_NOTES.md", action: onExport)
                 PillButton(icon: .trash, isDestructive: true, tooltip: "Clear notes") {
                     session.clear()
@@ -275,7 +291,7 @@ private struct ToolbarView: View {
             }
 
             divider
-            PillButton(icon: .close, tooltip: "Close", action: onClose)
+            PillButton(icon: .close, tooltip: "Exit annotate mode", action: onClose)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 8) // 28pt buttons + 8*2 -> 44pt pill height
@@ -297,6 +313,16 @@ private struct ToolbarView: View {
         // Reveal/hide the note-action cluster smoothly as pending changes. The
         // pill has no entrance opacity/scale gate: it must ALWAYS be visible.
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hasNotes)
+    }
+
+    /// Show a green check on the Copy button for a beat as success feedback, then
+    /// revert to the copy glyph.
+    private func flashCopied() {
+        justCopied = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            justCopied = false
+        }
     }
 
     /// Compact count bubble that overlaps the pill's top-left corner. A ~18pt
@@ -330,6 +356,7 @@ private struct PillButton: View {
     let icon: LucideIcon
     var isActive: Bool = false
     var isDestructive: Bool = false
+    var glyphTint: Color? = nil
     let tooltip: String
     let action: () -> Void
 
@@ -337,6 +364,7 @@ private struct PillButton: View {
     @State private var hovering = false
 
     private var glyphColor: Color {
+        if let glyphTint { return glyphTint }
         if isDestructive && hovering { return .white }
         if isActive { return .white }
         return hovering ? PillStyle.iconHover : PillStyle.iconIdle
@@ -360,7 +388,7 @@ private struct PillButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(PressablePillButtonStyle(reduceMotion: reduceMotion))
-        .help(tooltip)
+        .pillToolTip(tooltip)
         .accessibilityLabel(tooltip)
         .onHover { value in
             guard !reduceMotion else { hovering = value; return }

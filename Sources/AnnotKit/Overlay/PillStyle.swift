@@ -37,6 +37,7 @@ enum PillStyle {
     static let iconHover = Color.white.opacity(0.8)
     static let hoverBackground = Color.white.opacity(0.1)
     static let destructive = Color(hex: "EF4444")
+    static let success = Color(hex: "22C55E")
     static let divider = Color.white.opacity(0.08)
 }
 
@@ -62,14 +63,21 @@ enum IconPart {
 struct LucideIcon {
     let parts: [IconPart]
 
-    /// The annotate-toggle glyph (an annotate-indicative `pencil`). Authored from
-    /// straight strokes only — Lucide's real `pencil` and `square-dashed-mouse-
-    /// pointer` are arc-heavy, and the primitive `d`-parser implements no
-    /// elliptical arc (`A`) command, so this follows the existing `download`
-    /// precedent: a diagonal shaft with a triangular tip, plus a collar band.
+    /// Lucide `pencil` — the annotate toggle's IDLE glyph. Uses the real Lucide
+    /// `d` strings; the parser approximates the small corner arcs (`a`) as a line
+    /// to the arc endpoint, which reads identically at 16pt.
     static let pencil = LucideIcon(parts: [
-        .path("M4 20 L4 16 L14 6 L18 10 L8 20 Z"),
-        .line(CGPoint(x: 13, y: 7), CGPoint(x: 17, y: 11)),
+        .path("M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"),
+        .path("m15 5 4 4"),
+    ])
+
+    /// Lucide `pencil-off` — the annotate toggle's ACTIVE (annotating) glyph: the
+    /// pencil with a diagonal slash through it.
+    static let pencilOff = LucideIcon(parts: [
+        .path("m10 10-6.157 6.162a2 2 0 0 0-.5.833l-1.322 4.36a.5.5 0 0 0 .622.624l4.358-1.323a2 2 0 0 0 .83-.5L14 13.982"),
+        .path("m12.829 7.172 4.359-4.346a1 1 0 1 1 3.986 3.986l-4.353 4.353"),
+        .path("m15 5 4 4"),
+        .path("m2 2 20 20"),
     ])
 
     static let check = LucideIcon(parts: [.path("M20 6 9 17l-5-5")])
@@ -201,6 +209,17 @@ struct LucideShape: Shape {
                 let end = rel ? CGPoint(x: current.x + c, y: current.y + d2) : CGPoint(x: c, y: d2)
                 current = end
                 path.addQuadCurve(to: scaled(end), control: scaled(ctrl))
+            case "A", "a":
+                // Elliptical arc. The parser has no arc-to-bezier, so it draws a
+                // straight segment to the arc ENDPOINT — Lucide's pencil/pencil-off
+                // arcs are small corner rounds and the flat eraser diagonal, which
+                // read the same at 16pt. Consume all 7 params (rx ry rot large
+                // sweep x y).
+                guard nextNumber() != nil, nextNumber() != nil, nextNumber() != nil,
+                      nextNumber() != nil, nextNumber() != nil,
+                      let ax = nextNumber(), let ay = nextNumber() else { return }
+                current = command == "a" ? CGPoint(x: current.x + ax, y: current.y + ay) : CGPoint(x: ax, y: ay)
+                path.addLine(to: scaled(current))
             case "Z", "z":
                 path.closeSubpath()
                 current = subStart
@@ -252,5 +271,37 @@ struct LucideShape: Shape {
             }
         }
         return tokens
+    }
+}
+
+// MARK: - Tooltip
+
+#if os(macOS)
+/// A zero-content `NSView` carrying a `toolTip`, layered behind a control so the
+/// hover tooltip shows reliably inside the borderless, non-activating overlay
+/// panel (where SwiftUI's `.help` alone can fail to render).
+private struct ToolTipBacking: NSViewRepresentable {
+    let text: String
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        view.toolTip = text
+        return view
+    }
+    func updateNSView(_ view: NSView, context: Context) {
+        view.toolTip = text
+    }
+}
+#endif
+
+extension View {
+    /// Hover tooltip for a pill control: SwiftUI `.help` plus (on macOS) an
+    /// NSView-backed `toolTip` for reliability inside the overlay panel.
+    @ViewBuilder
+    func pillToolTip(_ text: String) -> some View {
+        #if os(macOS)
+        help(text).background(ToolTipBacking(text: text))
+        #else
+        help(text)
+        #endif
     }
 }

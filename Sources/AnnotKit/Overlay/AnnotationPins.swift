@@ -91,6 +91,13 @@ private struct PinPopover: View {
         self._draft = State(initialValue: note.comment)
     }
 
+    /// Save the edited comment (Enter or the Save button) and dismiss.
+    private func save() {
+        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        session.updateNote(id: note.id, comment: draft)
+        isPresented = false
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
@@ -98,7 +105,7 @@ private struct PinPopover: View {
                     .font(.caption.monospaced())
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                Text("⌘⏎ save · esc cancel")
+                Text("⏎ save · ⇧⏎ newline")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .fixedSize()
@@ -109,20 +116,25 @@ private struct PinPopover: View {
                 .lineLimit(2 ... 5)
                 .frame(width: 240)
                 .focused($focused)
+                // Enter saves the edit; Shift+Enter inserts a newline.
+                .onKeyPress(keys: [.return]) { key in
+                    if key.modifiers.contains(.shift) { return .ignored }
+                    save()
+                    return .handled
+                }
             HStack {
                 Button(role: .destructive) {
                     session.deleteNote(id: note.id)
                     isPresented = false
                 } label: {
                     Label("Delete", systemImage: "trash")
+                        .foregroundStyle(.red)
                 }
+                .tint(.red)
                 Spacer()
-                Button("Save") {
-                    session.updateNote(id: note.id, comment: draft)
-                    isPresented = false
-                }
-                .keyboardShortcut(.return, modifiers: .command)
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                Button("Save") { save() }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
             .frame(width: 240)
         }

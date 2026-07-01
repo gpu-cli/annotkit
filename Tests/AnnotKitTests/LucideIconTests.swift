@@ -12,6 +12,7 @@ final class LucideIconTests: XCTestCase {
 
     private let icons: [(name: String, icon: LucideIcon)] = [
         ("pencil", .pencil),
+        ("pencilOff", .pencilOff),
         ("check", .check),
         ("copy", .copy),
         ("download", .download),
