@@ -218,13 +218,24 @@ enum AXIntrospection {
         return chain.reversed()
     }
 
-    /// The deepest element in the chain (closest to the hit) that carries a
-    /// non-empty identifier or label.
+    /// The deepest element in the chain (closest to the hit) that is a real
+    /// annotation target: actionable, or carrying an identifier, or a
+    /// non-structural element with a label. Never the window or application —
+    /// escalating to `AXWindow` is what made a padding/background click resolve
+    /// to the whole window (and show its title in the composer header). Structural
+    /// `AXGroup`s are skipped unless they are actionable or identified, so a
+    /// near-miss lands on the nearest meaningful control rather than a wrapper.
     private static func nearestIdentified(in rootFirstChain: [AXUIElement]) -> AXUIElement? {
         for element in rootFirstChain.reversed() {
+            let role = string(element, kAXRoleAttribute) ?? ""
+            if role == "AXWindow" || role == "AXApplication" { continue }
             let identifier = string(element, kAXIdentifierAttribute) ?? ""
             let label = labelText(element)
-            if !identifier.isEmpty || !label.isEmpty { return element }
+            let actionable = actionNames(element).contains(kAXPressAction as String)
+                || actionableRoles.contains(role)
+            if actionable || !identifier.isEmpty || (!label.isEmpty && role != "AXGroup") {
+                return element
+            }
         }
         return nil
     }

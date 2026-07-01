@@ -37,11 +37,25 @@ public final class IOSOverlayController: NSObject {
         window.windowLevel = .statusBar + 1
         window.backgroundColor = .clear
 
-        let host = UIHostingController(rootView: OverlayView(
-            session: session,
-            onToggle: { [weak self] in self?.toggle() },
-            onFlush: { [weak self] in self?.flush() }
-        ))
+        // iOS element frames are already view-local (top-left), so `axOrigin` is
+        // zero and no per-window AX offset is threaded (unlike macOS). The
+        // surface size comes from the hosting geometry, so the composer clamps to
+        // the live bounds and follows rotation. Bind `session` locally so the
+        // escaping GeometryReader closure does not strongly capture the
+        // controller (which retains the window that owns this view).
+        let session = self.session
+        let host = UIHostingController(rootView: GeometryReader { proxy in
+            OverlayView(
+                session: session,
+                axOrigin: .zero,
+                surfaceSize: proxy.size,
+                onToggle: { [weak self] in self?.toggle() },
+                onCopy: { [weak self] in self?.copy() },
+                onFlush: { [weak self] in self?.flush() },
+                onClose: { [weak self] in self?.unmount() }
+            )
+        }
+        .ignoresSafeArea())
         host.view.backgroundColor = .clear
         host.view.isAccessibilityElement = false
         window.rootViewController = host
@@ -73,6 +87,10 @@ public final class IOSOverlayController: NSObject {
 
     private func flush() {
         try? session.flush()
+    }
+
+    private func copy() {
+        try? ClipboardSink().flush(session.pending)
     }
 
     private static var activeScene: UIWindowScene? {

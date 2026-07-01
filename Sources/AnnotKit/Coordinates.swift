@@ -37,4 +37,16 @@ public enum ScreenSpace {
             height: rect.height
         )
     }
+
+    /// AX top-left origin of a Cocoa (bottom-left, y-up) window frame.
+    /// ADD to a window-local top-left (y-down) point -> AX-screen point.
+    /// SUBTRACT from an AX-screen point/frame -> window-local point.
+    /// `primaryHeight` is `NSScreen.screens.first!.frame.height` (the menu-bar/
+    /// origin display — NOT `NSScreen.main`, which is the active screen and is
+    /// the source of the single-display bug). Because the origin is fixed per
+    /// window, click, highlight, and composer all share one transform: add
+    /// `axOrigin` going into the AX point query, subtract it placing overlays.
+    public static func windowAXOrigin(cocoaFrame: CGRect, primaryHeight: CGFloat) -> CGPoint {
+        CGPoint(x: cocoaFrame.minX, y: primaryHeight - cocoaFrame.maxY)
+    }
 }

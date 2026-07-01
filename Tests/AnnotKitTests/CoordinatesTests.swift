@@ -26,4 +26,37 @@ final class CoordinatesTests: XCTestCase {
         let back = ScreenSpace.axTopLeftRect(fromCocoa: cocoa, primaryHeight: h)
         XCTAssertEqual(back, ax)
     }
+
+    func testWindowAXOriginPrimaryAtOriginIsZero() {
+        // The currently-working case: a window filling the primary display at the
+        // global origin has a zero AX offset, so the transform is a no-op there.
+        let primary: CGFloat = 982
+        let origin = ScreenSpace.windowAXOrigin(
+            cocoaFrame: CGRect(x: 0, y: 0, width: 1512, height: 982),
+            primaryHeight: primary
+        )
+        XCTAssertEqual(origin, CGPoint(x: 0, y: 0))
+    }
+
+    func testWindowAXOriginRightDisplay() {
+        // A window on the display to the right of the primary keeps y == 0 but
+        // carries the horizontal offset.
+        let primary: CGFloat = 982
+        let origin = ScreenSpace.windowAXOrigin(
+            cocoaFrame: CGRect(x: 1512, y: 0, width: 1512, height: 982),
+            primaryHeight: primary
+        )
+        XCTAssertEqual(origin, CGPoint(x: 1512, y: 0))
+    }
+
+    func testWindowAXOriginDisplayAbove() {
+        // A window on a display stacked above the primary has a negative AX y
+        // (AX grows downward from the primary's top edge).
+        let primary: CGFloat = 982
+        let origin = ScreenSpace.windowAXOrigin(
+            cocoaFrame: CGRect(x: 0, y: 982, width: 1512, height: 900),
+            primaryHeight: primary
+        )
+        XCTAssertEqual(origin, CGPoint(x: 0, y: -900))
+    }
 }
