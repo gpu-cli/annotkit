@@ -61,6 +61,17 @@ let package = Package(
             swiftSettings: [
                 .swiftLanguageMode(.v6)
             ]
+        ),
+        // Interactive macOS demo: a window of identified controls with the
+        // annotation overlay mounted. `swift run AnnotKitDemo`, click Annotate,
+        // click a control, type a note, Save. Writes AGENTATION_NOTES.md in the
+        // working directory.
+        .executableTarget(
+            name: "AnnotKitDemo",
+            dependencies: ["AnnotKit"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
         )
     ]
 )

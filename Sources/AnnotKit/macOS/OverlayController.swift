@@ -21,7 +21,7 @@ public final class OverlayController {
     public func mount() {
         guard panel == nil, let screen = NSScreen.main else { return }
 
-        let panel = NSPanel(
+        let panel = KeyablePanel(
             contentRect: frame(for: .idle, on: screen),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -93,5 +93,14 @@ public final class OverlayController {
             )
         }
     }
+}
+
+/// A borderless, non-activating panel that can still become key, so the note
+/// composer's text field accepts keyboard input (a plain borderless panel
+/// cannot become key, which silently blocks typing). `.nonactivatingPanel`
+/// keeps it from stealing app activation on hover; `canBecomeKey` lets a click
+/// into the composer focus the field.
+private final class KeyablePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
 }
 #endif
