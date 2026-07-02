@@ -380,21 +380,20 @@ private struct AnnotationCard<Footer: View>: View {
 /// capability — no dead buttons (CLAUDE.md) — so Agentation's `settings`/`eye`
 /// (no settings model, no preview capability here) are deliberately omitted.
 ///
-/// Left to right: annotate toggle (always), then two DISTINCT persist actions
-/// (Copy to the clipboard as markdown, and Export to `AGENTATION_NOTES.md`), and
-/// a destructive clear. Copy/Export/Clear are ALWAYS present and are disabled and
-/// dimmed while `pending` is empty (acting on zero notes is a no-op); a count
-/// badge overlays the pill only while notes exist. The pencil toggle exits
-/// annotate mode, so there is no separate close/exit control. Copy and Export
-/// never clear the retained set (only Clear does), so the same notes can be both
-/// copied and exported. Copy/Export flow through host callbacks (they need a
-/// sink); toggle needs the controller (activation); clear reads/writes the
-/// session directly.
+/// Left to right: annotate toggle (always), then — ONLY while annotating — two
+/// DISTINCT persist actions (Copy to the clipboard as markdown, and Export to
+/// `AGENTATION_NOTES.md`) and a destructive clear. Idle shows JUST the pencil; the
+/// tools appear when annotate mode is on, and are disabled/dimmed while `pending`
+/// is empty (acting on zero notes is a no-op). A count badge overlays the pill
+/// whenever notes exist. The pencil toggle exits annotate mode, so there is no
+/// separate close/exit control. Copy and Export never clear the retained set (only
+/// Clear does), so the same notes can be both copied and exported. Copy/Export
+/// flow through host callbacks (they need a sink); toggle needs the controller
+/// (activation); clear reads/writes the session directly.
 ///
 /// The pill itself is rendered unconditionally and is NEVER gated on an entrance
-/// flag, so it stays visible across idle<->annotate and before/during/after
-/// capturing a note; the note-action cluster stays put and only its enabled/dim
-/// state animates as `pending` changes.
+/// flag, so it stays visible across idle<->annotate; the note-action cluster
+/// animates in and out as annotate mode toggles.
 private struct ToolbarView: View {
     @ObservedObject var session: AnnotationSession
     let onToggle: () -> Void
@@ -416,23 +415,26 @@ private struct ToolbarView: View {
                 action: onToggle
             )
 
-            // Copy/Export/Clear are always present; they dim and disable while
-            // there are no notes (acting on zero notes is a no-op).
-            PillButton(
-                icon: justCopied ? .check : .copy,
-                isDisabled: !hasNotes,
-                glyphTint: justCopied ? PillStyle.success : nil,
-                tooltip: justCopied ? "Copied" : "Copy notes (Markdown)",
-                action: { onCopy(); flashCopied() }
-            )
-            PillButton(
-                icon: .download,
-                isDisabled: !hasNotes,
-                tooltip: "Export to AGENTATION_NOTES.md",
-                action: onExport
-            )
-            PillButton(icon: .trash, isDestructive: true, isDisabled: !hasNotes, tooltip: "Clear notes") {
-                session.clear()
+            // Copy/Export/Clear appear ONLY in annotate mode; idle shows just the
+            // pencil. While annotating they dim/disable when there are no notes
+            // (acting on zero notes is a no-op).
+            if annotating {
+                PillButton(
+                    icon: justCopied ? .check : .copy,
+                    isDisabled: !hasNotes,
+                    glyphTint: justCopied ? PillStyle.success : nil,
+                    tooltip: justCopied ? "Copied" : "Copy notes (Markdown)",
+                    action: { onCopy(); flashCopied() }
+                )
+                PillButton(
+                    icon: .download,
+                    isDisabled: !hasNotes,
+                    tooltip: "Export to AGENTATION_NOTES.md",
+                    action: onExport
+                )
+                PillButton(icon: .trash, isDestructive: true, isDisabled: !hasNotes, tooltip: "Clear notes") {
+                    session.clear()
+                }
             }
         }
         .padding(.horizontal, 6)
@@ -452,9 +454,10 @@ private struct ToolbarView: View {
             }
         }
         .shadow(color: .black.opacity(0.4), radius: 12, y: 8)
-        // Reveal/hide the note-action cluster smoothly as pending changes. The
-        // pill has no entrance opacity/scale gate: it must ALWAYS be visible.
-        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: hasNotes)
+        // Animate the note-action cluster in/out as annotate mode toggles. The
+        // pill itself has no entrance gate: it is always visible (just the pencil
+        // when idle).
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: annotating)
     }
 
     /// Show a green check on the Copy button for a beat as success feedback, then
