@@ -152,9 +152,6 @@ public final class OverlayController: NSObject {
             onToggle: { [weak self] in self?.toggle() },
             onCopy: { [weak self] in self?.copy() },
             onExport: { [weak self] in self?.export() },
-            // The pill's X exits annotate mode; it does NOT unmount the overlay.
-            // Dev overlays stay visible so the pill is always reachable.
-            onClose: { [weak self] in self?.stop() },
             // Make the non-activating child panel key so the composer/pin-editor
             // text fields accept keystrokes (a plain borderless panel that is not
             // key silently drops typing).
@@ -212,9 +209,9 @@ public final class OverlayController: NSObject {
             // A small panel sized to the pill's real bounds, pinned to the host
             // window's bottom-right corner, so the idle overlay covers only the
             // toolbar and never swallows clicks meant for the host. Width fits the
-            // widest pill state (toggle + count badge + copy + export + clear +
-            // divider + close, ~200pt) plus its 20pt inset and the drop shadow;
-            // height fits the 44pt pill plus the same inset. Anchored to the
+            // widest pill state (toggle + count badge + copy + export + clear,
+            // ~180pt) plus its 20pt inset and the drop shadow; height fits the 44pt
+            // pill plus the same inset. Anchored to the
             // window so it rides along on move and is recomputed on resize.
             let size = NSSize(width: 240, height: 104)
             return NSRect(

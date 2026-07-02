@@ -36,13 +36,11 @@ private struct AnnotationPin: View {
     let number: Int
     let anchor: CGPoint
 
-    @State private var editing = false
-
     private let diameter: CGFloat = 20
 
     var body: some View {
         Button {
-            editing = true
+            session.beginEditing(id: note.id)
         } label: {
             Text("\(number)")
                 .font(.caption2.monospacedDigit().bold())
@@ -54,103 +52,20 @@ private struct AnnotationPin: View {
         }
         .buttonStyle(.plain)
         .shadow(color: .black.opacity(0.3), radius: 3, y: 1)
-        // Open the editor on hover; do NOT close on hover-exit. Pure hover-driven
-        // popovers are finicky — moving the pointer from the pin INTO the popover
-        // can dismiss it — so this uses the stable "open on hover, close
-        // explicitly" rule: the popover owns dismissal (click-away / Save / Delete
-        // / Esc).
+        // Open the editor on hover, but ONLY when nothing else is open, so an
+        // incidental hover over a pin never tears down an in-progress composer or
+        // another pin's edit (moving the mouse must not destroy typed text). An
+        // explicit tap (the Button above) can still open or switch at will. Do NOT
+        // close on hover-exit; the in-overlay edit card (rendered by
+        // ``OverlayView``, above the pins) owns dismissal: Save / Delete / Escape /
+        // click-away, routed through ``AnnotationSession/editingNoteID``.
         .onHover { inside in
-            if inside { editing = true }
-        }
-        .popover(isPresented: $editing, arrowEdge: .top) {
-            PinPopover(session: session, note: note, isPresented: $editing)
+            if inside, session.selected == nil, session.editingNoteID == nil {
+                session.beginEditing(id: note.id)
+            }
         }
         // The overlay ZStack is `.topLeading`, so centering the pin on the
         // element's top-left corner is `anchor - radius`.
         .offset(x: anchor.x - diameter / 2, y: anchor.y - diameter / 2)
-    }
-}
-
-/// The pin's edit popover: an auto-focused, inline-editable comment field plus
-/// Save and Delete. Reuses Feature 3's focus pattern (`@FocusState` + `.onAppear`),
-/// ⌘Return to save, and Escape to cancel. Save edits the retained note in place;
-/// Delete drops it from `pending`, so the `ForEach` reflows the numbers and the
-/// count badge automatically.
-private struct PinPopover: View {
-    @ObservedObject var session: AnnotationSession
-    let note: AnnotationNote
-    @Binding var isPresented: Bool
-
-    @State private var draft: String
-    @FocusState private var focused: Bool
-
-    init(session: AnnotationSession, note: AnnotationNote, isPresented: Binding<Bool>) {
-        self.session = session
-        self.note = note
-        self._isPresented = isPresented
-        self._draft = State(initialValue: note.comment)
-    }
-
-    /// Save the edited comment (Enter or the Save button) and dismiss.
-    private func save() {
-        guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        session.updateNote(id: note.id, comment: draft)
-        isPresented = false
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text(note.selector)
-                    .font(.caption.monospaced())
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                Text("⏎ save · ⇧⏎ newline")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
-            }
-            .frame(width: 240)
-            TextField("Describe the change", text: $draft, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(2 ... 5)
-                .frame(width: 240)
-                .focused($focused)
-                // Enter saves the edit; Shift+Enter inserts a newline.
-                .onKeyPress(keys: [.return]) { key in
-                    if key.modifiers.contains(.shift) { return .ignored }
-                    save()
-                    return .handled
-                }
-            HStack {
-                Button(role: .destructive) {
-                    session.deleteNote(id: note.id)
-                    isPresented = false
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                        .foregroundStyle(.red)
-                }
-                .tint(.red)
-                Spacer()
-                Button("Save") { save() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            }
-            .frame(width: 240)
-        }
-        .padding(12)
-        // Auto-focus the field on appearance (same pattern as the composer). The
-        // popover presents in its own window, so `makeKey` on the parent panel does
-        // not apply here; re-assert focus on the next tick to beat the same
-        // first-responder race the composer guards against.
-        .onAppear {
-            focused = true
-            Task { @MainActor in focused = true }
-        }
-        #if os(macOS)
-        // Escape cancels without saving (macOS/tvOS-only API; iOS dismisses the
-        // popover by tapping away).
-        .onExitCommand { isPresented = false }
-        #endif
     }
 }

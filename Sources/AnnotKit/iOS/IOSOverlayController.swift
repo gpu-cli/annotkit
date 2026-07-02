@@ -51,8 +51,7 @@ public final class IOSOverlayController: NSObject {
                 surfaceSize: proxy.size,
                 onToggle: { [weak self] in self?.toggle() },
                 onCopy: { [weak self] in self?.copy() },
-                onExport: { [weak self] in self?.export() },
-                onClose: { [weak self] in self?.unmount() }
+                onExport: { [weak self] in self?.export() }
             )
         }
         .ignoresSafeArea())

@@ -38,7 +38,6 @@ enum PillStyle {
     static let hoverBackground = Color.white.opacity(0.1)
     static let destructive = Color(hex: "EF4444")
     static let success = Color(hex: "22C55E")
-    static let divider = Color.white.opacity(0.08)
 }
 
 // MARK: - Lucide icon model

@@ -23,6 +23,11 @@ public final class AnnotationSession: ObservableObject {
     @Published public private(set) var pending: [AnnotationNote] = []
     @Published public private(set) var hovered: Element?
     @Published public private(set) var selected: Element?
+    /// The id of the retained note whose in-overlay edit card is open, or nil when
+    /// no editor is showing. UI-only: drives which pin's edit card the overlay
+    /// renders. Mutually exclusive with ``selected`` (the composer) — opening one
+    /// closes the other — so exactly one card is ever on screen.
+    @Published public private(set) var editingNoteID: String?
 
     private let source: ElementSource
     private let sink: AnnotationSink
@@ -58,6 +63,8 @@ public final class AnnotationSession: ObservableObject {
         // Dismiss any open composer so it does not linger (and get clipped by a
         // resized idle overlay) after leaving annotate mode.
         selected = nil
+        // Leaving annotate mode hides the pins, so any open pin editor must go too.
+        editingNoteID = nil
     }
 
     /// Update the hover highlight for a screen point (AX top-left coordinates).
@@ -74,6 +81,9 @@ public final class AnnotationSession: ObservableObject {
     @discardableResult
     public func select(atAXPoint point: CGPoint) -> Element? {
         guard mode == .annotating else { return nil }
+        // Any catcher tap dismisses an open pin editor: a tap on empty space is a
+        // click-away close, and a tap on an element hands the stage to the composer.
+        editingNoteID = nil
         selected = source.hitTest(point)
         return selected
     }
@@ -135,6 +145,21 @@ public final class AnnotationSession: ObservableObject {
     public func clear() {
         pending.removeAll()
         selected = nil
+        // Clearing all notes removes every pin, so close any open editor.
+        editingNoteID = nil
+    }
+
+    /// Open the in-overlay edit card for a retained note (a pin tap/hover). Nils
+    /// ``selected`` so the composer and the pin editor are mutually exclusive —
+    /// exactly one card shows at a time.
+    public func beginEditing(id: String) {
+        editingNoteID = id
+        selected = nil
+    }
+
+    /// Close the pin edit card (Save, Delete, Escape, or click-away).
+    public func endEditing() {
+        editingNoteID = nil
     }
 
     /// Drop the current selection without capturing a note (composer cancel).

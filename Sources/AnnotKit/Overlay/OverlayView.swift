@@ -31,8 +31,6 @@ struct OverlayView: View {
     /// Export the retained notes to `AGENTATION_NOTES.md` (host wires
     /// ``NotesFileSink``). Non-clearing and idempotent.
     let onExport: () -> Void
-    /// Dismiss the whole overlay (macOS -> `unmount()`, iOS -> hide the window).
-    let onClose: () -> Void
     /// Make the host panel key so the composer's text field accepts keystrokes.
     /// macOS passes `panel.makeKey()` (the child panel is non-activating, so a
     /// programmatic focus needs the window made key first); iOS uses the default
@@ -42,10 +40,9 @@ struct OverlayView: View {
     var onFocusRequest: () -> Void = {}
 
     @State private var comment: String = ""
-    /// Drives first-responder focus of the composer field so a click on an
-    /// element lets the user type immediately (Feature 3). The same
-    /// `@FocusState` + `.onAppear` pattern backs the pin edit popover.
-    @FocusState private var composerFocused: Bool
+    /// Draft text for the pin edit card, seeded from the note's comment when
+    /// editing begins (see the `editingNoteID` seeding hook on the ZStack).
+    @State private var editDraft: String = ""
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -67,14 +64,28 @@ struct OverlayView: View {
                 AnnotationPins(session: session)
             }
 
+            // Exactly one card shows at a time. The composer (a new note on the
+            // selected element) wins any theoretical tie; the pin edit card shows
+            // only when nothing is selected but a pin is being edited. Session-level
+            // mutual exclusion (`beginEditing` nils `selected`; `select` nils
+            // `editingNoteID`) keeps these two states from ever both being set.
             if session.selected != nil {
                 composer
+            } else if let (note, anchor) = editingCardData {
+                editCard(note: note, anchor: anchor)
             }
 
             toolbar
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
+        // Seed the edit draft when a pin editor opens (or switches pin→pin, where
+        // the shared card is not re-inserted so `.onAppear` won't refire).
+        .onChange(of: session.editingNoteID) { _, id in
+            if let id, let note = session.pending.first(where: { $0.id == id }) {
+                editDraft = note.comment
+            }
+        }
     }
 
     /// Full-screen hover/tap surface, active only while annotating. Behind the
@@ -99,88 +110,111 @@ struct OverlayView: View {
         }
     }
 
+    /// The WRITE card: a shared ``AnnotationCard`` anchored to the selected
+    /// element, with a Cancel / Add note footer. Enter submits, Escape cancels.
     private var composer: some View {
-        let placement = composerPlacement
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Text(session.selectionLabel ?? "Element")
-                    .font(.headline)
-                    .lineLimit(1)
-                Spacer(minLength: 8)
-                // Enter submits; Shift+Enter inserts a newline; Esc cancels.
-                Text("⏎ save · ⇧⏎ newline")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
-            }
-            .frame(width: 260)
-            TextField("Describe the change", text: $comment, axis: .vertical)
-                .textFieldStyle(.roundedBorder)
-                .lineLimit(2 ... 5)
-                .frame(width: 260)
-                .focused($composerFocused)
-                // Enter submits the note; Shift+Enter falls through to insert a
-                // newline in the multiline field.
-                .onKeyPress(keys: [.return]) { key in
-                    if key.modifiers.contains(.shift) { return .ignored }
-                    addNote()
-                    return .handled
-                }
+        AnnotationCard(
+            header: session.selectionLabel ?? "Element",
+            text: $comment,
+            placement: composerPlacement,
+            // Re-focus when the selection moves element→element (the shared card
+            // is not re-inserted, so `.onAppear` won't refire).
+            focusKey: session.selected?.id ?? "",
+            onSubmit: { addNote() },
+            onCancel: {
+                comment = ""
+                session.cancelSelection()
+            },
+            onFocusRequest: onFocusRequest
+        ) {
             HStack {
                 Button("Cancel") {
                     comment = ""
                     session.cancelSelection()
                 }
-                // Escape cancels the composer (reuses the Cancel action). The
-                // panel is key while typing, so the shortcut reaches this button.
-                .keyboardShortcut(.cancelAction)
                 Spacer()
                 Button("Add note") { addNote() }
                     .buttonStyle(.borderedProminent)
                     .disabled(comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
-            .frame(width: 260)
-        }
-        .padding(12)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        // Caret in the gap, tying the card back to the highlighted element. It
-        // uses the SAME material as the card so it reads as the card's pointer
-        // (not an accent), points up when the card is below (down when flipped
-        // above), and slides horizontally (`caretDX`) to line up with the
-        // element's center. Added before the shadow so card and caret cast one
-        // unified shadow.
-        .overlay(alignment: placement.caretPointsUp ? .top : .bottom) {
-            ComposerCaret(pointsUp: placement.caretPointsUp)
-                .fill(.regularMaterial)
-                .frame(width: 16, height: 8)
-                .offset(x: placement.caretDX, y: placement.caretPointsUp ? -7 : 7)
-        }
-        .shadow(radius: 12)
-        .offset(x: placement.origin.x, y: placement.origin.y)
-        // Track the selection: slide the composer when it moves from one element
-        // to the next. Keyed on the selection (not `axOrigin`) so a host-window
-        // drag keeps the composer glued instead of lagging behind.
-        .animation(.spring(response: 0.28, dampingFraction: 0.9), value: session.selected)
-        // Focus on first appearance (nil -> element) and on element -> element
-        // switches (the composer is not re-inserted, so `.onAppear` won't fire).
-        .onAppear { focusComposer() }
-        .onChange(of: session.selected) { _, newValue in
-            if newValue == nil { composerFocused = false } else { focusComposer() }
         }
     }
 
-    /// Focus the composer text field, making the host panel key FIRST so the
-    /// non-activating child window accepts keystrokes. If focus does not stick on
-    /// first appearance on some macOS builds (a known `@FocusState`-set-during-
-    /// insertion race), the fallback is to defer the `composerFocused = true` to
-    /// the next runloop tick.
-    private func focusComposer() {
-        onFocusRequest()
-        composerFocused = true
-        // A @FocusState set in the same layout pass that inserts the field can be
-        // dropped on first appearance (the classic first-responder race); re-assert
-        // on the next main-actor tick so the first click reliably lands the cursor.
-        Task { @MainActor in composerFocused = true }
+    /// The EDIT card: the SAME shared ``AnnotationCard`` chrome as the composer,
+    /// anchored to the tapped pin instead of an element, with a Delete / Save
+    /// footer. Enter saves, Escape cancels, and Save/Delete/click-away all end
+    /// editing. Because it lives in the overlay panel (not a system `.popover`),
+    /// it inherits the composer's reliable `panel.makeKey()` focus.
+    private func editCard(note: AnnotationNote, anchor: CGPoint) -> some View {
+        AnnotationCard(
+            header: note.selector,
+            text: $editDraft,
+            placement: editCardPlacement(anchor: anchor),
+            // Re-focus when the editor moves pin→pin without re-insertion.
+            focusKey: note.id,
+            onSubmit: { saveEdit(note) },
+            onCancel: { session.endEditing() },
+            onFocusRequest: onFocusRequest
+        ) {
+            HStack {
+                Button(role: .destructive) {
+                    session.deleteNote(id: note.id)
+                    session.endEditing()
+                } label: {
+                    Label("Delete", systemImage: "trash")
+                        .foregroundStyle(.red)
+                }
+                .tint(.red)
+                Spacer()
+                Button("Save") { saveEdit(note) }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+    }
+
+    /// Save the edited comment (Enter or the Save button) and close the editor.
+    private func saveEdit(_ note: AnnotationNote) {
+        guard !editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        session.updateNote(id: note.id, comment: editDraft)
+        session.endEditing()
+    }
+
+    /// Resolve the (note, anchor) pair for the currently-open pin editor, or nil
+    /// when nothing is being edited (or the note has no drawable anchor). Drives
+    /// the ZStack's `else if` branch so the edit card renders in-overlay.
+    private var editingCardData: (AnnotationNote, CGPoint)? {
+        guard let id = session.editingNoteID,
+              let note = session.pending.first(where: { $0.id == id }),
+              let anchor = note.anchor else { return nil }
+        return (note, anchor)
+    }
+
+    /// Placement for the edit card, reusing ``ComposerPlacement/resolve`` by
+    /// treating the pin as a small element rect at its window-local anchor.
+    /// `resolve` subtracts `axOrigin` internally, so re-adding it here lands the
+    /// synthetic frame exactly on the pin; the 20pt pin diameter is used as the
+    /// element size so the caret aligns to the pin's center (pointing up at it,
+    /// flipping above when it would spill off the bottom).
+    private func editCardPlacement(anchor: CGPoint) -> ComposerPlacement {
+        let pin: CGFloat = 20 // AnnotationPin.diameter
+        // The pin is DRAWN centered on `anchor` (AnnotationPin offsets by
+        // -diameter/2), so the synthetic element rect must be centered on the pin
+        // too: window-local top-left = anchor - pin/2. `resolve` subtracts
+        // `axOrigin`, so add it back here. This points the caret at the pin's real
+        // center with the intended gap (the old `anchor` top-left was off by pin/2).
+        let elementFrame = CGRect(
+            x: anchor.x - pin / 2 + axOrigin.x,
+            y: anchor.y - pin / 2 + axOrigin.y,
+            width: pin,
+            height: pin
+        )
+        return ComposerPlacement.resolve(
+            elementFrame: elementFrame,
+            axOrigin: axOrigin,
+            surfaceSize: surfaceSize,
+            composerSize: composerEstimatedSize
+        )
     }
 
     /// Capture the pending note. Snapshots the pin anchor BEFORE `addNote` clears
@@ -230,12 +264,114 @@ struct OverlayView: View {
                     session: session,
                     onToggle: onToggle,
                     onCopy: onCopy,
-                    onExport: onExport,
-                    onClose: onClose
+                    onExport: onExport
                 )
                 .padding(20)
             }
         }
+    }
+}
+
+/// The shared floating card behind BOTH the composer (write a new note) and the
+/// pin editor (edit an existing note), so the two can never drift apart. It owns
+/// all the chrome — the `.regularMaterial` rounded background, the gray
+/// ``ComposerCaret`` pointing at its anchor, the drop shadow, the
+/// ``ComposerPlacement`` offset, first-responder focus (host `makeKey` +
+/// `@FocusState` + a next-tick re-assert to beat the insertion race), and the
+/// keyboard contract (Enter submits, Shift+Enter inserts a newline, Escape
+/// cancels on macOS). The two flows differ ONLY in the `header` text, the `text`
+/// binding, the `placement` anchor, and the `footer` button row.
+private struct AnnotationCard<Footer: View>: View {
+    /// Header label: the composer shows the element's selection label; the editor
+    /// shows the note's selector.
+    let header: String
+    /// The edited text: `$comment` for the composer, `$editDraft` for the editor.
+    @Binding var text: String
+    /// Adjacent, on-screen placement (offset + caret direction/offset), computed by
+    /// ``OverlayView`` from the selected element or the pin anchor.
+    let placement: ComposerPlacement
+    /// A value that changes when the card should re-focus WITHOUT being re-inserted
+    /// (element→element for the composer, pin→pin for the editor). Using this (not
+    /// `.id()`) preserves the smooth slide between anchors.
+    let focusKey: String
+    /// Enter (no Shift) and the trailing footer button.
+    let onSubmit: () -> Void
+    /// Escape (macOS) and the leading footer button (Cancel for the composer).
+    let onCancel: () -> Void
+    /// Make the host panel key so the field accepts keystrokes (`panel.makeKey()`
+    /// on macOS; a no-op on iOS, where `@FocusState` alone raises the keyboard).
+    let onFocusRequest: () -> Void
+    /// The differing two-button row (Cancel/Add note vs Delete/Save).
+    @ViewBuilder let footer: () -> Footer
+
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text(header)
+                    .font(.headline)
+                    .lineLimit(1)
+                Spacer(minLength: 8)
+                // Enter submits; Shift+Enter inserts a newline; Esc cancels.
+                Text("⏎ save · ⇧⏎ newline")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+            }
+            .frame(width: 260)
+            TextField("Describe the change", text: $text, axis: .vertical)
+                .textFieldStyle(.roundedBorder)
+                .lineLimit(2 ... 5)
+                .frame(width: 260)
+                .focused($focused)
+                // Enter submits; Shift+Enter falls through to insert a newline in
+                // the multiline field.
+                .onKeyPress(keys: [.return]) { key in
+                    if key.modifiers.contains(.shift) { return .ignored }
+                    onSubmit()
+                    return .handled
+                }
+            footer()
+                .frame(width: 260)
+        }
+        .padding(12)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        // Caret in the gap, tying the card back to its anchor (element or pin). It
+        // uses the SAME material as the card so it reads as the card's pointer (not
+        // an accent), points up when the card is below (down when flipped above),
+        // and slides horizontally (`caretDX`) to line up with the anchor's center.
+        // Added before the shadow so card and caret cast one unified shadow.
+        .overlay(alignment: placement.caretPointsUp ? .top : .bottom) {
+            ComposerCaret(pointsUp: placement.caretPointsUp)
+                .fill(.regularMaterial)
+                .frame(width: 16, height: 8)
+                .offset(x: placement.caretDX, y: placement.caretPointsUp ? -7 : 7)
+        }
+        .shadow(radius: 12)
+        .offset(x: placement.origin.x, y: placement.origin.y)
+        // Slide the card when its anchor moves (element→element or pin→pin). Keyed
+        // on the placement (Equatable) so a host-window drag keeps the card glued
+        // instead of lagging behind.
+        .animation(.spring(response: 0.28, dampingFraction: 0.9), value: placement)
+        // Focus on first appearance and on anchor switches that don't re-insert
+        // the view (so `.onAppear` won't refire).
+        .onAppear { focus() }
+        .onChange(of: focusKey) { _, _ in focus() }
+        #if os(macOS)
+        // Escape cancels without committing (macOS-only API; iOS has no Esc key).
+        .onExitCommand { onCancel() }
+        #endif
+    }
+
+    /// Focus the text field, making the host panel key FIRST so the non-activating
+    /// child window accepts keystrokes. A `@FocusState` set in the same layout pass
+    /// that inserts the field can be dropped on first appearance (the classic
+    /// first-responder race), so re-assert on the next main-actor tick.
+    private func focus() {
+        onFocusRequest()
+        focused = true
+        Task { @MainActor in focused = true }
     }
 }
 
@@ -244,23 +380,26 @@ struct OverlayView: View {
 /// capability — no dead buttons (CLAUDE.md) — so Agentation's `settings`/`eye`
 /// (no settings model, no preview capability here) are deliberately omitted.
 ///
-/// Left to right: annotate toggle (always), then — only while notes exist — a
-/// count badge, then two DISTINCT persist actions (Copy to the clipboard as
-/// markdown, and Export to `AGENTATION_NOTES.md`), and a destructive clear, then
-/// a divider and a close/exit (always). Copy and Export never clear the retained
-/// set (only Clear does), so the same notes can be both copied and exported.
-/// Copy/Export flow through host callbacks (they need a sink); toggle needs the
-/// controller (activation); clear reads/writes the session directly.
+/// Left to right: annotate toggle (always), then two DISTINCT persist actions
+/// (Copy to the clipboard as markdown, and Export to `AGENTATION_NOTES.md`), and
+/// a destructive clear. Copy/Export/Clear are ALWAYS present and are disabled and
+/// dimmed while `pending` is empty (acting on zero notes is a no-op); a count
+/// badge overlays the pill only while notes exist. The pencil toggle exits
+/// annotate mode, so there is no separate close/exit control. Copy and Export
+/// never clear the retained set (only Clear does), so the same notes can be both
+/// copied and exported. Copy/Export flow through host callbacks (they need a
+/// sink); toggle needs the controller (activation); clear reads/writes the
+/// session directly.
 ///
 /// The pill itself is rendered unconditionally and is NEVER gated on an entrance
 /// flag, so it stays visible across idle<->annotate and before/during/after
-/// capturing a note; only the note-action cluster animates in and out.
+/// capturing a note; the note-action cluster stays put and only its enabled/dim
+/// state animates as `pending` changes.
 private struct ToolbarView: View {
     @ObservedObject var session: AnnotationSession
     let onToggle: () -> Void
     let onCopy: () -> Void
     let onExport: () -> Void
-    let onClose: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var justCopied = false
@@ -277,21 +416,24 @@ private struct ToolbarView: View {
                 action: onToggle
             )
 
-            if hasNotes {
-                PillButton(
-                    icon: justCopied ? .check : .copy,
-                    glyphTint: justCopied ? PillStyle.success : nil,
-                    tooltip: justCopied ? "Copied" : "Copy notes (Markdown)",
-                    action: { onCopy(); flashCopied() }
-                )
-                PillButton(icon: .download, tooltip: "Export to AGENTATION_NOTES.md", action: onExport)
-                PillButton(icon: .trash, isDestructive: true, tooltip: "Clear notes") {
-                    session.clear()
-                }
+            // Copy/Export/Clear are always present; they dim and disable while
+            // there are no notes (acting on zero notes is a no-op).
+            PillButton(
+                icon: justCopied ? .check : .copy,
+                isDisabled: !hasNotes,
+                glyphTint: justCopied ? PillStyle.success : nil,
+                tooltip: justCopied ? "Copied" : "Copy notes (Markdown)",
+                action: { onCopy(); flashCopied() }
+            )
+            PillButton(
+                icon: .download,
+                isDisabled: !hasNotes,
+                tooltip: "Export to AGENTATION_NOTES.md",
+                action: onExport
+            )
+            PillButton(icon: .trash, isDestructive: true, isDisabled: !hasNotes, tooltip: "Clear notes") {
+                session.clear()
             }
-
-            divider
-            PillButton(icon: .close, tooltip: "Exit annotate mode", action: onClose)
         }
         .padding(.horizontal, 6)
         .padding(.vertical, 8) // 28pt buttons + 8*2 -> 44pt pill height
@@ -339,13 +481,6 @@ private struct ToolbarView: View {
             .overlay(Capsule().strokeBorder(Color.black.opacity(0.35), lineWidth: 1))
             .accessibilityLabel("\(session.pending.count) pending notes")
     }
-
-    private var divider: some View {
-        Rectangle()
-            .fill(PillStyle.divider)
-            .frame(width: 1, height: 20)
-            .padding(.horizontal, 2)
-    }
 }
 
 /// A single 28pt circular icon button in the pill: transparent when idle, a faint
@@ -356,6 +491,9 @@ private struct PillButton: View {
     let icon: LucideIcon
     var isActive: Bool = false
     var isDestructive: Bool = false
+    /// Dims the glyph and makes the button a true no-op (used by copy/export/clear
+    /// while there are no notes to act on).
+    var isDisabled: Bool = false
     var glyphTint: Color? = nil
     let tooltip: String
     let action: () -> Void
@@ -364,6 +502,9 @@ private struct PillButton: View {
     @State private var hovering = false
 
     private var glyphColor: Color {
+        // Disabled outranks every other state: a dimmed glyph with no hover/active
+        // treatment reads as unavailable.
+        if isDisabled { return PillStyle.iconIdle.opacity(0.4) }
         if let glyphTint { return glyphTint }
         if isDestructive && hovering { return .white }
         if isActive { return .white }
@@ -373,7 +514,8 @@ private struct PillButton: View {
     // Active state is carried by `glyphColor` (white when active) with NO circle
     // fill, so the annotate toggle reads as a bright glyph, not a blue chip.
     private var fillColor: Color {
-        if hovering { return isDestructive ? PillStyle.destructive : PillStyle.hoverBackground }
+        // No hover wash while disabled — the button must look inert.
+        if hovering && !isDisabled { return isDestructive ? PillStyle.destructive : PillStyle.hoverBackground }
         return .clear
     }
 
@@ -388,9 +530,12 @@ private struct PillButton: View {
                 .contentShape(Circle())
         }
         .buttonStyle(PressablePillButtonStyle(reduceMotion: reduceMotion))
+        .disabled(isDisabled)
         .pillToolTip(tooltip)
         .accessibilityLabel(tooltip)
         .onHover { value in
+            // Ignore hover entirely while disabled so no wash/glyph change leaks in.
+            guard !isDisabled else { return }
             guard !reduceMotion else { hovering = value; return }
             withAnimation(.easeOut(duration: 0.15)) { hovering = value }
         }
