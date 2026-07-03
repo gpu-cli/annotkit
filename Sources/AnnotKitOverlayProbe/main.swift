@@ -126,6 +126,24 @@ func approxEqual(_ a: CGRect, _ b: CGRect, tol: CGFloat = 2) -> Bool {
     abs(a.width - b.width) < tol && abs(a.height - b.height) < tol
 }
 
+func approxEqualPt(_ a: CGPoint, _ b: CGPoint, tol: CGFloat = 2) -> Bool {
+    abs(a.x - b.x) < tol && abs(a.y - b.y) < tol
+}
+
+/// The idle pill's panel frame for a given host frame — MUST mirror
+/// `OverlayController.frame(for: .idle)` (a 240x104 panel pinned to the host's
+/// bottom-right corner). Phase 3 asserts the pill re-anchors here after a silent
+/// post-layout growth.
+func idleFrame(_ host: CGRect) -> CGRect {
+    CGRect(x: host.maxX - 240, y: host.minY, width: 240, height: 104)
+}
+
+// Phase 3 frames: a tiny pre-layout frame that grows to a large final frame,
+// mirroring the real capture (host attached at ~109x113, real final frame
+// 1291x887). Off-screen so the harness never disturbs the display.
+let resizeSmall = NSRect(x: -12000, y: -12000, width: 120, height: 100)
+let resizeLarge = NSRect(x: -12000, y: -12000, width: 1291, height: 887)
+
 /// AX top-left screen rect of a Cocoa (bottom-left) window frame.
 @MainActor
 func axRect(ofCocoa frame: CGRect) -> CGRect {
@@ -184,6 +202,75 @@ func makeHostWindow(title: String) -> HostControls {
     window.contentView = content
     window.makeKeyAndOrderFront(nil)
     return HostControls(window: window, primary: primary, secondary: secondary, field: field)
+}
+
+// MARK: - Plain host factory (Phase 3 regression)
+
+/// On-screen layout for the Phase 3 growth: an origin + grown size chosen so BOTH
+/// the host and the grown overlay panel stay fully on the main screen with margin. A
+/// partially off-screen window gets constrained by AppKit (host AND child panel),
+/// which would confound the geometry assertions; a fully on-screen frame grows
+/// exactly as asked. The origin is shared by the small and grown frames, so the
+/// growth is a pure resize (no move) and the child pill is never dragged by
+/// parent-move glue — WITHOUT the fix the pill provably stays at the small attach
+/// corner. Grown size aims for the real capture's 1291x887, clamped to fit.
+@MainActor
+func resizeLayout() -> (origin: CGPoint, grownSize: CGSize) {
+    let vis = NSScreen.main?.visibleFrame ?? CGRect(x: 0, y: 0, width: 1440, height: 900)
+    let grownSize = CGSize(
+        width: min(resizeLarge.width, vis.width - 240),
+        height: min(resizeLarge.height, vis.height - 240)
+    )
+    let origin = CGPoint(x: vis.midX - grownSize.width / 2, y: vis.midY - grownSize.height / 2)
+    return (origin, grownSize)
+}
+
+/// A minimal titled host at the small pre-layout frame, anchored at the grown frame's
+/// origin so the growth is a pure, fully-on-screen resize. No controls needed —
+/// Phase 3 inspects only the overlay panel's geometry, not the host's AX tree. A
+/// fully REAL window (it really moves/resizes) so the overlay's child-window glue,
+/// axOrigin math, and hit-test all see real geometry — a fake overridden `frame`
+/// desynced the real backing window from what the controller read and corrupted the
+/// child glue.
+@MainActor
+func makeResizeHost(title: String) -> NSWindow {
+    let window = NSWindow(
+        contentRect: resizeSmall,
+        styleMask: [.titled, .closable],
+        backing: .buffered,
+        defer: false
+    )
+    window.title = title
+    window.contentView = NSView(frame: NSRect(origin: .zero, size: resizeSmall.size))
+    window.makeKeyAndOrderFront(nil)
+    window.setFrameOrigin(resizeLayout().origin)
+    return window
+}
+
+/// Model the diagnosed condition: the host's post-layout growth does NOT deliver
+/// `didMove`/`didResize` to the controller. In the real bug the content-driven
+/// growth simply never posts them (verified: a plain `setFrame`/`setContentSize`
+/// DOES post, and the existing observers already handle that — which is exactly why
+/// it could not reproduce this bug). Detaching the controller's geometry observers
+/// reproduces that "notification never arrives" state, leaving the post-attach
+/// settle poll (the fix) as the ONLY re-sync path — precisely what this regression
+/// must exercise. The observers are pre-existing code, NOT part of the fix, so
+/// removing them is a faithful stand-in for the growth that never notified them.
+@MainActor
+func detachGeometryObservers(_ controller: OverlayController, from host: NSWindow) {
+    let center = NotificationCenter.default
+    center.removeObserver(controller, name: NSWindow.didMoveNotification, object: host)
+    center.removeObserver(controller, name: NSWindow.didResizeNotification, object: host)
+    center.removeObserver(controller, name: NSWindow.didChangeScreenNotification, object: host)
+}
+
+/// The host's FINAL frame: the same origin as the attached frame, grown to the (fit)
+/// large size. Keeping the origin fixed means the child overlay panel is not dragged
+/// by the parent-move glue, so WITHOUT the fix the panel provably stays at the small
+/// attach position (the regression), and WITH it the settle poll re-anchors it.
+@MainActor
+func grownFrame(from base: CGRect) -> CGRect {
+    CGRect(origin: base.origin, size: resizeLayout().grownSize)
 }
 
 // MARK: - SwiftUI host (mirrors AnnotKitDemo's DemoView) for issue-2 coverage
@@ -506,6 +593,15 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         passPins = passPins && cond
     }
 
+    // ---- Phase-3 pass tracking (geometry-settle / mis-placed-pill regression) ----
+    var passResize = true
+    func check3(_ cond: Bool, _ msg: String) {
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+        passResize = passResize && cond
+    }
+    var resizeController: OverlayController?
+    var resizeSession: AnnotationSession?
+
     func phase2() {
         print("\n--- Phase 2: issue 1 — retention + copy/export + pill persistence (through the REAL overlay) ---")
         try? FileManager.default.removeItem(atPath: notesPath)
@@ -686,15 +782,131 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         session.deleteNote(id: second.id)
         checkPins(session.pending.isEmpty, "deleting the last note empties the retained set (count badge -> hidden)")
 
-        finish()
+        phase3()
+    }
+
+    // ---- Phase 3: the mis-placed-pill regression ---------------------------
+    // Reproduces the CONFIRMED bug headlessly: a content-sized host attaches at its
+    // tiny PRE-LAYOUT frame and grows to its final frame WITHOUT posting
+    // didMove/didResize, so the overlay's notification observers never re-fire.
+    // Before the settle-poll fix the pill stayed at the stale small corner (off the
+    // app, at the screen's top-left) and axOrigin stayed stale (dead hover). These
+    // sub-phases FAIL without the fix (panel + axOrigin stuck on the small frame) and
+    // PASS with it (the settle poll re-syncs to the final frame).
+    func phase3() {
+        print("\n--- Phase 3: mis-placed-pill regression (host grows post-attach, NO move/resize notification) ---")
+        // Retire W2's overlay + window so W3 is the only visible host `hostWindow()`
+        // can resolve to.
+        controller2?.unmount()
+        h2?.window.orderOut(nil)
+        phase3aIdle()
+    }
+
+    // ---- Phase 3a: the IDLE pill re-anchors to the host's FINAL corner ------
+    func phase3aIdle() {
+        print("\n  3a — IDLE pill re-anchors to the host's FINAL frame:")
+        let host = makeResizeHost(title: "AnnotKit Harness W3 (idle)")
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-resize-idle.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount()   // attaches at the SMALL pre-layout frame + schedules the settle poll
+        detachGeometryObservers(controller, from: host)   // the growth will NOT notify the controller
+        resizeController = controller
+        resizeSession = session
+
+        // `base` is the REAL attached frame (AppKit may place a titled window on a
+        // screen); the pill's corner is derived from it. `grown` keeps that origin so
+        // the child panel is not dragged by the parent-move glue — WITHOUT the fix it
+        // provably stays at `idleFrame(base)`.
+        let base = host.frame
+        let grown = grownFrame(from: base)
+        let attached = host.childWindows?.first?.frame
+        print("      attached idle panel=\(attached.map(fmt) ?? "nil") (host \(fmt(base)); expect \(fmt(idleFrame(base))))")
+        check3(attached.map { approxEqual($0, idleFrame(base)) } ?? false,
+               "sanity: pill attaches at the small pre-layout corner")
+
+        // Grow the host on the next runloop turn (inside the settle-poll window),
+        // with NO re-sync-triggering notification reaching the controller.
+        DispatchQueue.main.async { host.setFrame(grown, display: true) }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            let panel = host.childWindows?.first?.frame
+            print("      after growth: host=\(fmt(host.frame)) idle panel=\(panel.map(fmt) ?? "nil") " +
+                  "(expect \(fmt(idleFrame(grown))), stale would be \(fmt(idleFrame(base))))")
+            check3(panel.map { approxEqual($0, idleFrame(grown)) } ?? false,
+                   "idle pill sits at the LARGE window's corner after the post-layout growth")
+            check3(panel.map { !approxEqual($0, idleFrame(base)) } ?? false,
+                   "idle pill is no longer stuck at the stale small pre-layout corner")
+            self.resizeController?.unmount()
+            host.orderOut(nil)
+            self.phase3bAnnotate()
+        }
+    }
+
+    // ---- Phase 3b: the ANNOTATE full-window frame + axOrigin track the FINAL frame ----
+    func phase3bAnnotate() {
+        print("\n  3b — ANNOTATE full-window frame + axOrigin track the host's FINAL frame:")
+        let host = makeResizeHost(title: "AnnotKit Harness W3 (annotate)")
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-resize-annotate.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount()
+        controller.start()   // enter annotate mode BEFORE the growth; catcher covers the small frame now
+        detachGeometryObservers(controller, from: host)   // the growth will NOT notify the controller
+        resizeController = controller
+        resizeSession = session
+
+        let base = host.frame
+        let grown = grownFrame(from: base)
+        let attached = host.childWindows?.first?.frame
+        print("      annotate panel (pre-growth)=\(attached.map(fmt) ?? "nil") expect \(fmt(base))")
+        check3(attached.map { approxEqual($0, base) } ?? false,
+               "sanity: annotate catcher covers the small pre-layout frame")
+
+        DispatchQueue.main.async { host.setFrame(grown, display: true) }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            let panel = host.childWindows?.first?.frame
+            print("      after growth: host=\(fmt(host.frame)) annotate panel=\(panel.map(fmt) ?? "nil") expect \(fmt(grown))")
+            check3(panel.map { approxEqual($0, grown) } ?? false,
+                   "annotate catcher expands to the LARGE final frame (covers the whole grown app)")
+
+            // axOrigin: `syncFrameAndOrigin` sets the panel frame AND axOrigin from the
+            // SAME `host.frame` read, and in annotate mode the panel frame == host.frame,
+            // so the panel frame is the exact witness of the axOrigin the overlay now
+            // transforms hover/clicks through. Assert it tracks the LARGE frame's AX
+            // top-left (the dead-hover half of the bug), not the stale small one.
+            let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+            let axLarge = ScreenSpace.windowAXOrigin(cocoaFrame: grown, primaryHeight: primaryHeight)
+            let axSmall = ScreenSpace.windowAXOrigin(cocoaFrame: base, primaryHeight: primaryHeight)
+            let axNow = panel.map { ScreenSpace.windowAXOrigin(cocoaFrame: $0, primaryHeight: primaryHeight) }
+            print("      axOrigin now=\(axNow.map { String(format: "(%.1f, %.1f)", $0.x, $0.y) } ?? "nil") " +
+                  "largeAX=\(String(format: "(%.1f, %.1f)", axLarge.x, axLarge.y)) " +
+                  "smallAX=\(String(format: "(%.1f, %.1f)", axSmall.x, axSmall.y))")
+            check3(axNow.map { approxEqualPt($0, axLarge) } ?? false,
+                   "axOrigin matches the LARGE final frame (host AX top-left the overlay hit-tests through)")
+            check3(axNow.map { !approxEqualPt($0, axSmall) } ?? false,
+                   "axOrigin is no longer the stale small-frame origin (fixes the dead AX hit-test / dead hover)")
+
+            self.resizeController?.unmount()
+            host.orderOut(nil)
+            self.finish()
+        }
     }
 
     func finish() {
         print("\n  issue-2 (per-control hit-test through the expanded overlay): \(passIssue2 ? "PASS" : "FAIL")")
         print("  issue-1 (retention / copy / export / pill persistence):       \(pass1 ? "PASS" : "FAIL")")
         print("  Feature 1 (numbered-pin MODEL: anchors + update + delete/reflow): \(passPins ? "PASS" : "FAIL")")
+        print("  Phase 3 (mis-placed-pill regression: pill + axOrigin track FINAL frame): \(passResize ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {

@@ -1,4 +1,7 @@
 import Foundation
+#if os(macOS)
+import AppKit
+#endif
 
 /// The public entry point. A host adds the toolbar in a few lines, dev-gated:
 ///
@@ -59,6 +62,22 @@ public enum Annotation {
         notImplemented("install")
         #endif
     }
+
+    #if os(macOS)
+    /// Mount the overlay on a SPECIFIC host window instead of the auto-picked one.
+    /// Use when the app already knows the exact window to annotate: the auto-picker
+    /// (`NSApp.mainWindow ?? keyWindow ?? first visible non-panel`) can otherwise
+    /// resolve to a floating `NSPanel` when several windows are visible.
+    public static func install(on host: NSWindow, source: ElementSource? = nil, sink: AnnotationSink? = nil) {
+        guard isEnabled else { return }
+        guard controller == nil else { return }
+        let session = AnnotationSession(source: source ?? MacElementSource(), sink: sink ?? NotesFileSink())
+        let controller = OverlayController(session: session)
+        controller.mount(on: host)
+        Self.controller = controller
+        isInstalled = true
+    }
+    #endif
 
     /// Enter annotate mode (toolbar active, clicks/taps captured).
     public static func start() {

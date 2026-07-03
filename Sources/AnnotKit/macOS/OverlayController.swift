@@ -33,6 +33,15 @@ public final class OverlayController: NSObject {
     /// Host-window-local size, for clamping the composer on-screen.
     private var surfaceSize: CGSize = .zero
 
+    /// Host frame captured at the last geometry sync. A SwiftUI/content-sized host
+    /// can attach at its PRE-LAYOUT frame and grow to its final size a runloop turn
+    /// or two later without posting `didMove`/`didResize`; comparing against this
+    /// lets the post-attach settle poll tell when the frame has stabilized.
+    private var lastSyncedHostFrame: NSRect = .null
+    /// Bumped on every attach/unmount so an in-flight settle poll for a previous
+    /// host stops instead of re-syncing against a stale (or detached) window.
+    private var settleGeneration = 0
+
     public init(session: AnnotationSession) {
         self.session = session
         super.init()
@@ -54,8 +63,21 @@ public final class OverlayController: NSObject {
         attach(to: host)
     }
 
+    /// Mount the overlay on a SPECIFIC host window, bypassing the `hostWindow()`
+    /// auto-picker. Use when the caller already knows the exact window to annotate
+    /// (e.g. a settings/document window): the auto-picker
+    /// (`NSApp.mainWindow ?? keyWindow ?? first visible non-panel`) can otherwise
+    /// resolve to a floating panel when several windows are visible.
+    public func mount(on host: NSWindow) {
+        guard panel == nil else { return }
+        attach(to: host)
+    }
+
     public func unmount() {
         NotificationCenter.default.removeObserver(self)
+        // Invalidate any in-flight settle poll so it cannot re-sync a detached host.
+        settleGeneration += 1
+        lastSyncedHostFrame = .null
         if let panel {
             host?.removeChildWindow(panel)
             panel.orderOut(nil)
@@ -142,6 +164,10 @@ public final class OverlayController: NSObject {
         NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeMainNotification, object: nil)
         registerGeometryObservers(for: host)
         syncFrameAndOrigin()
+        // A content-sized host is often still at its pre-layout frame right here and
+        // grows a runloop turn or two later without posting a move/resize; poll until
+        // the host frame settles so the panel and axOrigin reflect the FINAL frame.
+        scheduleSettleResync()
     }
 
     private func makeRootView() -> OverlayView {
@@ -181,6 +207,41 @@ public final class OverlayController: NSObject {
         syncFrameAndOrigin()
     }
 
+    /// Re-sync across the next several runloop turns until the host frame stops
+    /// changing. A SwiftUI/content-sized host attaches at its PRE-LAYOUT frame and
+    /// grows to its final laid-out size a turn or two later WITHOUT posting
+    /// `didMove`/`didResize` (content-driven sizing does not fire those), so the
+    /// notification observers alone leave the panel frame and `axOrigin` stale at the
+    /// initial tiny frame — which is both the misplacement and the dead AX hit-test.
+    /// This poll catches that settle; it is bounded (self-terminating) and guarded by
+    /// a generation token so it stops on unmount / re-attach, and the observers still
+    /// cover any move/resize after the window has settled. A host created at its final
+    /// size (the demo, the probes) is already stable, so this does zero extra syncs.
+    private func scheduleSettleResync() {
+        settleGeneration += 1
+        pollSettle(generation: settleGeneration, ticksRemaining: 24, stableTicks: 0)
+    }
+
+    private func pollSettle(generation: Int, ticksRemaining: Int, stableTicks: Int) {
+        // ~40ms/turn gives layout a real runloop turn to run between polls; a burst of
+        // plain `async` blocks would drain before SwiftUI lays out and miss the growth.
+        // A 24-tick budget (~1s) is far more than layout needs.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.04) { [weak self] in
+            guard let self, generation == self.settleGeneration, let host = self.host else { return }
+            var stable = stableTicks
+            if host.frame == self.lastSyncedHostFrame {
+                stable += 1
+            } else {
+                stable = 0
+                self.syncFrameAndOrigin()
+            }
+            // Stop once the frame has held for two consecutive turns (settled) or the
+            // budget is spent; otherwise keep polling for the post-layout growth.
+            guard ticksRemaining > 1, stable < 2 else { return }
+            self.pollSettle(generation: generation, ticksRemaining: ticksRemaining - 1, stableTicks: stable)
+        }
+    }
+
     @objc private func hostWindowAppeared(_ note: Notification) {
         guard panel == nil, hostWindow() != nil else { return }
         mount()
@@ -196,6 +257,7 @@ public final class OverlayController: NSObject {
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
         axOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: host.frame, primaryHeight: primaryHeight)
         surfaceSize = host.frame.size
+        lastSyncedHostFrame = host.frame
         hostingView?.rootView = makeRootView()
     }
 
