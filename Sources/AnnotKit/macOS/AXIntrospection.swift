@@ -250,6 +250,18 @@ enum AXIntrospection {
 
         let chain = ancestorChain(from: deepest)
         guard !chain.isEmpty else { return nil }
+        // A hit through window CHROME (the traffic lights) is not annotatable at
+        // ANY level: the hit itself may be the button or one of its inner glyph
+        // groups, and everything above it is the title bar / window. Two checks,
+        // because the glyph groups report the WINDOW (not the button) as their
+        // AX parent, so the chain scan alone can miss them — the geometric
+        // backstop catches any query point inside a chrome button's frame.
+        if chain.contains(where: isChrome) { return nil }
+        if let window = chain.first(where: { string($0, kAXRoleAttribute) == "AXWindow" }),
+           elementArray(window, kAXChildrenAttribute)
+               .contains(where: { isChrome($0) && frameScreen(of: $0).contains(point) }) {
+            return nil
+        }
         // Never fall back to the window or application container: escalating to
         // AXWindow is what made a background click resolve to the whole app.
         guard let target = nearestIdentified(in: chain) ?? deepestNonContainer(in: chain) else {
@@ -273,17 +285,27 @@ enum AXIntrospection {
     }
 
     /// Deepest descendant of `element` whose (non-empty) frame contains `point`.
-    /// Later children are drawn on top, so a topmost match wins; returns
-    /// `element` itself when no child contains the point.
+    /// Among children containing the point, descend into the SMALLEST (most
+    /// specific) one: AX child order does not reliably encode z-order, so a
+    /// full-size sibling layer (a window's title-bar strip, or a card's clear
+    /// accessibility surface in `.background`) must not swallow the more
+    /// specific content that visually sits above it. Returns `element` itself
+    /// when no child contains the point.
     private static func deepestChild(of element: AXUIElement, containing point: CGPoint, depth: Int) -> AXUIElement {
         guard depth < maxDepth else { return element }
-        for child in elementArray(element, kAXChildrenAttribute).reversed() {
-            let frame = frameScreen(of: child)
-            if frame.width > 0, frame.height > 0, frame.contains(point) {
-                return deepestChild(of: child, containing: point, depth: depth + 1)
+        let candidate = elementArray(element, kAXChildrenAttribute)
+            .filter {
+                let frame = frameScreen(of: $0)
+                return frame.width > 0 && frame.height > 0 && frame.contains(point)
             }
-        }
-        return element
+            .min { area(of: $0) < area(of: $1) }
+        guard let candidate else { return element }
+        return deepestChild(of: candidate, containing: point, depth: depth + 1)
+    }
+
+    private static func area(of element: AXUIElement) -> CGFloat {
+        let frame = frameScreen(of: element)
+        return frame.width * frame.height
     }
 
     /// Climb `kAXParentAttribute` from `element` up to the window, returning the
@@ -307,6 +329,29 @@ enum AXIntrospection {
     /// to the whole window (and show its title in the composer header). Structural
     /// `AXGroup`s are skipped unless they are actionable or identified, so a
     /// near-miss lands on the nearest meaningful control rather than a wrapper.
+    /// Window-chrome subroles: the traffic lights (+ the full-screen affordance).
+    /// They are real, actionable `AXButton`s, but they are the WINDOW's chrome,
+    /// not app content — their selectors locate no app code, so the hit-test must
+    /// never offer them as annotation targets. Checked in BOTH resolvers below:
+    /// `deepestNonContainer` is the fallback path, so filtering only
+    /// `nearestIdentified` would just hand the rejected button back via the
+    /// fallback.
+    static let chromeSubroles: Set<String> = [
+        kAXCloseButtonSubrole as String,
+        kAXMinimizeButtonSubrole as String,
+        kAXZoomButtonSubrole as String,
+        kAXFullScreenButtonSubrole as String,
+    ]
+
+    /// True when `subrole` marks window chrome (see ``chromeSubroles``).
+    static func isWindowChrome(subrole: String) -> Bool {
+        chromeSubroles.contains(subrole)
+    }
+
+    private static func isChrome(_ element: AXUIElement) -> Bool {
+        isWindowChrome(subrole: string(element, kAXSubroleAttribute) ?? "")
+    }
+
     private static func nearestIdentified(in rootFirstChain: [AXUIElement]) -> AXUIElement? {
         for element in rootFirstChain.reversed() {
             let role = string(element, kAXRoleAttribute) ?? ""
@@ -328,9 +373,24 @@ enum AXIntrospection {
     /// to that leaf rather than escalating to the whole window (which would then
     /// show the window title in the composer header).
     private static func deepestNonContainer(in rootFirstChain: [AXUIElement]) -> AXUIElement? {
+        // A structural, unidentified group that spans (nearly) the whole window is
+        // the window in disguise — NSHostingView's root AXGroup covers the full
+        // window frame, so falling back to it is the same "background click
+        // highlights the whole app" bug the window/application skip guards
+        // against. Detect it geometrically: the group's frame swallows the
+        // window's frame minus a small inset.
+        let windowFrame = rootFirstChain.first { string($0, kAXRoleAttribute) == "AXWindow" }
+            .map(frameScreen(of:))
         for element in rootFirstChain.reversed() {
             let role = string(element, kAXRoleAttribute) ?? ""
             if role == "AXWindow" || role == "AXApplication" { continue }
+            if role == "AXGroup",
+               (string(element, kAXIdentifierAttribute) ?? "").isEmpty,
+               labelText(element).isEmpty,
+               let windowFrame,
+               frameScreen(of: element).contains(windowFrame.insetBy(dx: 8, dy: 8)) {
+                continue
+            }
             return element
         }
         return nil

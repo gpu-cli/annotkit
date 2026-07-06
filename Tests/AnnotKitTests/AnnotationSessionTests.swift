@@ -29,6 +29,17 @@ final class AnnotationSessionTests: XCTestCase {
         )
     }
 
+    func testClearHoverDropsHighlightButKeepsSelection() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.hover(atAXPoint: .zero)
+        XCTAssertEqual(session.hovered?.id, "SaveButton", "hover resolves the element")
+        session.select(atAXPoint: .zero)
+        session.clearHover()
+        XCTAssertNil(session.hovered, "clearHover drops the hover highlight")
+        XCTAssertEqual(session.selected?.id, "SaveButton", "clearHover must not touch the selection (open composer)")
+    }
+
     func testSelectIsGatedOnAnnotatingMode() {
         let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
         XCTAssertNil(session.select(atAXPoint: .zero), "select before start must be nil")

@@ -896,8 +896,182 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
 
             self.resizeController?.unmount()
             host.orderOut(nil)
+            self.phase4Chrome()
+        }
+    }
+
+    // ---- Phase 4: window CHROME is never an annotation target ---------------
+    // The traffic lights are real, actionable AXButtons, so before the subrole
+    // filter the hit-test offered them as targets (user bug: hovering close/
+    // minimize/zoom highlighted them). While annotating, the native point query
+    // hits the expanded overlay and is DISCARDED, so chrome resolves via the
+    // geometric hitBeneathOverlay path — this phase exercises that real path
+    // end-to-end (filter must cover deepestNonContainer too, or the fallback
+    // hands the rejected button straight back), plus a positive control proving
+    // real content still resolves.
+    var chromeController: OverlayController?
+    var chromeSession: AnnotationSession?
+    var chromeHost: NSWindow?
+    var passChrome = true
+    func check4(_ cond: Bool, _ msg: String) {
+        passChrome = passChrome && cond
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+    }
+
+    func phase4Chrome() {
+        print("\n--- Phase 4: window chrome (traffic lights) is never an annotation target ---")
+        // Retire Phase 1's host: titled windows are constrained ON-SCREEN by
+        // AppKit, and a still-ordered-in W1 overlapping this phase's host makes
+        // the geometric hit-test descend the WRONG window.
+        h1?.orderOut(nil)
+        // .miniaturizable + .resizable so all three traffic lights exist (the
+        // other probe hosts are only titled+closable).
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 320),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "AnnotKit Harness W4 (chrome)"
+        window.contentView = NSHostingView(
+            rootView: Button("Probe Target") {}
+                .accessibilityIdentifier("Probe.ChromeContent")
+                .padding(40)
+        )
+        window.makeKeyAndOrderFront(nil)
+        chromeHost = window
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-chrome.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: window)
+        controller.start()   // expand, so hits resolve through the geometric path
+        chromeController = controller
+        chromeSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self else { return }
+            let source = MacElementSource()
+            // Chrome buttons via raw AX (subrole is not part of the public
+            // Element); the content control via the public snapshot.
+            let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+            let axWindow = AX.windows(app).first {
+                AX.string($0, kAXTitleAttribute) == "AnnotKit Harness W4 (chrome)"
+            }
+            let chromeSubroles: Set<String> = [
+                kAXCloseButtonSubrole as String,
+                kAXMinimizeButtonSubrole as String,
+                kAXZoomButtonSubrole as String,
+                kAXFullScreenButtonSubrole as String,
+            ]
+            let chrome = axWindow.map { self.axFindAll(in: $0, subroles: chromeSubroles, depth: 0) } ?? []
+            check4(chrome.count >= 3, "host exposes >=3 traffic-light AXButtons (found \(chrome.count))")
+            for button in chrome {
+                let frame = AX.frame(button)
+                let subrole = AX.string(button, kAXSubroleAttribute)
+                let hit = source.hitTest(CGPoint(x: frame.midX, y: frame.midY))
+                print("      \(subrole) center=\(fmt(frame)) -> \(hit.map { "#\($0.id)" } ?? "nil")")
+                check4(hit == nil, "\(subrole) is NOT an annotation target")
+            }
+            if let content = self.findElement(id: "Probe.ChromeContent", in: source.snapshot().map(\.root)) {
+                let hit = source.hitTest(CGPoint(x: content.frame.midX, y: content.frame.midY))
+                check4(hit?.id == "Probe.ChromeContent",
+                       "content control still resolves through the expanded overlay (got \(hit.map { "#\($0.id)" } ?? "nil"))")
+            } else {
+                check4(false, "content control Probe.ChromeContent present in the snapshot")
+            }
+            self.chromeController?.unmount()
+            window.orderOut(nil)
+            self.phase5Card()
+        }
+    }
+
+    // ---- Phase 5: a seeded CONTAINER resolves when its BODY is hovered -------
+    // Mirrors the HUD-card fix: cards get .accessibilityElement(children:
+    // .contain) + an identifier, and hovering the card body (inside the card,
+    // outside any child) must resolve to the CARD, while hovering a child still
+    // resolves the child. Validates nearestIdentified's identified-container
+    // branch through the expanded overlay.
+    var cardController: OverlayController?
+    var cardSession: AnnotationSession?
+    var cardHost: NSWindow?
+    var passCard = true
+    func check5(_ cond: Bool, _ msg: String) {
+        passCard = passCard && cond
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+    }
+
+    func phase5Card() {
+        print("\n--- Phase 5: seeded container (card) resolves on body hover ---")
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 360),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "AnnotKit Harness W5 (card)"
+        window.contentView = NSHostingView(rootView: ProbeCardView())
+        window.makeKeyAndOrderFront(nil)
+        cardHost = window
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-card.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: window)
+        controller.start()
+        cardController = controller
+        cardSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self else { return }
+            let source = MacElementSource()
+            let roots = source.snapshot().map(\.root)
+            guard let card = self.findElement(id: "Probe.Card", in: roots),
+                  let text = self.findElement(id: "Probe.CardText", in: roots) else {
+                check5(false, "snapshot exposes Probe.Card + Probe.CardText")
+                self.cardController?.unmount()
+                window.orderOut(nil)
+                self.finish()
+                return
+            }
+            // A body point: inside the card, left of the (centered) text child.
+            let body = CGPoint(x: card.frame.minX + 16, y: card.frame.midY)
+            check5(!text.frame.contains(body), "sanity: the body point is outside the text child")
+            let bodyHit = source.hitTest(body)
+            print("      card=\(fmt(card.frame)) text=\(fmt(text.frame)) body-hit -> \(bodyHit.map { "#\($0.id)" } ?? "nil")")
+            check5(bodyHit?.id == "Probe.Card",
+                   "hovering the card BODY resolves to the seeded container (got \(bodyHit.map { "#\($0.id)" } ?? "nil"))")
+            let textHit = source.hitTest(CGPoint(x: text.frame.midX, y: text.frame.midY))
+            check5(textHit?.id == "Probe.CardText",
+                   "hovering a child still resolves the CHILD, not the container (got \(textHit.map { "#\($0.id)" } ?? "nil"))")
+            self.cardController?.unmount()
+            window.orderOut(nil)
             self.finish()
         }
+    }
+
+    /// Recursive raw-AX search for elements matching one of `subroles`.
+    func axFindAll(in element: AXUIElement, subroles: Set<String>, depth: Int) -> [AXUIElement] {
+        guard depth < 12 else { return [] }
+        var out: [AXUIElement] = []
+        if subroles.contains(AX.string(element, kAXSubroleAttribute)) { out.append(element) }
+        for child in AX.children(element) {
+            out.append(contentsOf: axFindAll(in: child, subroles: subroles, depth: depth + 1))
+        }
+        return out
+    }
+
+    /// Depth-first search of the public snapshot tree by element id.
+    func findElement(id: String, in elements: [Element]) -> Element? {
+        for element in elements {
+            if element.id == id { return element }
+            if let found = findElement(id: id, in: element.children) { return found }
+        }
+        return nil
     }
 
     func finish() {
@@ -905,8 +1079,10 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  issue-1 (retention / copy / export / pill persistence):       \(pass1 ? "PASS" : "FAIL")")
         print("  Feature 1 (numbered-pin MODEL: anchors + update + delete/reflow): \(passPins ? "PASS" : "FAIL")")
         print("  Phase 3 (mis-placed-pill regression: pill + axOrigin track FINAL frame): \(passResize ? "PASS" : "FAIL")")
+        print("  Phase 4 (window chrome excluded from the hit-test): \(passChrome ? "PASS" : "FAIL")")
+        print("  Phase 5 (seeded container resolves on body hover): \(passCard ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {
@@ -916,6 +1092,31 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             out.append(contentsOf: collectIDs(element.children))
         }
         return out
+    }
+}
+
+/// Phase 5 host content: the HUD-card pattern under test. NOTE a plain
+/// `.accessibilityElement(children: .contain)` container is NOT enough: SwiftUI
+/// reports the contained group's AX frame as the UNION OF ITS CHILDREN (probed:
+/// card frame == text frame), so the card's visual padding is dead to the AX
+/// hit-test. The working pattern is an explicit full-size accessibility SURFACE:
+/// a clear background carrying the card's identifier, whose AX frame is the
+/// card's real visual bounds. Hovering the body hits the surface; hovering a
+/// child still hits the child (the surface sits below content in AX z-order).
+struct ProbeCardView: View {
+    var body: some View {
+        VStack {
+            Text("Card body probe")
+                .accessibilityIdentifier("Probe.CardText")
+        }
+        .padding(60)
+        .background(
+            Color.clear
+                .contentShape(Rectangle())
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("Probe.Card")
+        )
+        .padding(40)
     }
 }
 

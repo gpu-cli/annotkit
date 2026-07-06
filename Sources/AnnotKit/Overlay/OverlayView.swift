@@ -96,8 +96,17 @@ struct OverlayView: View {
             Color.clear
                 .contentShape(Rectangle())
                 .onContinuousHover { phase in
-                    if case .active(let point) = phase {
+                    switch phase {
+                    case .active(let point):
                         session.hover(atAXPoint: CGPoint(x: point.x + axOrigin.x, y: point.y + axOrigin.y))
+                    case .ended:
+                        // The cursor left the catcher (it covers the host's full
+                        // frame, so this is "left the window" — or moved onto the
+                        // toolbar/composer, which consume hover). Nothing is
+                        // hovered: drop the highlight instead of freezing on the
+                        // last element. An open composer is unaffected (the
+                        // highlight renders selected ?? hovered).
+                        session.clearHover()
                     }
                 }
                 .gesture(
@@ -437,7 +446,11 @@ private struct ToolbarView: View {
                 }
             }
         }
-        .padding(.horizontal, 6)
+        // Idle shows ONE 28pt button, so the inset must be EVEN (8pt all around ->
+        // a concentric 44x44 capsule hugging the hover wash). The 6pt horizontal
+        // inset is for the annotate-mode 4-button ROW only, where the buttons'
+        // own spacing makes the tighter ends read as balanced.
+        .padding(.horizontal, annotating ? 6 : 8)
         .padding(.vertical, 8) // 28pt buttons + 8*2 -> 44pt pill height
         .background(
             Capsule(style: .continuous)

@@ -77,6 +77,12 @@ public final class AnnotationSession: ObservableObject {
         hovered = source.hitTest(point)
     }
 
+    /// Drop the hover highlight — the cursor left the annotatable surface, so
+    /// nothing is hovered. `selected` (an open composer) is deliberately kept.
+    public func clearHover() {
+        hovered = nil
+    }
+
     /// Select the element under a screen point (AX top-left coordinates).
     @discardableResult
     public func select(atAXPoint point: CGPoint) -> Element? {
