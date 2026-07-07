@@ -104,6 +104,11 @@ public final class AnnotationSession: ObservableObject {
         // Any catcher tap dismisses an open pin editor: a tap on empty space is a
         // click-away close, and a tap on an element hands the stage to the composer.
         editingNoteID = nil
+        // Every selection starts offset-free: a region -> element re-selection
+        // (the catcher stays active behind an open composer) must not leak the
+        // previous region's offset onto an ELEMENT note — the didSet only
+        // clears the offset when `selected` becomes nil, not on replacement.
+        selectedRegionOffset = nil
         selected = source.hitTest(point)
         if selected == nil,
            let anchorSource = source as? RegionAnchorSource,

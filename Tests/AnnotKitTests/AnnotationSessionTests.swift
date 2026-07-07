@@ -16,6 +16,22 @@ private final class StubSource: ElementSource {
     }
 }
 
+/// A source whose hit-test result can be swapped mid-test: nil first (region
+/// path), then a real element (re-selection path).
+@MainActor
+private final class SwitchableSource: ElementSource, RegionAnchorSource {
+    let anchor: Element
+    var hit: Element?
+    init(anchor: Element) { self.anchor = anchor }
+    func snapshot() -> [WindowSnapshot] { [] }
+    func hitTest(_ point: CGPoint) -> Element? { hit }
+    func regionAnchor(at point: CGPoint) -> Element? { anchor }
+    func selector(for element: Element) -> String { "#\(element.id)" }
+    func screenshot(of element: Element?) async throws -> CapturedImage {
+        CapturedImage(pngData: Data(), pixelWidth: 1, pixelHeight: 1)
+    }
+}
+
 /// A source with NO element anywhere but a fixed nearby anchor, driving the
 /// region-fallback path.
 @MainActor
@@ -70,6 +86,24 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertNil(session.selectedRegionOffset)
         let note = session.addNote(comment: "plain")
         XCTAssertNil(note?.regionOffset, "ordinary element notes have no region")
+    }
+
+    func testRegionThenElementReselectionDropsTheStaleOffset() {
+        // The catcher stays active behind an open composer, so region -> element
+        // re-selection without cancelling is a supported flow; the element note
+        // must NOT inherit the region's offset.
+        let anchor = makeElement()
+        let source = SwitchableSource(anchor: anchor)
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: CGPoint(x: 22, y: 14))
+        XCTAssertEqual(session.selected?.role, "AXRegion", "first click lands the region")
+        source.hit = anchor
+        session.select(atAXPoint: .zero)
+        XCTAssertEqual(session.selected?.role, "AXButton", "second click re-selects a real element")
+        XCTAssertNil(session.selectedRegionOffset, "the region offset must not survive re-selection")
+        let note = session.addNote(comment: "element after region")
+        XCTAssertNil(note?.regionOffset, "element note must not inherit the stale region offset")
     }
 
     func testClearHoverDropsHighlightButKeepsSelection() {
