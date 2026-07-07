@@ -47,6 +47,12 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     /// ``CodingKeys`` so the on-disk JSON store and the MCP payload stay
     /// byte-for-byte unchanged, and older files still decode (`anchor` -> nil).
     public var anchor: CGPoint?
+    /// REGION note (decoration/gaps with no AX node): offset of the annotated
+    /// POINT from the top-left of the anchor element named by `selector`.
+    /// PERSISTED, unlike `anchor` — it is the locator agents need ("22pt below
+    /// the top-left of #Dashboard.Today"). Optional, so element notes serialize
+    /// unchanged and old files decode (nil).
+    public var regionOffset: CGPoint?
 
     /// Explicit keys that OMIT `anchor`: `JSONFileSink` and the MCP
     /// `FileNotesStore` encode/decode `[AnnotationNote]` directly, so a naked
@@ -55,6 +61,7 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     /// unchanged.
     private enum CodingKeys: String, CodingKey {
         case id, route, selector, elementPath, selectedText, comment, screenshot, timestamp
+        case regionOffset
     }
 
     public init(
@@ -66,7 +73,8 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         comment: String,
         screenshot: CapturedImage? = nil,
         timestamp: String,
-        anchor: CGPoint? = nil
+        anchor: CGPoint? = nil,
+        regionOffset: CGPoint? = nil
     ) {
         self.id = id
         self.route = route
@@ -77,5 +85,6 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         self.screenshot = screenshot
         self.timestamp = timestamp
         self.anchor = anchor
+        self.regionOffset = regionOffset
     }
 }

@@ -34,6 +34,27 @@ final class SinkTests: XCTestCase {
         XCTAssertFalse(md.contains("Selected Text"))
     }
 
+    func testMarkdownIncludesRegionLineForRegionNotes() {
+        var n = note()
+        n.regionOffset = CGPoint(x: 22, y: 114)
+        let md = AnnotationFormatter.markdown([n])
+        XCTAssertTrue(md.contains("**Region**: (x: 22, y: 114) from the top-left of #SaveButton"))
+        XCTAssertFalse(AnnotationFormatter.markdown([note()]).contains("**Region**"),
+                       "element notes have no region line")
+    }
+
+    func testOldShapeNoteDecodesWithNilRegionAndRoundTrips() throws {
+        // A pre-region on-disk note (no regionOffset key) must decode with a nil
+        // region and re-encode without gaining one.
+        let old = Data("""
+        [{"id":"a1","selector":"#X","elementPath":"AXWindow[0]","comment":"c","timestamp":"t"}]
+        """.utf8)
+        let notes = try JSONDecoder().decode([AnnotationNote].self, from: old)
+        XCTAssertNil(notes[0].regionOffset)
+        let reencoded = String(decoding: try JSONEncoder().encode(notes), as: UTF8.self)
+        XCTAssertFalse(reencoded.contains("regionOffset"))
+    }
+
     func testJSONOmitsRawScreenshotButKeepsDimensions() throws {
         var n = note()
         n.screenshot = CapturedImage(pngData: Data([0, 1, 2, 3]), pixelWidth: 120, pixelHeight: 32)

@@ -27,4 +27,10 @@ public final class MacElementSource: ElementSource {
         try AXScreenshot.capture(of: element)
     }
 }
+
+extension MacElementSource: RegionAnchorSource {
+    public func regionAnchor(at point: CGPoint) -> Element? {
+        AXIntrospection.regionAnchor(for: point)
+    }
+}
 #endif

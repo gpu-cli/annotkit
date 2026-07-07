@@ -16,6 +16,21 @@ private final class StubSource: ElementSource {
     }
 }
 
+/// A source with NO element anywhere but a fixed nearby anchor, driving the
+/// region-fallback path.
+@MainActor
+private final class EmptyWithAnchorSource: ElementSource, RegionAnchorSource {
+    let anchor: Element
+    init(anchor: Element) { self.anchor = anchor }
+    func snapshot() -> [WindowSnapshot] { [] }
+    func hitTest(_ point: CGPoint) -> Element? { nil }
+    func regionAnchor(at point: CGPoint) -> Element? { anchor }
+    func selector(for element: Element) -> String { "#\(element.id)" }
+    func screenshot(of element: Element?) async throws -> CapturedImage {
+        CapturedImage(pngData: Data(), pixelWidth: 1, pixelHeight: 1)
+    }
+}
+
 @MainActor
 final class AnnotationSessionTests: XCTestCase {
     private func makeElement() -> Element {
@@ -27,6 +42,34 @@ final class AnnotationSessionTests: XCTestCase {
                 PathComponent(role: "AXButton", label: "Save", identifier: "SaveButton", indexAmongRole: 0)
             ]
         )
+    }
+
+    func testRegionFallbackCapturesAnchoredNote() {
+        // A source with NO element at any point but a nearby anchor — the
+        // region-fallback case (decoration, dividers, gaps).
+        let anchor = makeElement()
+        let session = AnnotationSession(
+            source: EmptyWithAnchorSource(anchor: anchor),
+            sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        let selected = session.select(atAXPoint: CGPoint(x: 22, y: 14))
+        XCTAssertEqual(selected?.role, "AXRegion", "a no-hit click selects a synthetic region")
+        XCTAssertEqual(selected?.id, "SaveButton", "the region carries the anchor's id")
+        XCTAssertEqual(session.selectedRegionOffset, CGPoint(x: 22, y: 14), "offset from the anchor's top-left")
+        let note = session.addNote(comment: "gap looks off")
+        XCTAssertEqual(note?.selector, "#SaveButton", "region note anchors to the nearest meaningful element")
+        XCTAssertEqual(note?.regionOffset, CGPoint(x: 22, y: 14))
+        XCTAssertNil(session.selectedRegionOffset, "offset clears with the selection")
+    }
+
+    func testElementSelectionCarriesNoRegionOffset() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        XCTAssertNil(session.selectedRegionOffset)
+        let note = session.addNote(comment: "plain")
+        XCTAssertNil(note?.regionOffset, "ordinary element notes have no region")
     }
 
     func testClearHoverDropsHighlightButKeepsSelection() {

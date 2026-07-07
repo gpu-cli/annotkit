@@ -30,3 +30,14 @@ public protocol ElementSource {
     /// Capture a PNG of an element, or the key window when `element` is nil.
     func screenshot(of element: Element?) async throws -> CapturedImage
 }
+
+/// Optional element-source capability: resolve the nearest MEANINGFUL element
+/// to a point that hit-tests to NOTHING (decoration, dividers, gaps beyond any
+/// container's frame), so the session can capture a REGION note anchored to
+/// that element instead of dropping the click. Sources that cannot offer this
+/// simply don't conform; the session degrades to the old drop-the-click
+/// behavior.
+@MainActor
+public protocol RegionAnchorSource {
+    func regionAnchor(at point: CGPoint) -> Element?
+}

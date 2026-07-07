@@ -22,7 +22,15 @@ public final class AnnotationSession: ObservableObject {
     /// mutating it, so the same set survives repeated copy/export.
     @Published public private(set) var pending: [AnnotationNote] = []
     @Published public private(set) var hovered: Element?
-    @Published public private(set) var selected: Element?
+    @Published public private(set) var selected: Element? {
+        // The region offset only makes sense while its synthetic selection is
+        // alive; clearing the selection (capture, cancel, stop, pin editing)
+        // must never leave a stale offset for the NEXT note.
+        didSet { if selected == nil { selectedRegionOffset = nil } }
+    }
+    /// Offset of a REGION selection's point from its anchor element's top-left
+    /// (see ``select(atAXPoint:)``); nil for ordinary element selections.
+    public private(set) var selectedRegionOffset: CGPoint?
     /// The id of the retained note whose in-overlay edit card is open, or nil when
     /// no editor is showing. UI-only: drives which pin's edit card the overlay
     /// renders. Mutually exclusive with ``selected`` (the composer) — opening one
@@ -84,6 +92,12 @@ public final class AnnotationSession: ObservableObject {
     }
 
     /// Select the element under a screen point (AX top-left coordinates).
+    ///
+    /// When nothing resolves (decoration, dividers, gaps beyond any container's
+    /// frame) the click is NOT dropped: if the source can name a nearby anchor
+    /// (``RegionAnchorSource``), a synthetic REGION selection is made — a small
+    /// marker at the point, annotated relative to the nearest meaningful
+    /// element ("22pt below the top-left of #Dashboard.Today").
     @discardableResult
     public func select(atAXPoint point: CGPoint) -> Element? {
         guard mode == .annotating else { return nil }
@@ -91,6 +105,27 @@ public final class AnnotationSession: ObservableObject {
         // click-away close, and a tap on an element hands the stage to the composer.
         editingNoteID = nil
         selected = source.hitTest(point)
+        if selected == nil,
+           let anchorSource = source as? RegionAnchorSource,
+           let anchorElement = anchorSource.regionAnchor(at: point) {
+            let offset = CGPoint(
+                x: (point.x - anchorElement.frame.minX).rounded(),
+                y: (point.y - anchorElement.frame.minY).rounded()
+            )
+            let anchorName = anchorElement.label.isEmpty ? anchorElement.id : anchorElement.label
+            selected = Element(
+                id: anchorElement.id,
+                role: "AXRegion",
+                type: "Region",
+                label: "Region (\(Int(offset.x)), \(Int(offset.y))) in \(anchorName)",
+                value: "",
+                frame: CGRect(x: point.x - 8, y: point.y - 8, width: 16, height: 16),
+                isVisible: true,
+                isActionable: false,
+                path: anchorElement.path
+            )
+            selectedRegionOffset = offset
+        }
         return selected
     }
 
@@ -118,7 +153,8 @@ public final class AnnotationSession: ObservableObject {
             comment: comment,
             screenshot: screenshot,
             timestamp: timestamp(),
-            anchor: anchor
+            anchor: anchor,
+            regionOffset: selectedRegionOffset
         )
         pending.append(note)
         selected = nil

@@ -29,6 +29,9 @@ public enum AnnotationFormatter {
         lines.append("## [\(note.id)] \(route) - \(note.selector)")
         lines.append("**Timestamp**: \(note.timestamp)")
         lines.append("**Element Path**: \(note.elementPath)")
+        if let region = note.regionOffset {
+            lines.append("**Region**: (x: \(Int(region.x)), y: \(Int(region.y))) from the top-left of \(note.selector)")
+        }
         if let selected = note.selectedText, !selected.isEmpty {
             lines.append("**Selected Text**: \"\(selected)\"")
         }
@@ -54,6 +57,8 @@ public enum AnnotationFormatter {
         let selectedText: String?
         let comment: String
         let timestamp: String
+        let regionOffsetX: Int?
+        let regionOffsetY: Int?
         let screenshotPixelWidth: Int?
         let screenshotPixelHeight: Int?
 
@@ -65,6 +70,8 @@ public enum AnnotationFormatter {
             selectedText = note.selectedText
             comment = note.comment
             timestamp = note.timestamp
+            regionOffsetX = note.regionOffset.map { Int($0.x) }
+            regionOffsetY = note.regionOffset.map { Int($0.y) }
             screenshotPixelWidth = note.screenshot?.pixelWidth
             screenshotPixelHeight = note.screenshot?.pixelHeight
         }

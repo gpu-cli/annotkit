@@ -262,12 +262,70 @@ enum AXIntrospection {
                .contains(where: { isChrome($0) && frameScreen(of: $0).contains(point) }) {
             return nil
         }
-        // Never fall back to the window or application container: escalating to
-        // AXWindow is what made a background click resolve to the whole app.
-        guard let target = nearestIdentified(in: chain) ?? deepestNonContainer(in: chain) else {
+        // Pure positional specificity: the DEEPEST meaningful node at the point
+        // is the answer. Never the window or application container — escalating
+        // to AXWindow is what made a background click resolve to the whole app.
+        guard let target = deepestMeaningful(in: chain) else {
             return nil
         }
         return element(for: target, ancestorChain: chain)
+    }
+
+    /// REGION anchor (cli-vtrvt.2): the nearest MEANINGFUL element to a point
+    /// that hit-tests to nothing (decoration, dividers, gaps beyond any
+    /// container's frame). Walks the containing window's tree collecting
+    /// meaningful nodes (same predicate as the hit-test, chrome and
+    /// window-ghost groups excluded) and returns the one whose frame is
+    /// closest to the point — smaller frame wins a distance tie, mirroring the
+    /// specificity rule.
+    static func regionAnchor(for point: CGPoint) -> Element? {
+        let app = appElement()
+        let windows = elementArray(app, kAXWindowsAttribute).filter { !isOverlayWindow($0) }
+        guard let window = windows.first(where: { frameScreen(of: $0).contains(point) }) else {
+            return nil
+        }
+        let windowFrame = frameScreen(of: window)
+        var best: (element: AXUIElement, distance: CGFloat, area: CGFloat)?
+        collectMeaningful(in: window, windowFrame: windowFrame, depth: 0) { candidate in
+            let frame = frameScreen(of: candidate)
+            let d = distance(from: point, to: frame)
+            let a = frame.width * frame.height
+            if best == nil || d < best!.distance || (d == best!.distance && a < best!.area) {
+                best = (candidate, d, a)
+            }
+        }
+        guard let best else { return nil }
+        return element(for: best.element, ancestorChain: ancestorChain(from: best.element))
+    }
+
+    private static func collectMeaningful(
+        in element: AXUIElement,
+        windowFrame: CGRect,
+        depth: Int,
+        _ visit: (AXUIElement) -> Void
+    ) {
+        guard depth < maxDepth else { return }
+        for child in elementArray(element, kAXChildrenAttribute) {
+            if isChrome(child) { continue }
+            let role = string(child, kAXRoleAttribute) ?? ""
+            let ghost = role == "AXGroup"
+                && (string(child, kAXIdentifierAttribute) ?? "").isEmpty
+                && labelText(child).isEmpty
+                && frameScreen(of: child).contains(windowFrame.insetBy(dx: 8, dy: 8))
+            if !ghost, isMeaningful(child, role: role) {
+                let frame = frameScreen(of: child)
+                if frame.width > 0, frame.height > 0 { visit(child) }
+            }
+            collectMeaningful(in: child, windowFrame: windowFrame, depth: depth + 1, visit)
+        }
+    }
+
+    /// Euclidean distance from `point` to the nearest edge of `rect` (0 when
+    /// the rect contains the point).
+    private static func distance(from point: CGPoint, to rect: CGRect) -> CGFloat {
+        let dx = max(rect.minX - point.x, 0, point.x - rect.maxX)
+        let dy = max(rect.minY - point.y, 0, point.y - rect.maxY)
+        return (dx * dx + dy * dy).squareRoot()
     }
 
     /// Geometric hit-test beneath the overlay. The native point query cannot see
@@ -298,7 +356,15 @@ enum AXIntrospection {
                 let frame = frameScreen(of: $0)
                 return frame.width > 0 && frame.height > 0 && frame.contains(point)
             }
-            .min { area(of: $0) < area(of: $1) }
+            .min { lhs, rhs in
+                let (lhsArea, rhsArea) = (area(of: lhs), area(of: rhs))
+                guard lhsArea == rhsArea else { return lhsArea < rhsArea }
+                // Equal-area tie (e.g. a materialized region coextensive with a
+                // card's seeded surface): CONTENT beats the surface — seeded
+                // surfaces present as AXUnknown leaves and are by construction
+                // the LEAST specific thing at their level.
+                return surfaceRank(of: lhs) < surfaceRank(of: rhs)
+            }
         guard let candidate else { return element }
         return deepestChild(of: candidate, containing: point, depth: depth + 1)
     }
@@ -306,6 +372,10 @@ enum AXIntrospection {
     private static func area(of element: AXUIElement) -> CGFloat {
         let frame = frameScreen(of: element)
         return frame.width * frame.height
+    }
+
+    private static func surfaceRank(of element: AXUIElement) -> Int {
+        string(element, kAXRoleAttribute) == "AXUnknown" ? 1 : 0
     }
 
     /// Climb `kAXParentAttribute` from `element` up to the window, returning the
@@ -352,33 +422,21 @@ enum AXIntrospection {
         isWindowChrome(subrole: string(element, kAXSubroleAttribute) ?? "")
     }
 
-    private static func nearestIdentified(in rootFirstChain: [AXUIElement]) -> AXUIElement? {
-        for element in rootFirstChain.reversed() {
-            let role = string(element, kAXRoleAttribute) ?? ""
-            if role == "AXWindow" || role == "AXApplication" { continue }
-            let identifier = string(element, kAXIdentifierAttribute) ?? ""
-            let label = labelText(element)
-            let actionable = actionNames(element).contains(kAXPressAction as String)
-                || actionableRoles.contains(role)
-            if actionable || !identifier.isEmpty || (!label.isEmpty && role != "AXGroup") {
-                return element
-            }
-        }
-        return nil
-    }
-
-    /// Deepest element in the chain that is still a plausible target — anything
-    /// that is not the window or application container. Used only when no
-    /// identified/actionable ancestor exists, so a click on a plain leaf resolves
-    /// to that leaf rather than escalating to the whole window (which would then
-    /// show the window title in the composer header).
-    private static func deepestNonContainer(in rootFirstChain: [AXUIElement]) -> AXUIElement? {
-        // A structural, unidentified group that spans (nearly) the whole window is
-        // the window in disguise — NSHostingView's root AXGroup covers the full
-        // window frame, so falling back to it is the same "background click
-        // highlights the whole app" bug the window/application skip guards
-        // against. Detect it geometrically: the group's frame swallows the
-        // window's frame minus a small inset.
+    /// The MOST SPECIFIC annotation target at the hit: walk the chain
+    /// deepest-first and return the first MEANINGFUL node (pure positional
+    /// specificity — the button on a card wins at the button, the card's
+    /// surface at the card's padding, the section at the section's padding;
+    /// there is deliberately NO depth-walking UI).
+    ///
+    /// A meaningless wrapper between content and its meaningful ancestor is
+    /// passed through: by containment, that ancestor is still the most
+    /// specific meaningful node at the point. Skipped entirely: the window and
+    /// application containers (a background click must never resolve to the
+    /// whole app) and structural, unidentified, content-less groups spanning
+    /// (nearly) the whole window — NSHostingView's root AXGroup is the window
+    /// in disguise, detected geometrically because its frame swallows the
+    /// window's frame minus a small inset.
+    private static func deepestMeaningful(in rootFirstChain: [AXUIElement]) -> AXUIElement? {
         let windowFrame = rootFirstChain.first { string($0, kAXRoleAttribute) == "AXWindow" }
             .map(frameScreen(of:))
         for element in rootFirstChain.reversed() {
@@ -391,9 +449,23 @@ enum AXIntrospection {
                frameScreen(of: element).contains(windowFrame.insetBy(dx: 8, dy: 8)) {
                 continue
             }
-            return element
+            if isMeaningful(element, role: role) { return element }
         }
         return nil
+    }
+
+    /// Whether a node is an annotation target in its own right: an identifier,
+    /// a title/description label, a string VALUE, or an action. Counting
+    /// AXValue is load-bearing: plain SwiftUI `Text` materializes AXStaticText
+    /// with the string in AXValue and EMPTY title/description, so a
+    /// title-only notion of "labeled" walks straight past every text leaf and
+    /// resolves its identified ancestor (the whole page) instead.
+    private static func isMeaningful(_ element: AXUIElement, role: String) -> Bool {
+        if !(string(element, kAXIdentifierAttribute) ?? "").isEmpty { return true }
+        if !labelText(element).isEmpty { return true }
+        if !(string(element, kAXValueAttribute) ?? "").isEmpty { return true }
+        return actionNames(element).contains(kAXPressAction as String)
+            || actionableRoles.contains(role)
     }
 
     /// Build a public ``Element`` for `target`, computing its path from the

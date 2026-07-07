@@ -1050,8 +1050,126 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
                    "hovering a child still resolves the CHILD, not the container (got \(textHit.map { "#\($0.id)" } ?? "nil"))")
             self.cardController?.unmount()
             window.orderOut(nil)
+            self.phase6Specificity()
+        }
+    }
+
+    // ---- Phase 6: pure positional specificity (r3, cli-vtrvt.1) --------------
+    // The user-specified model: the smallest/deepest MEANINGFUL node under the
+    // cursor wins, and moving between a child and its ancestors' padding
+    // switches levels naturally. Covers the previously-untested AXValue case:
+    // plain SwiftUI Text (value-only, empty title/description) must win over
+    // its identified ancestors — before the fix it climbed to the page wrapper.
+    var specController: OverlayController?
+    var specSession: AnnotationSession?
+    var specHost: NSWindow?
+    var passSpec = true
+    func check6(_ cond: Bool, _ msg: String) {
+        passSpec = passSpec && cond
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+    }
+
+    func phase6Specificity() {
+        print("\n--- Phase 6: positional specificity (button > text > card > section by cursor position) ---")
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 480),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "AnnotKit Harness W6 (specificity)"
+        window.contentView = NSHostingView(rootView: ProbeSpecificityView())
+        window.makeKeyAndOrderFront(nil)
+        specHost = window
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-specificity.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: window)
+        controller.start()
+        specController = controller
+        specSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self else { return }
+            let source = MacElementSource()
+            let roots = source.snapshot().map(\.root)
+            guard let button = self.findElement(id: "Spec.Button", in: roots),
+                  let card = self.findElement(id: "Spec.Card", in: roots),
+                  let cardText = self.findElement(id: "Spec.CardText", in: roots),
+                  let section = self.findElement(id: "Spec.Section", in: roots) else {
+                check6(false, "snapshot exposes Spec.Button/Card/CardText/Section")
+                self.specController?.unmount()
+                window.orderOut(nil)
+                self.finish()
+                return
+            }
+
+            // 6a — button center resolves the button (actionable, unchanged).
+            let buttonHit = source.hitTest(CGPoint(x: button.frame.midX, y: button.frame.midY))
+            check6(buttonHit?.id == "Spec.Button", "button center -> the button (got \(buttonHit.map { "#\($0.id)" } ?? "nil"))")
+
+            // 6b — UNIDENTIFIED plain-text center resolves the TEXT, not an
+            // identified ancestor (the AXValue case — the r3 root cause).
+            let plainText = self.findFirst(in: roots) {
+                $0.role == "AXStaticText" && $0.value.contains("plain value text")
+            }
+            check6(plainText != nil, "snapshot exposes the unidentified value-only text")
+            if let plainText {
+                let hit = source.hitTest(CGPoint(x: plainText.frame.midX, y: plainText.frame.midY))
+                check6(hit.map { $0.role == "AXStaticText" && $0.id != "Spec.Section" } ?? false,
+                       "plain text center -> the TEXT itself, not the section (got \(hit.map { "#\($0.id) \($0.role)" } ?? "nil"))")
+            }
+
+            // 6c — card padding (inside card surface, outside its text) -> card.
+            let cardPad = CGPoint(x: card.frame.minX + 12, y: card.frame.midY)
+            check6(!cardText.frame.contains(cardPad), "sanity: card-padding point misses the card's text")
+            let cardHit = source.hitTest(cardPad)
+            check6(cardHit?.id == "Spec.Card", "card padding -> the card surface (got \(cardHit.map { "#\($0.id)" } ?? "nil"))")
+
+            // 6d — card TEXT center -> the text (child beats its card).
+            let textHit = source.hitTest(CGPoint(x: cardText.frame.midX, y: cardText.frame.midY))
+            check6(textHit?.id == "Spec.CardText", "card text -> the text, not the card (got \(textHit.map { "#\($0.id)" } ?? "nil"))")
+
+            // 6e — SECTION padding (inside the section surface, outside the
+            // button/text/card cluster) -> the section: moving the cursor out
+            // of a child naturally selects the parent level.
+            let sectionPad = CGPoint(x: section.frame.minX + 10, y: section.frame.minY + 10)
+            let insideChild = [button, card, cardText].contains { $0.frame.contains(sectionPad) }
+            check6(!insideChild, "sanity: section-padding point misses every child")
+            let sectionHit = source.hitTest(sectionPad)
+            check6(sectionHit?.id == "Spec.Section", "section padding -> the section surface (got \(sectionHit.map { "#\($0.id)" } ?? "nil"))")
+
+            // 6f — REGION fallback (cli-vtrvt.2): a click beyond every node
+            // (the outer padding outside the section surface) is not dropped —
+            // it captures a region note anchored to the nearest meaningful
+            // element with the offset from its top-left.
+            let bare = CGPoint(x: section.frame.minX - 10, y: section.frame.midY)
+            let bareHit = source.hitTest(bare)
+            check6(bareHit == nil, "sanity: the bare point hit-tests to nothing (got \(bareHit.map { "#\($0.id)" } ?? "nil"))")
+            let regionSelection = self.specSession?.select(atAXPoint: bare)
+            check6(regionSelection?.role == "AXRegion",
+                   "bare click selects a REGION (got \(regionSelection.map { "#\($0.id) \($0.role)" } ?? "nil"))")
+            let regionNote = self.specSession?.addNote(comment: "region probe")
+            check6(regionNote?.regionOffset != nil, "the region note carries the anchor offset")
+            check6(regionNote?.selector == "#Spec.Section",
+                   "the region note anchors to the nearest meaningful element (got \(regionNote?.selector ?? "nil"))")
+
+            self.specController?.unmount()
+            window.orderOut(nil)
             self.finish()
         }
+    }
+
+    /// First element matching `predicate`, depth-first.
+    func findFirst(in elements: [Element], where predicate: (Element) -> Bool) -> Element? {
+        for element in elements {
+            if predicate(element) { return element }
+            if let found = findFirst(in: element.children, where: predicate) { return found }
+        }
+        return nil
     }
 
     /// Recursive raw-AX search for elements matching one of `subroles`.
@@ -1081,8 +1199,9 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 3 (mis-placed-pill regression: pill + axOrigin track FINAL frame): \(passResize ? "PASS" : "FAIL")")
         print("  Phase 4 (window chrome excluded from the hit-test): \(passChrome ? "PASS" : "FAIL")")
         print("  Phase 5 (seeded container resolves on body hover): \(passCard ? "PASS" : "FAIL")")
+        print("  Phase 6 (positional specificity by cursor position): \(passSpec ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {
@@ -1117,6 +1236,38 @@ struct ProbeCardView: View {
                 .accessibilityIdentifier("Probe.Card")
         )
         .padding(40)
+    }
+}
+
+/// Phase 6 host content: the specificity fixture — an actionable button, an
+/// UNIDENTIFIED value-only text (the AXValue root-cause case), a card (surface
+/// + identified text child), all inside a section-level surface.
+struct ProbeSpecificityView: View {
+    var body: some View {
+        VStack(spacing: 28) {
+            Button("Spec Target") {}
+                .accessibilityIdentifier("Spec.Button")
+            Text("plain value text")
+            VStack {
+                Text("Card text")
+                    .accessibilityIdentifier("Spec.CardText")
+            }
+            .padding(50)
+            .background(
+                Color.clear
+                    .contentShape(Rectangle())
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityIdentifier("Spec.Card")
+            )
+        }
+        .padding(36)
+        .background(
+            Color.clear
+                .contentShape(Rectangle())
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("Spec.Section")
+        )
+        .padding(24)
     }
 }
 
