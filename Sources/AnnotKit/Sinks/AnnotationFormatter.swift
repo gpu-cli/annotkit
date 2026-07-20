@@ -29,6 +29,17 @@ public enum AnnotationFormatter {
         lines.append("## [\(note.id)] \(route) - \(note.selector)")
         lines.append("**Timestamp**: \(note.timestamp)")
         lines.append("**Element Path**: \(note.elementPath)")
+        if let component = note.component, !component.isEmpty {
+            lines.append("**Component**: #\(component)")
+        }
+        if let role = note.elementRole, !role.isEmpty {
+            var element = role
+            if let text = note.elementText, !text.isEmpty { element += " \"\(text)\"" }
+            lines.append("**Element**: \(element)")
+        }
+        if note.unseeded == true {
+            lines.append("**Unseeded**: the clicked element has no accessibilityIdentifier — locate it via the Component above, then narrow by the Element role/text; consider seeding it")
+        }
         if let region = note.regionOffset {
             lines.append("**Region**: (x: \(Int(region.x)), y: \(Int(region.y))) from the top-left of \(note.selector)")
         }
@@ -54,6 +65,10 @@ public enum AnnotationFormatter {
         let route: String?
         let selector: String
         let elementPath: String
+        let component: String?
+        let elementRole: String?
+        let elementText: String?
+        let unseeded: Bool?
         let selectedText: String?
         let comment: String
         let timestamp: String
@@ -67,6 +82,10 @@ public enum AnnotationFormatter {
             route = note.route
             selector = note.selector
             elementPath = note.elementPath
+            component = note.component
+            elementRole = note.elementRole
+            elementText = note.elementText
+            unseeded = note.unseeded
             selectedText = note.selectedText
             comment = note.comment
             timestamp = note.timestamp

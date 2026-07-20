@@ -49,11 +49,27 @@ struct OverlayView: View {
             catcher
 
             if let element = session.selected ?? session.hovered {
+                let originX = element.frame.minX - axOrigin.x
+                let originY = element.frame.minY - axOrigin.y
                 RoundedRectangle(cornerRadius: 3)
                     .stroke(Color.accentColor, lineWidth: 2)
                     .background(Color.accentColor.opacity(0.12))
                     .frame(width: element.frame.width, height: element.frame.height)
-                    .offset(x: element.frame.minX - axOrigin.x, y: element.frame.minY - axOrigin.y)
+                    .offset(x: originX, y: originY)
+                    .allowsHitTesting(false)
+                // Name tag: shows WHICH element a click binds to, so an element and
+                // its enclosing card (which look alike as bare rectangles) are
+                // distinguishable at a glance. Sits just above the highlight, or
+                // just inside its top when the element hugs the window's top edge.
+                Text(highlightName(element))
+                    .font(.caption2.weight(.medium))
+                    .lineLimit(1)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.accentColor))
+                    .fixedSize()
+                    .offset(x: originX, y: originY - 20 < 0 ? originY + 2 : originY - 20)
                     .allowsHitTesting(false)
             }
 
@@ -86,6 +102,18 @@ struct OverlayView: View {
                 editDraft = note.comment
             }
         }
+    }
+
+    /// The label shown on the hover/selection highlight so the user can see WHICH
+    /// element a click will bind to — an element vs its enclosing card, which are
+    /// otherwise indistinguishable as bare rectangles. Prefers the seeded
+    /// identifier (e.g. `Dashboard.Today` for a card surface), then the label,
+    /// then the displayed text, then the role.
+    private func highlightName(_ element: Element) -> String {
+        if let id = element.path.last?.identifier, !id.isEmpty { return id }
+        if !element.label.isEmpty { return element.label }
+        if !element.value.isEmpty { return String(element.value.prefix(40)) }
+        return element.role
     }
 
     /// Full-screen hover/tap surface, active only while annotating. Behind the
@@ -140,6 +168,15 @@ struct OverlayView: View {
                 Button("Cancel") {
                     comment = ""
                     session.cancelSelection()
+                }
+                // Step the selection up to the enclosing component (the card
+                // instead of the label inside it) for a coarser-grained note.
+                // Shown only when a broader identified component is available.
+                if session.canWidenSelection {
+                    Button { session.widenSelection() } label: {
+                        Label("Widen", systemImage: "arrow.up.backward.and.arrow.down.forward")
+                    }
+                    .help("Select the enclosing component")
                 }
                 Spacer()
                 Button("Add note") { addNote() }

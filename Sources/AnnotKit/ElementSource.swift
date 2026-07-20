@@ -19,9 +19,14 @@ public protocol ElementSource {
     /// Snapshot every inspectable window and its element tree.
     func snapshot() -> [WindowSnapshot]
 
-    /// Resolve a screen point (AX top-left coordinates) to the deepest element
-    /// under it, walked up to the nearest ancestor that carries a stable
-    /// identity. Returns nil when nothing resolves.
+    /// Resolve a screen point (AX top-left coordinates) to the annotation target
+    /// under it, per the unified target rule (see DECISIONS.md): the deepest
+    /// ACTIONABLE control at the point, else the deepest MEANINGFUL element
+    /// (identifier / label / value / action), never the window, application,
+    /// chrome, or a structural window-spanning group. Returns nil when nothing
+    /// resolves (a `RegionAnchorSource` can then anchor the click to a nearby
+    /// element instead of dropping it). The returned element's ``Element/path``
+    /// carries its identified ancestors, which the selector engine anchors to.
     func hitTest(_ point: CGPoint) -> Element?
 
     /// Generate the most-stable, round-tripping selector string for an element.
@@ -40,4 +45,16 @@ public protocol ElementSource {
 @MainActor
 public protocol RegionAnchorSource {
     func regionAnchor(at point: CGPoint) -> Element?
+}
+
+/// Optional element-source capability: the component-widening ladder at a point —
+/// the annotation target first (same element ``ElementSource/hitTest(_:)``
+/// returns), then each enclosing identified component, broadest last. Lets the
+/// session step a selection UP to a parent component for a coarser-grained note
+/// (a click-again / widen affordance while the composer is open) without
+/// re-hit-testing. Sources that cannot offer it simply don't conform; the session
+/// then disables widening.
+@MainActor
+public protocol ComponentLadderSource {
+    func componentLadder(at point: CGPoint) -> [Element]
 }

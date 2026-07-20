@@ -236,6 +236,61 @@ enum AXIntrospection {
     /// (`AXUIElementCopyElementAtPosition` only hit-tests when given the
     /// application element, so we cannot simply re-target it at the host window.)
     static func hitTest(_ point: CGPoint) -> Element? {
+        guard let chain = resolvedChain(at: point) else { return nil }
+        // The unified target rule (DECISIONS.md): the deepest ACTIONABLE control,
+        // else the deepest MEANINGFUL element. Never the window/application — that
+        // is what made a background click resolve to the whole app.
+        guard let target = annotationTarget(in: chain) else {
+            return nil
+        }
+        return element(for: target, ancestorChain: chain)
+    }
+
+    /// The component-widening ladder at `point`: the annotation target first, then
+    /// each enclosing identified component, smallest-first. Empty when the point is
+    /// not annotatable. Reuses the same resolved chain as ``hitTest(_:)`` so the
+    /// first entry equals what `hitTest` returns.
+    ///
+    /// Containment is GEOMETRIC, not tree-ancestry: a SwiftUI card seeded with
+    /// `.axCardSurface` is a clear background leaf that is a SIBLING of the card's
+    /// content (so it never appears in the content's ancestor chain) yet whose
+    /// frame spans the whole card. To reach it we collect every identified element
+    /// whose frame encloses the point and is larger than the target. Those
+    /// surfaces live as direct children of an ancestor (the background of the card
+    /// view), so scanning the ancestor chain plus each ancestor's direct children
+    /// finds them without a full-tree snapshot.
+    static func componentLadder(for point: CGPoint) -> [Element] {
+        guard let chain = resolvedChain(at: point) else { return [] }
+        let windowFrame = chain.first { string($0, kAXRoleAttribute) == "AXWindow" }.map(frameScreen(of:))
+        let candidates = chain.map { candidate(for: $0, windowFrame: windowFrame) }
+        guard let targetIndex = AnnotationTargetRule.targetIndex(in: candidates) else { return [] }
+        let target = chain[targetIndex]
+        let targetArea = area(of: target)
+
+        var containers: [(node: AXUIElement, area: CGFloat)] = []
+        var seen = Set<String>()
+        for ancestor in chain {
+            for node in [ancestor] + elementArray(ancestor, kAXChildrenAttribute) {
+                let id = string(node, kAXIdentifierAttribute) ?? ""
+                guard !id.isEmpty, !seen.contains(id), !CFEqual(node, target) else { continue }
+                let frame = frameScreen(of: node)
+                guard frame.width > 0, frame.height > 0, frame.contains(point), area(of: node) >= targetArea else {
+                    continue
+                }
+                seen.insert(id)
+                containers.append((node, area(of: node)))
+            }
+        }
+        containers.sort { $0.area < $1.area }
+
+        return [element(for: target, ancestorChain: chain)]
+            + containers.map { element(for: $0.node, ancestorChain: ancestorChain(from: $0.node)) }
+    }
+
+    /// Resolve `point` to a root-first ancestor chain of the deepest host element
+    /// beneath the overlay, or nil when nothing is annotatable (no hit, or a hit
+    /// through window chrome). Shared by ``hitTest(_:)`` and ``componentLadder(for:)``.
+    private static func resolvedChain(at point: CGPoint) -> [AXUIElement]? {
         let app = appElement()
         var hit: AXUIElement?
         let deepest: AXUIElement
@@ -262,13 +317,7 @@ enum AXIntrospection {
                .contains(where: { isChrome($0) && frameScreen(of: $0).contains(point) }) {
             return nil
         }
-        // Pure positional specificity: the DEEPEST meaningful node at the point
-        // is the answer. Never the window or application container — escalating
-        // to AXWindow is what made a background click resolve to the whole app.
-        guard let target = deepestMeaningful(in: chain) else {
-            return nil
-        }
-        return element(for: target, ancestorChain: chain)
+        return chain
     }
 
     /// REGION anchor (cli-vtrvt.2): the nearest MEANINGFUL element to a point
@@ -402,10 +451,11 @@ enum AXIntrospection {
     /// Window-chrome subroles: the traffic lights (+ the full-screen affordance).
     /// They are real, actionable `AXButton`s, but they are the WINDOW's chrome,
     /// not app content — their selectors locate no app code, so the hit-test must
-    /// never offer them as annotation targets. Checked in BOTH resolvers below:
-    /// `deepestNonContainer` is the fallback path, so filtering only
-    /// `nearestIdentified` would just hand the rejected button back via the
-    /// fallback.
+    /// never offer them as annotation targets. `TargetCandidate.isChrome` carries
+    /// this into the shared ``AnnotationTargetRule``, which excludes chrome from
+    /// both the actionable and the meaningful pass; the geometric backstop in
+    /// ``resolvedChain(at:)`` catches any query point inside a chrome button's
+    /// frame even when the AX parent chain hides it.
     static let chromeSubroles: Set<String> = [
         kAXCloseButtonSubrole as String,
         kAXMinimizeButtonSubrole as String,
@@ -422,36 +472,40 @@ enum AXIntrospection {
         isWindowChrome(subrole: string(element, kAXSubroleAttribute) ?? "")
     }
 
-    /// The MOST SPECIFIC annotation target at the hit: walk the chain
-    /// deepest-first and return the first MEANINGFUL node (pure positional
-    /// specificity — the button on a card wins at the button, the card's
-    /// surface at the card's padding, the section at the section's padding;
-    /// there is deliberately NO depth-walking UI).
-    ///
-    /// A meaningless wrapper between content and its meaningful ancestor is
-    /// passed through: by containment, that ancestor is still the most
-    /// specific meaningful node at the point. Skipped entirely: the window and
-    /// application containers (a background click must never resolve to the
-    /// whole app) and structural, unidentified, content-less groups spanning
-    /// (nearly) the whole window — NSHostingView's root AXGroup is the window
-    /// in disguise, detected geometrically because its frame swallows the
-    /// window's frame minus a small inset.
-    private static func deepestMeaningful(in rootFirstChain: [AXUIElement]) -> AXUIElement? {
+    /// The annotation target at the hit, per the shared ``AnnotationTargetRule``:
+    /// the deepest ACTIONABLE control (a click inside a button binds to the
+    /// button, not its label glyph), else the deepest MEANINGFUL element (a
+    /// standalone text/label/value leaf, which the selector engine then anchors to
+    /// its nearest identified ancestor). The AX attributes are read once into a
+    /// pure ``TargetCandidate`` chain so the decision itself is unit-tested
+    /// independent of the AX API.
+    private static func annotationTarget(in rootFirstChain: [AXUIElement]) -> AXUIElement? {
         let windowFrame = rootFirstChain.first { string($0, kAXRoleAttribute) == "AXWindow" }
             .map(frameScreen(of:))
-        for element in rootFirstChain.reversed() {
-            let role = string(element, kAXRoleAttribute) ?? ""
-            if role == "AXWindow" || role == "AXApplication" { continue }
-            if role == "AXGroup",
-               (string(element, kAXIdentifierAttribute) ?? "").isEmpty,
-               labelText(element).isEmpty,
-               let windowFrame,
-               frameScreen(of: element).contains(windowFrame.insetBy(dx: 8, dy: 8)) {
-                continue
-            }
-            if isMeaningful(element, role: role) { return element }
-        }
-        return nil
+        let candidates = rootFirstChain.map { candidate(for: $0, windowFrame: windowFrame) }
+        guard let index = AnnotationTargetRule.targetIndex(in: candidates) else { return nil }
+        return rootFirstChain[index]
+    }
+
+    /// Read one AX element's target-relevant facts into a pure ``TargetCandidate``.
+    private static func candidate(for element: AXUIElement, windowFrame: CGRect?) -> TargetCandidate {
+        let role = string(element, kAXRoleAttribute) ?? ""
+        let identifier = string(element, kAXIdentifierAttribute) ?? ""
+        let label = labelText(element)
+        let value = string(element, kAXValueAttribute) ?? ""
+        let subrole = string(element, kAXSubroleAttribute) ?? ""
+        let isGhost = role == "AXGroup" && identifier.isEmpty && label.isEmpty
+            && (windowFrame.map { frameScreen(of: element).contains($0.insetBy(dx: 8, dy: 8)) } ?? false)
+        return TargetCandidate(
+            role: role,
+            identifier: identifier,
+            label: label,
+            value: value,
+            isActionable: actionNames(element).contains(kAXPressAction as String) || actionableRoles.contains(role),
+            isChrome: isWindowChrome(subrole: subrole),
+            isContainerRoot: role == "AXWindow" || role == "AXApplication",
+            isWindowGhost: isGhost
+        )
     }
 
     /// Whether a node is an annotation target in its own right: an identifier,
@@ -514,12 +568,16 @@ enum AXIntrospection {
     // MARK: - Selector generation
 
     /// Generate a round-tripping selector string for `element`, resolved against
-    /// a fresh snapshot of the tree. Falls back to `#displayID` if generation
-    /// somehow fails (it should not for a snapshotted element).
+    /// a fresh snapshot of the tree. When generation fails — the element left the
+    /// tree between capture and export — fall back to the path-derived selector
+    /// (``Selector/fromPath(of:)``), never a synthetic `#displayID` slash-path
+    /// that no node's `accessibilityIdentifier` carries.
     static func selector(for element: Element) -> String {
         let roots = snapshotNodes()
-        let selector = SelectorEngine.generate(forFirstMatching: { $0.id == element.id }, in: roots)
-        return selector?.rendered ?? "#\(element.id)"
+        if let selector = SelectorEngine.generate(forFirstMatching: { $0.id == element.id }, in: roots) {
+            return selector.rendered
+        }
+        return Selector.fromPath(of: element).rendered
     }
 
     // MARK: - AX readers

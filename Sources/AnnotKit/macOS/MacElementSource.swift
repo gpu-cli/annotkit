@@ -33,4 +33,10 @@ extension MacElementSource: RegionAnchorSource {
         AXIntrospection.regionAnchor(for: point)
     }
 }
+
+extension MacElementSource: ComponentLadderSource {
+    public func componentLadder(at point: CGPoint) -> [Element] {
+        AXIntrospection.componentLadder(for: point)
+    }
+}
 #endif

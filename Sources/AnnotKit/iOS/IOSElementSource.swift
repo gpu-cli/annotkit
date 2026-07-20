@@ -52,7 +52,7 @@ final class UIViewNode: SelectorMatchable {
 /// The default iOS ``ElementSource``: walks the app's `UIView` hierarchy.
 /// UIKit is already top-left, so no coordinate flip is needed (see PARITY.md).
 @MainActor
-public final class IOSElementSource: ElementSource {
+public final class IOSElementSource: ElementSource, ComponentLadderSource {
     public init() {}
 
     static let maxDepth = 200
@@ -75,19 +75,32 @@ public final class IOSElementSource: ElementSource {
     }
 
     public func hitTest(_ point: CGPoint) -> Element? {
-        guard let window = Self.keyWindow else { return nil }
+        guard let (chain, index) = Self.resolveTarget(at: point) else { return nil }
+        return Self.element(for: chain[index])
+    }
+
+    /// The component-widening ladder at `point`: the target view first, then each
+    /// enclosing identified view, broadest last. Mirrors the macOS ladder so both
+    /// platforms widen identically. Empty when nothing is annotatable.
+    public func componentLadder(at point: CGPoint) -> [Element] {
+        guard let window = Self.keyWindow else { return [] }
         let inWindow = window.convert(point, from: nil)
-        guard let view = window.hitTest(inWindow, with: nil) else { return nil }
-        let target = Self.nearestIdentified(from: view) ?? view
-        return Self.element(for: target)
+        guard let view = window.hitTest(inWindow, with: nil) else { return [] }
+        let chain = Self.ancestorChain(from: view)
+        let candidates = chain.map(Self.candidate(for:))
+        return AnnotationTargetRule.wideningLadder(in: candidates).map { Self.element(for: chain[$0]) }
     }
 
     public func selector(for element: Element) -> String {
         let roots = Self.windows().map {
             Self.buildNode($0, selfComponent: Self.component(for: $0, indexAmongRole: 0), parentPath: [], depth: 0)
         }
-        return SelectorEngine.generate(forFirstMatching: { $0.id == element.id }, in: roots)?.rendered
-            ?? "#\(element.id)"
+        if let selector = SelectorEngine.generate(forFirstMatching: { $0.id == element.id }, in: roots) {
+            return selector.rendered
+        }
+        // Never a synthetic `#<slash/path>` id — fall back to the anchored,
+        // resolvable path selector (see ``Selector/fromPath(of:)``).
+        return Selector.fromPath(of: element).rendered
     }
 
     public func screenshot(of element: Element?) async throws -> CapturedImage {
@@ -204,15 +217,45 @@ public final class IOSElementSource: ElementSource {
         return index
     }
 
-    private static func nearestIdentified(from view: UIView) -> UIView? {
+    /// Resolve `point` to the target view's ancestor chain (root-first) and the
+    /// target's index within it, per the shared ``AnnotationTargetRule`` — the
+    /// same rule the macOS AX adapter uses, so a click resolves identically on
+    /// both platforms. Returns nil when nothing at the point is annotatable.
+    private static func resolveTarget(at point: CGPoint) -> (chain: [UIView], index: Int)? {
+        guard let window = keyWindow else { return nil }
+        let inWindow = window.convert(point, from: nil)
+        guard let view = window.hitTest(inWindow, with: nil) else { return nil }
+        let chain = ancestorChain(from: view)
+        let candidates = chain.map(candidate(for:))
+        guard let index = AnnotationTargetRule.targetIndex(in: candidates) else { return nil }
+        return (chain, index)
+    }
+
+    /// Root-first ancestor chain of `view`, climbing `superview` to the window.
+    private static func ancestorChain(from view: UIView) -> [UIView] {
+        var chain: [UIView] = []
         var current: UIView? = view
-        while let node = current {
-            if !(node.accessibilityIdentifier ?? "").isEmpty || !(node.accessibilityLabel ?? "").isEmpty {
-                return node
-            }
+        var depth = 0
+        while let node = current, depth < maxDepth {
+            chain.append(node)
             current = node.superview
+            depth += 1
         }
-        return nil
+        return chain.reversed()
+    }
+
+    /// Read one view's target-relevant facts into a pure ``TargetCandidate``.
+    /// UIKit has no window chrome or window-spanning ghost groups, so only the
+    /// window itself is a container root.
+    private static func candidate(for view: UIView) -> TargetCandidate {
+        TargetCandidate(
+            role: String(describing: Swift.type(of: view)),
+            identifier: view.accessibilityIdentifier ?? "",
+            label: view.accessibilityLabel ?? "",
+            value: view.accessibilityValue ?? "",
+            isActionable: view is UIControl,
+            isContainerRoot: view is UIWindow
+        )
     }
 
     // MARK: - Window helpers

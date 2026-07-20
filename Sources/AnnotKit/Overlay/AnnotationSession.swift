@@ -23,14 +23,32 @@ public final class AnnotationSession: ObservableObject {
     @Published public private(set) var pending: [AnnotationNote] = []
     @Published public private(set) var hovered: Element?
     @Published public private(set) var selected: Element? {
-        // The region offset only makes sense while its synthetic selection is
-        // alive; clearing the selection (capture, cancel, stop, pin editing)
-        // must never leave a stale offset for the NEXT note.
-        didSet { if selected == nil { selectedRegionOffset = nil } }
+        // The region offset and the widening ladder only make sense while their
+        // selection is alive; clearing the selection (capture, cancel, stop, pin
+        // editing) must never leave a stale offset or ladder for the NEXT note.
+        didSet {
+            if selected == nil {
+                selectedRegionOffset = nil
+                componentLadder = []
+                ladderIndex = 0
+            }
+        }
     }
     /// Offset of a REGION selection's point from its anchor element's top-left
     /// (see ``select(atAXPoint:)``); nil for ordinary element selections.
     public private(set) var selectedRegionOffset: CGPoint?
+
+    /// The component-widening ladder for the current selection (target first, each
+    /// enclosing identified component after), and the index of the currently
+    /// selected rung. Populated on ``select(atAXPoint:)`` when the source offers a
+    /// ``ComponentLadderSource``; empty for region selections and unsupported
+    /// sources, which disables widening.
+    private var componentLadder: [Element] = []
+    private var ladderIndex: Int = 0
+
+    /// Whether ``widenSelection()`` can step the current selection up to an
+    /// enclosing component. Drives the composer's widen affordance.
+    public var canWidenSelection: Bool { ladderIndex + 1 < componentLadder.count }
     /// The id of the retained note whose in-overlay edit card is open, or nil when
     /// no editor is showing. UI-only: drives which pin's edit card the overlay
     /// renders. Mutually exclusive with ``selected`` (the composer) — opening one
@@ -104,12 +122,20 @@ public final class AnnotationSession: ObservableObject {
         // Any catcher tap dismisses an open pin editor: a tap on empty space is a
         // click-away close, and a tap on an element hands the stage to the composer.
         editingNoteID = nil
-        // Every selection starts offset-free: a region -> element re-selection
-        // (the catcher stays active behind an open composer) must not leak the
-        // previous region's offset onto an ELEMENT note — the didSet only
-        // clears the offset when `selected` becomes nil, not on replacement.
+        // Every selection starts offset-free and ladder-free: a region -> element
+        // re-selection (the catcher stays active behind an open composer) must not
+        // leak the previous region's offset or ladder onto an ELEMENT note — the
+        // didSet only clears them when `selected` becomes nil, not on replacement.
         selectedRegionOffset = nil
+        componentLadder = []
+        ladderIndex = 0
         selected = source.hitTest(point)
+        // Capture the widening ladder for a real element selection (its first rung
+        // equals the hit-test target). Region selections get no ladder.
+        if selected != nil, let ladderSource = source as? ComponentLadderSource {
+            componentLadder = ladderSource.componentLadder(at: point)
+            ladderIndex = 0
+        }
         if selected == nil,
            let anchorSource = source as? RegionAnchorSource,
            let anchorElement = anchorSource.regionAnchor(at: point) {
@@ -134,6 +160,23 @@ public final class AnnotationSession: ObservableObject {
         return selected
     }
 
+    /// Step the current selection UP to the next enclosing identified component
+    /// (a coarser-grained note: the card instead of the label inside it). No-op
+    /// when the selection is already at the broadest rung, is a region, or the
+    /// source offers no ``ComponentLadderSource``. The composer re-anchors to the
+    /// widened element's frame for free (it renders `selected`).
+    @discardableResult
+    public func widenSelection() -> Element? {
+        guard ladderIndex + 1 < componentLadder.count else { return nil }
+        ladderIndex += 1
+        // Widening always lands on a real element, so it is never a region note.
+        selectedRegionOffset = nil
+        // A non-nil assignment does not trip the didSet clear, so the ladder and
+        // index survive for a further widen.
+        selected = componentLadder[ladderIndex]
+        return selected
+    }
+
     /// Capture a screenshot of the currently selected element, if any.
     public func screenshotSelected() async -> CapturedImage? {
         guard let selected else { return nil }
@@ -149,11 +192,29 @@ public final class AnnotationSession: ObservableObject {
         anchor: CGPoint? = nil
     ) -> AnnotationNote? {
         guard let element = selected else { return nil }
+        // Code-location hints. `unseeded` is true when the target carries no
+        // identifier of its own (the selector anchored to an ancestor or went
+        // positional) — a miss worth turning into a seeding task rather than a
+        // silent misattribution. `component` is the seeded component to grep: the
+        // target's own id when seeded, else the tightest enclosing seeded
+        // component from the GEOMETRIC widening ladder — which reaches a SwiftUI
+        // `.axCardSurface` card whose identifier sits on a background sibling, not
+        // an ancestor, so plain ancestry (the fallback for region/ladderless
+        // sources) would miss it.
+        let ownIdentifier = element.path.last?.identifier ?? ""
+        let component = !ownIdentifier.isEmpty
+            ? ownIdentifier
+            : (componentLadder.dropFirst().first?.id
+                ?? element.path.last(where: { !($0.identifier ?? "").isEmpty })?.identifier)
         let note = AnnotationNote(
             id: makeID(),
             route: route(),
             selector: source.selector(for: element),
             elementPath: element.path.map(\.pathDescription).joined(separator: " > "),
+            component: component,
+            elementRole: element.role.isEmpty ? nil : element.role,
+            elementText: element.value.isEmpty ? nil : element.value,
+            unseeded: ownIdentifier.isEmpty,
             selectedText: selectedText,
             comment: comment,
             screenshot: screenshot,

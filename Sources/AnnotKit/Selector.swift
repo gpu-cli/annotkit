@@ -12,14 +12,20 @@ import Foundation
 ///     Sel[n]                 the n-th match (0-based) of Sel in the search scope
 ///     A >> B                 B matched among descendants of A
 ///
-/// Generation (``generate(forFirstMatching:in:)``) prefers a unique `#id`, then a
-/// unique `@label`, then falls back to a single `Type[n]` step whose index is the
-/// element's position among same-role matches in the tree's preorder. That last
-/// form round-trips the resolver *by construction*: the index is defined as the
-/// resolver's own match position, so re-resolving always lands on the same
-/// element. (The human-readable Element Path, which uses sibling indices, is
-/// carried separately on ``Element/path`` for readability and is not what the
-/// agent resolves against.)
+/// Generation (``generate(forFirstMatching:in:)``) prefers a globally-unique
+/// `#id`, then a globally-unique `@label`. Failing those it ANCHORS to the
+/// deepest identified ancestor and scopes a leaf step to that component
+/// (`#Settings.Models >> @Save`, `#Settings.Models >> text="…"`,
+/// `#Settings.Models >> AXButton[0]` where the index is the position *within the
+/// component's subtree*). Anchoring is what keeps a note bound to the right code:
+/// the anchor is a seeded `accessibilityIdentifier` the agent can grep, and every
+/// index is component-local, so an unrelated same-role change elsewhere in the
+/// window cannot silently retarget the selector. Only when nothing in the chain
+/// carries an identifier does it fall to a globally-unique `text="…"` and, as a
+/// last resort, a global `Type[n]` (round-trips by construction — the index is the
+/// resolver's own match position — but fragile across tree changes). The
+/// human-readable Element Path, which uses sibling indices, is carried separately
+/// on ``Element/path`` for readability and is not what the agent resolves against.
 public struct Selector: Sendable, Hashable, CustomStringConvertible {
     public enum Simple: Sendable, Hashable {
         case identifier(String)
@@ -106,6 +112,30 @@ public struct Selector: Sendable, Hashable, CustomStringConvertible {
         guard value.count >= 2, value.hasPrefix("\""), value.hasSuffix("\"") else { return value }
         return String(value.dropFirst().dropLast())
     }
+
+    // MARK: - Path fallback
+
+    /// Best-effort selector derived from an element's captured ancestor ``path``,
+    /// used ONLY when live selector generation fails (the element left the tree
+    /// between capture and export). It is deliberately never a synthetic
+    /// `#a/b/c` identifier — that slash-joined path is not any node's
+    /// `accessibilityIdentifier`, so it resolves to nothing and sends the agent
+    /// nowhere. Instead: the element's own identifier if it has one, else an
+    /// anchor to the deepest identified ancestor plus the element's role, else the
+    /// role alone. Every form is a structurally valid, resolvable selector.
+    public static func fromPath(of element: Element) -> Selector {
+        if let own = element.path.last?.identifier, !own.isEmpty {
+            return Selector(steps: [Step(simple: .identifier(own))])
+        }
+        if let anchor = element.path.dropLast().last(where: { !($0.identifier ?? "").isEmpty }),
+           let id = anchor.identifier {
+            return Selector(steps: [
+                Step(simple: .identifier(id)),
+                Step(simple: .type(element.role)),
+            ])
+        }
+        return Selector(steps: [Step(simple: .type(element.role))])
+    }
 }
 
 /// Anything the selector engine can match against. The macOS and iOS adapters
@@ -142,25 +172,66 @@ public enum SelectorEngine {
 
     // MARK: Generate
 
-    /// Produce the most-stable selector that re-resolves to the first element
-    /// satisfying `isTarget`. Returns nil if no element matches.
+    /// Produce the most-stable, code-locating selector that re-resolves to the
+    /// first element satisfying `isTarget`. Returns nil if no element matches.
+    ///
+    /// The ladder, best first: unique `#id` -> unique `@label` -> anchored to the
+    /// deepest identified ancestor (`#anchor >> @label`, `#anchor >> text="…"`,
+    /// `#anchor >> Type[n-in-scope]`) -> unique global `text="…"` -> global
+    /// `Type[n]`. Each candidate is verified to actually resolve back to the
+    /// target before it is returned, so a non-unique anchor or label simply falls
+    /// through to the next rung rather than producing a selector that points
+    /// elsewhere.
     public static func generate<N: SelectorMatchable>(
         forFirstMatching isTarget: (N) -> Bool,
         in roots: [N]
     ) -> Selector? {
-        let all = preorderAll(roots)
-        guard let target = all.first(where: isTarget) else { return nil }
+        guard let (target, ancestors) = firstWithAncestors(roots, where: isTarget) else { return nil }
 
+        // 1. A globally-unique identifier: the most stable and most grep-able form.
         if !target.selectorIdentifier.isEmpty {
             let candidate = Selector(steps: [Step(simple: .identifier(target.selectorIdentifier))])
             if resolvesToTarget(candidate, roots, isTarget) { return candidate }
         }
+        // 2. A globally-unique label.
         if !target.selectorLabel.isEmpty {
             let candidate = Selector(steps: [Step(simple: .label(target.selectorLabel))])
             if resolvesToTarget(candidate, roots, isTarget) { return candidate }
         }
-        // Role + preorder index: index is the position among same-predicate
-        // matches in the resolver's own scope, so this always round-trips.
+        // 3. Anchor to an identified ancestor (deepest first) and scope the leaf
+        //    step to that component's subtree. Component-local indices survive
+        //    unrelated same-role changes elsewhere in the window.
+        for anchor in ancestors.reversed() where !anchor.selectorIdentifier.isEmpty {
+            let anchorStep = Step(simple: .identifier(anchor.selectorIdentifier))
+            // 3a. A label unique within the component.
+            if !target.selectorLabel.isEmpty {
+                let candidate = Selector(steps: [anchorStep, Step(simple: .label(target.selectorLabel))])
+                if resolvesToTarget(candidate, roots, isTarget) { return candidate }
+            }
+            // 3b. Displayed text unique within the component. Plain SwiftUI `Text`
+            //     has no label, only a value, so this is the step that locates it.
+            if !target.selectorText.isEmpty {
+                let candidate = Selector(steps: [anchorStep, Step(simple: .text(target.selectorText))])
+                if resolvesToTarget(candidate, roots, isTarget) { return candidate }
+            }
+            // 3c. Role index WITHIN the component's subtree (same preorder the
+            //     resolver walks for a `>>` step, so it round-trips).
+            let typeStep = Selector.Simple.type(target.selectorRole)
+            let scope = descendantsPreorder(anchor).filter { matches($0, typeStep) }
+            if let k = scope.firstIndex(where: isTarget) {
+                let candidate = Selector(steps: [anchorStep, Step(simple: typeStep, index: k)])
+                if resolvesToTarget(candidate, roots, isTarget) { return candidate }
+            }
+        }
+        // 4. No identified ancestor anywhere: a globally-unique text still carries
+        //    grep signal, so prefer it to a bare positional index.
+        if !target.selectorText.isEmpty {
+            let candidate = Selector(steps: [Step(simple: .text(target.selectorText))])
+            if resolvesToTarget(candidate, roots, isTarget) { return candidate }
+        }
+        // 5. Last resort: a global role index. Round-trips by construction, but is
+        //    fragile — reaching here means the element carries no identity at all.
+        let all = preorderAll(roots)
         let typeStep = Selector.Simple.type(target.selectorRole)
         let scope = all.filter { matches($0, typeStep) }
         if let k = scope.firstIndex(where: isTarget) {
@@ -191,6 +262,37 @@ public enum SelectorEngine {
         case .type(let v): return node.selectorType == v || node.selectorRole == v
         case .text(let v): return node.selectorText == v
         }
+    }
+
+    /// Preorder-first node satisfying `isTarget`, together with its ancestor chain
+    /// (root-first, EXCLUDING the node itself). Same node `preorderAll(...).first`
+    /// would find; the chain is what lets generation anchor to an identified
+    /// ancestor without a parent pointer on ``SelectorMatchable``.
+    private static func firstWithAncestors<N: SelectorMatchable>(
+        _ roots: [N], where isTarget: (N) -> Bool
+    ) -> (node: N, ancestors: [N])? {
+        func walk(_ node: N, _ ancestors: [N]) -> (N, [N])? {
+            if isTarget(node) { return (node, ancestors) }
+            let childAncestors = ancestors + [node]
+            for child in node.selectorChildren {
+                if let found = walk(child, childAncestors) { return found }
+            }
+            return nil
+        }
+        for root in roots {
+            if let found = walk(root, []) { return found }
+        }
+        return nil
+    }
+
+    /// Descendants of `node` in the exact preorder the resolver uses for an
+    /// `A >> B` step (each child's subtree in order), EXCLUDING `node` itself.
+    private static func descendantsPreorder<N: SelectorMatchable>(_ node: N) -> [N] {
+        var result: [N] = []
+        for child in node.selectorChildren {
+            result.append(contentsOf: preorder(child))
+        }
+        return result
     }
 
     private static func preorderAll<N: SelectorMatchable>(_ roots: [N]) -> [N] {

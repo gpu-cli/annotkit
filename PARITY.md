@@ -10,7 +10,9 @@ row; each asymmetry is closed by code or has a tracked mitigation.
 | Opt-in element source | NSView tree | (the default already walks the view tree) | macOS adds a view-tree opt-in alongside its AX default; iOS only needs the one source |
 | `accessibilityIdentifier` | via AX | via `UIView.accessibilityIdentifier` | both surface SwiftUI identifiers |
 | Concrete view class name | via NSView opt-in source | via the default UIView walk | none |
-| Hit test | `AXUIElementCopyElementAtPosition` + NSView `hitTest` | `UIView.hitTest(_:with:)` | iOS has no global AX point query; uses view hitTest. Tracked: F5.2 |
+| Hit test primitive | `AXUIElementCopyElementAtPosition` + NSView `hitTest` | `UIView.hitTest(_:with:)` | iOS has no global AX point query; uses view hitTest. Tracked: F5.2 |
+| Annotation target rule | shared `AnnotationTargetRule` over an AX candidate chain | shared `AnnotationTargetRule` over a UIView candidate chain | none — both build a `[TargetCandidate]` chain and apply the SAME rule (deepest actionable, else deepest meaningful). Closes the earlier split (macOS "deepest meaningful" vs iOS "nearest identified"), cli-got28.2 |
+| Component widening | `ComponentLadderSource` (AX chain) | `ComponentLadderSource` (UIView chain) | none — same ladder (target, then enclosing identified components) |
 | Coordinate space | Cocoa bottom-left to AX top-left flip | UIKit top-left native | iOS needs no flip; shared `ScreenSpace` used only on macOS |
 | Screenshot | ScreenCaptureKit / `cacheDisplay` | `UIGraphicsImageRenderer` + `drawHierarchy` | both capture own hierarchy only; no cross-window or secure overlays |
 | Overlay host | resizing `NSPanel` (toolbar corner idle, full screen annotating) | pass-through `UIWindow` | both interactive; selection via the shared SwiftUI catcher, not a global monitor |

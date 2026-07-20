@@ -29,19 +29,21 @@ point flip (its own inverse), and `ScreenSpace.cocoaRect(fromAXTopLeft:)`
 mirrors VirgilHUD's existing rect conversion. Both spaces are in points, so no
 HiDPI scaling is applied. Proven by `CoordinatesTests`.
 
-## 3. AX point query and nearest-identified-ancestor rule (design; live proof in F2.1)
+## 3. AX point query and the annotation target rule (superseded — see DECISIONS.md)
 
-The macOS hit-test will call `AXUIElementCopyElementAtPosition(app, x, y, &el)`,
+The macOS hit-test calls `AXUIElementCopyElementAtPosition(app, x, y, &el)`,
 which returns the deepest element at a screen position (cheaper than walking the
 whole tree, important for a hover highlight that tracks the cursor).
 
-Caveat: the deepest element can be finer than the nearest element that carries a
-seeded `accessibilityIdentifier` (for example a text glyph inside a labelled
-button). Rule: after the point query, walk up `kAXParentAttribute` to the
-nearest ancestor that has a non-empty identifier or a stable label, and treat
-that as the annotation target; keep the deepest element only for the Element
-Path. The overlay window is excluded from this query by marking it
-non-accessibility (it must not resolve to itself).
-
-This rule is documented here and implemented + validated live against VirgilHUD
-in F2.1 via `hud-inspect`.
+> **Superseded (cli-got28.2).** This section originally specified a
+> *nearest-identified-ancestor* rule: walk up to the nearest ancestor with an
+> identifier or label and treat that as the target. In practice seeding is
+> partial, so that rule collapsed clicks onto whichever coarse ancestor happened
+> to be seeded and lost the specific element. The shipped rule is now
+> **deepest actionable, else deepest meaningful**, with the *selector* (not the
+> target choice) anchoring a non-identified element to its nearest identified
+> ancestor. See `DECISIONS.md` → "Annotation target rule" for the authoritative
+> statement, `AnnotationTargetRule` for the pure implementation, and
+> `AnnotationTargetRuleTests` for the invariants. The overlay window is still
+> excluded from the point query by marking it non-accessibility (it must not
+> resolve to itself).

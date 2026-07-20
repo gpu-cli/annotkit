@@ -35,6 +35,23 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     public var selector: String
     /// The human-readable Element Path (ancestor chain).
     public var elementPath: String
+    /// The seeded component the note is scoped to: the deepest
+    /// `accessibilityIdentifier` in the target's ancestry (the target's own id
+    /// when it is seeded, else its nearest seeded ancestor). This is the string an
+    /// agent greps to find the component's Swift view; nil when nothing in the
+    /// ancestry is seeded. Optional and additive — old files decode with nil.
+    public var component: String?
+    /// The bound element's accessibility role (`AXButton`, `AXStaticText`, …), so
+    /// an agent knows what kind of view to look for. Optional/additive.
+    public var elementRole: String?
+    /// The bound element's displayed text/value, if any — a direct grep target
+    /// (e.g. the button title or the `Text` string). Optional/additive.
+    public var elementText: String?
+    /// True when the bound element has NO `accessibilityIdentifier` of its own, so
+    /// the selector had to anchor to an ancestor (``component``) or go positional.
+    /// It marks a miss the user can turn into a seeding task rather than a silent
+    /// misattribution. nil on notes captured before this field existed.
+    public var unseeded: Bool?
     public var selectedText: String?
     public var comment: String
     public var screenshot: CapturedImage?
@@ -61,6 +78,7 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     /// unchanged.
     private enum CodingKeys: String, CodingKey {
         case id, route, selector, elementPath, selectedText, comment, screenshot, timestamp
+        case component, elementRole, elementText, unseeded
         case regionOffset
     }
 
@@ -69,6 +87,10 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         route: String? = nil,
         selector: String,
         elementPath: String,
+        component: String? = nil,
+        elementRole: String? = nil,
+        elementText: String? = nil,
+        unseeded: Bool? = nil,
         selectedText: String? = nil,
         comment: String,
         screenshot: CapturedImage? = nil,
@@ -80,6 +102,10 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         self.route = route
         self.selector = selector
         self.elementPath = elementPath
+        self.component = component
+        self.elementRole = elementRole
+        self.elementText = elementText
+        self.unseeded = unseeded
         self.selectedText = selectedText
         self.comment = comment
         self.screenshot = screenshot

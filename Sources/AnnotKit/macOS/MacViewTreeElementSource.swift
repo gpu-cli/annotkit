@@ -54,7 +54,7 @@ final class NSViewNode: SelectorMatchable {
 /// default. Frames are reported in AX top-left coordinates to match the AX
 /// source; screenshots reuse the shared renderer.
 @MainActor
-public final class MacViewTreeElementSource: ElementSource {
+public final class MacViewTreeElementSource: ElementSource, ComponentLadderSource {
     public init() {}
 
     static let maxDepth = 200
@@ -78,22 +78,29 @@ public final class MacViewTreeElementSource: ElementSource {
     }
 
     public func hitTest(_ point: CGPoint) -> Element? {
-        guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: \.isVisible),
-              let content = window.contentView
-        else { return nil }
-        let cocoaScreen = ScreenSpace.flipPoint(point, primaryHeight: Self.primaryHeight())
-        let inWindow = window.convertPoint(fromScreen: cocoaScreen)
-        guard let view = content.hitTest(inWindow) else { return nil }
-        let target = Self.nearestIdentified(from: view) ?? view
-        return Self.element(for: target)
+        guard let chain = Self.resolvedChain(at: point) else { return nil }
+        let candidates = chain.map(Self.candidate(for:))
+        guard let index = AnnotationTargetRule.targetIndex(in: candidates) else { return nil }
+        return Self.element(for: chain[index])
+    }
+
+    /// The component-widening ladder at `point` (target, then enclosing identified
+    /// views), matching the AX and iOS sources so all three widen identically.
+    public func componentLadder(at point: CGPoint) -> [Element] {
+        guard let chain = Self.resolvedChain(at: point) else { return [] }
+        let candidates = chain.map(Self.candidate(for:))
+        return AnnotationTargetRule.wideningLadder(in: candidates).map { Self.element(for: chain[$0]) }
     }
 
     public func selector(for element: Element) -> String {
         let roots = NSApp.windows.compactMap { $0.contentView }.map {
             Self.buildNode($0, selfComponent: Self.component(for: $0, indexAmongRole: 0), parentPath: [], depth: 0)
         }
-        return SelectorEngine.generate(forFirstMatching: { $0.id == element.id }, in: roots)?.rendered
-            ?? "#\(element.id)"
+        if let selector = SelectorEngine.generate(forFirstMatching: { $0.id == element.id }, in: roots) {
+            return selector.rendered
+        }
+        // Never a synthetic `#<slash/path>` id (see ``Selector/fromPath(of:)``).
+        return Selector.fromPath(of: element).rendered
     }
 
     public func screenshot(of element: Element?) async throws -> CapturedImage {
@@ -181,15 +188,42 @@ public final class MacViewTreeElementSource: ElementSource {
         return index
     }
 
-    private static func nearestIdentified(from view: NSView) -> NSView? {
+    /// Resolve `point` to the deepest hit view's root-first ancestor chain, or nil
+    /// when nothing is under the point. Target selection and widening apply the
+    /// shared ``AnnotationTargetRule`` to this chain.
+    private static func resolvedChain(at point: CGPoint) -> [NSView]? {
+        guard let window = NSApp.keyWindow ?? NSApp.windows.first(where: \.isVisible),
+              let content = window.contentView
+        else { return nil }
+        let cocoaScreen = ScreenSpace.flipPoint(point, primaryHeight: primaryHeight())
+        let inWindow = window.convertPoint(fromScreen: cocoaScreen)
+        guard let view = content.hitTest(inWindow) else { return nil }
+        return ancestorChain(from: view)
+    }
+
+    /// Root-first ancestor chain of `view`, climbing `superview`.
+    private static func ancestorChain(from view: NSView) -> [NSView] {
+        var chain: [NSView] = []
         var current: NSView? = view
-        while let node = current {
-            if !node.accessibilityIdentifier().isEmpty || !(node.accessibilityLabel() ?? "").isEmpty {
-                return node
-            }
+        var depth = 0
+        while let node = current, depth < maxDepth {
+            chain.append(node)
             current = node.superview
+            depth += 1
         }
-        return nil
+        return chain.reversed()
+    }
+
+    /// Read one view's target-relevant facts into a pure ``TargetCandidate``. The
+    /// NSView tree has no displayed value text, so `value` is always empty.
+    private static func candidate(for view: NSView) -> TargetCandidate {
+        TargetCandidate(
+            role: String(describing: Swift.type(of: view)),
+            identifier: view.accessibilityIdentifier(),
+            label: view.accessibilityLabel() ?? "",
+            value: "",
+            isActionable: view is NSControl
+        )
     }
 
     private static func screenFrame(of view: NSView) -> CGRect {

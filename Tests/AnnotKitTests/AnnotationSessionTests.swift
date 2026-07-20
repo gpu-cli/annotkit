@@ -47,8 +47,101 @@ private final class EmptyWithAnchorSource: ElementSource, RegionAnchorSource {
     }
 }
 
+/// A source that hit-tests to a leaf and exposes a widening ladder (leaf, then
+/// enclosing components), driving selection-widening tests.
+@MainActor
+private final class LadderSource: ElementSource, ComponentLadderSource {
+    let ladder: [Element]
+    init(ladder: [Element]) { self.ladder = ladder }
+    func snapshot() -> [WindowSnapshot] { [] }
+    func hitTest(_ point: CGPoint) -> Element? { ladder.first }
+    func componentLadder(at point: CGPoint) -> [Element] { ladder }
+    func selector(for element: Element) -> String { "#\(element.id)" }
+    func screenshot(of element: Element?) async throws -> CapturedImage {
+        CapturedImage(pngData: Data(), pixelWidth: 1, pixelHeight: 1)
+    }
+}
+
 @MainActor
 final class AnnotationSessionTests: XCTestCase {
+    private func makeLadderElement(_ id: String) -> Element {
+        Element(
+            id: id, role: "AXGroup", type: "AXGroup", label: id, value: "",
+            frame: CGRect(x: 0, y: 0, width: 10, height: 10), isVisible: true, isActionable: false,
+            path: [PathComponent(role: "AXGroup", label: id, identifier: id, indexAmongRole: 0)]
+        )
+    }
+
+    func testWidenSelectionStepsUpTheComponentLadder() {
+        let ladder = [makeLadderElement("Leaf"), makeLadderElement("Settings.Models"), makeLadderElement("Settings")]
+        let session = AnnotationSession(source: LadderSource(ladder: ladder), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        XCTAssertEqual(session.selected?.id, "Leaf", "selection starts at the hit-test target")
+        XCTAssertTrue(session.canWidenSelection)
+
+        XCTAssertEqual(session.widenSelection()?.id, "Settings.Models", "widen -> enclosing component")
+        XCTAssertTrue(session.canWidenSelection)
+        XCTAssertEqual(session.widenSelection()?.id, "Settings", "widen -> broader component")
+        XCTAssertFalse(session.canWidenSelection, "no widening past the broadest rung")
+        XCTAssertNil(session.widenSelection(), "widen at the top is a no-op")
+    }
+
+    func testWideningResetsOnNewSelectionAndCapture() {
+        let ladder = [makeLadderElement("Leaf"), makeLadderElement("Card")]
+        let session = AnnotationSession(source: LadderSource(ladder: ladder), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        session.widenSelection()
+        XCTAssertEqual(session.selected?.id, "Card")
+        // A fresh selection restarts the ladder at the leaf.
+        session.select(atAXPoint: .zero)
+        XCTAssertEqual(session.selected?.id, "Leaf")
+        XCTAssertTrue(session.canWidenSelection)
+        // Capturing clears the ladder (no widening with nothing selected).
+        session.addNote(comment: "note")
+        XCTAssertFalse(session.canWidenSelection)
+    }
+
+    /// An unseeded target whose enclosing card is only reachable via the GEOMETRIC
+    /// ladder (a `.axCardSurface` sibling, not an ancestor) still gets its
+    /// `component` set to that card — the ladder's tightest enclosing entry, not
+    /// the target's ancestry.
+    func testUnseededTargetTakesComponentFromGeometricLadder() {
+        // Leaf with no identifier of its own; the card is a separate ladder entry
+        // (as a sibling surface would be), not in the leaf's path.
+        let leaf = Element(
+            id: "AXWindow[0]/AXStaticText[0]", role: "AXStaticText", type: "AXStaticText",
+            label: "", value: "9:00 Standup", frame: CGRect(x: 0, y: 0, width: 4, height: 4),
+            isVisible: true, isActionable: false,
+            path: [
+                PathComponent(role: "AXWindow", label: "", identifier: nil, indexAmongRole: 0),
+                PathComponent(role: "AXStaticText", label: "", identifier: nil, indexAmongRole: 0),
+            ]
+        )
+        let card = makeLadderElement("Dashboard.Today")
+        let session = AnnotationSession(
+            source: LadderSource(ladder: [leaf, card]), sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        session.select(atAXPoint: .zero)
+        let note = session.addNote(comment: "c")
+        XCTAssertEqual(note?.unseeded, true)
+        XCTAssertEqual(note?.component, "Dashboard.Today", "component comes from the enclosing ladder entry, not ancestry")
+        XCTAssertEqual(note?.elementText, "9:00 Standup")
+    }
+
+    func testRegionSelectionCannotWiden() {
+        let anchor = makeElement()
+        let session = AnnotationSession(
+            source: EmptyWithAnchorSource(anchor: anchor), sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        session.select(atAXPoint: CGPoint(x: 5, y: 5))
+        XCTAssertEqual(session.selected?.role, "AXRegion")
+        XCTAssertFalse(session.canWidenSelection, "region notes have no widening ladder")
+    }
+
     private func makeElement() -> Element {
         Element(
             id: "SaveButton", role: "AXButton", type: "AXButton", label: "Save", value: "",
@@ -141,6 +234,37 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertEqual(note?.elementPath, "AXWindow[0] > #SaveButton")
         XCTAssertEqual(session.pending.count, 1)
         XCTAssertNil(session.selected, "selection clears after capture")
+    }
+
+    func testAddNotePopulatesCodeHintsForSeededTarget() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        let note = session.addNote(comment: "c")
+        XCTAssertEqual(note?.component, "SaveButton", "the target's own identifier is the component")
+        XCTAssertEqual(note?.unseeded, false, "a seeded target is not flagged unseeded")
+        XCTAssertEqual(note?.elementRole, "AXButton")
+    }
+
+    func testAddNoteFlagsUnseededTargetAndAnchorsToNearestSeededAncestor() {
+        let unseededLeaf = Element(
+            id: "AXWindow[0]/#Settings.Models/AXStaticText[0]", role: "AXStaticText", type: "AXStaticText",
+            label: "", value: "gpt-5", frame: CGRect(x: 0, y: 0, width: 4, height: 4),
+            isVisible: true, isActionable: false,
+            path: [
+                PathComponent(role: "AXWindow", label: "", identifier: nil, indexAmongRole: 0),
+                PathComponent(role: "AXGroup", label: "", identifier: "Settings.Models", indexAmongRole: 0),
+                PathComponent(role: "AXStaticText", label: "", identifier: nil, indexAmongRole: 0),
+            ]
+        )
+        let session = AnnotationSession(source: StubSource(unseededLeaf), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        let note = session.addNote(comment: "c")
+        XCTAssertEqual(note?.component, "Settings.Models", "anchors to the nearest seeded ancestor")
+        XCTAssertEqual(note?.unseeded, true, "an id-less target is flagged for seeding")
+        XCTAssertEqual(note?.elementText, "gpt-5")
+        XCTAssertEqual(note?.elementRole, "AXStaticText")
     }
 
     /// A session whose ids auto-increment (id1, id2, ...) so a captured set is

@@ -43,6 +43,36 @@ final class SinkTests: XCTestCase {
                        "element notes have no region line")
     }
 
+    func testMarkdownIncludesComponentRoleAndUnseededHints() {
+        var n = note()
+        n.component = "Settings.Models"
+        n.elementRole = "AXStaticText"
+        n.elementText = "gpt-5"
+        n.unseeded = true
+        let md = AnnotationFormatter.markdown([n])
+        XCTAssertTrue(md.contains("**Component**: #Settings.Models"))
+        XCTAssertTrue(md.contains("**Element**: AXStaticText \"gpt-5\""))
+        XCTAssertTrue(md.contains("**Unseeded**:"))
+
+        // A seeded target omits the unseeded line; a note with no hints omits all.
+        var seeded = note()
+        seeded.unseeded = false
+        seeded.component = "SaveButton"
+        XCTAssertFalse(AnnotationFormatter.markdown([seeded]).contains("**Unseeded**"))
+        XCTAssertFalse(AnnotationFormatter.markdown([note()]).contains("**Component**"))
+    }
+
+    func testJSONIncludesCodeHintsAndOmitsNilOnes() throws {
+        var n = note()
+        n.component = "Settings.Models"
+        n.unseeded = true
+        let json = try AnnotationFormatter.json([n])
+        XCTAssertTrue(json.contains("\"component\" : \"Settings.Models\""))
+        XCTAssertTrue(json.contains("\"unseeded\" : true"))
+        // Nil hints are omitted, not encoded as null.
+        XCTAssertFalse(try AnnotationFormatter.json([note()]).contains("component"))
+    }
+
     func testOldShapeNoteDecodesWithNilRegionAndRoundTrips() throws {
         // A pre-region on-disk note (no regionOffset key) must decode with a nil
         // region and re-encode without gaining one.

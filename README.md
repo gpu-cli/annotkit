@@ -40,8 +40,13 @@ Annotation.install(sink: ClipboardSink(format: .json))
 
 - **macOS** queries the app's own accessibility tree (the only strategy that
   surfaces SwiftUI `accessibilityIdentifier` values); **iOS** walks the UIView
-  hierarchy. Both resolve a tap to the nearest identified element and generate a
-  selector that round-trips a resolver.
+  hierarchy. Both resolve a tap with the same rule: the **deepest actionable
+  control** wins (a click inside a button binds to the button, not its label
+  glyph), else the **deepest meaningful element** (a standalone text/label/value
+  leaf is annotated in its own right). The generated selector then **anchors** a
+  non-identified target to its nearest seeded `accessibilityIdentifier`
+  (`#Settings.Models >> @Save`), so it round-trips a resolver and points an agent
+  at the right component's code. See `DECISIONS.md`.
 - Notes are written in the `AGENTATION_NOTES.md` format that the
   `process-agentation-notes` skill consumes, or copied to the clipboard.
 
