@@ -39,4 +39,10 @@ extension MacElementSource: ComponentLadderSource {
         AXIntrospection.componentLadder(for: point)
     }
 }
+
+extension MacElementSource: MarqueeTargetSource {
+    public func marqueeLadder(in rect: CGRect) -> [Element] {
+        AXIntrospection.marqueeLadder(for: rect)
+    }
+}
 #endif
