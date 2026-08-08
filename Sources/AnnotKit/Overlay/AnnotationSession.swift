@@ -190,6 +190,15 @@ public final class AnnotationSession: ObservableObject {
     /// in the frame is annotatable the drag is NOT dropped: it degrades to a
     /// REGION note anchored at the frame's centre, exactly as a no-hit click does,
     /// but carrying the drawn frame rather than a single point.
+    ///
+    /// CALLER CONTRACT: a press that never moved is a CLICK, and this method
+    /// returns nil for it (see the degenerate guard below). The gesture recognizer
+    /// owns that routing — it must send a no-movement press, and any drag below its
+    /// own slop threshold, to ``select(atAXPoint:)`` instead. The session cannot
+    /// make that call for you: it sees only a rect, and cannot tell a deliberate
+    /// tiny drag from a jittery tap. Route it wrong and the symptom is "clicking
+    /// does nothing in annotate mode", which reads as a broken feature rather than
+    /// a missing threshold.
     @discardableResult
     public func select(inAXRect rect: CGRect) -> Element? {
         guard mode == .annotating else { return nil }
@@ -207,9 +216,19 @@ public final class AnnotationSession: ObservableObject {
         ladderIndex = 0
 
         // Normalize once: a right-to-left or bottom-to-top drag arrives with
-        // negative extents. A zero-width or zero-height rect is a click that never
-        // moved, not a marquee — bail before the region fallback too, or a stray
-        // press would silently plant a degenerate framed note.
+        // negative extents.
+        //
+        // A zero-width or zero-height rect is a click that never moved, not a
+        // marquee. Returning nil here is a DELIBERATE divergence from "the caller
+        // falls back to the region path when resolution yields nothing": that
+        // fallback is for a drag that framed nothing annotatable, whereas this is
+        // not a drag at all. Falling through would anchor a zero-area frame to
+        // whatever happens to sit near the press and plant a note the user never
+        // asked for — worse than nothing, because it looks deliberate. The gesture
+        // recognizer routes this case to ``select(atAXPoint:)`` instead (see the
+        // caller contract above). Note this also bails BEFORE consulting the
+        // source, so a degenerate rect never reaches `MarqueeTargetRule.resolve`
+        // or `regionAnchor(at:)`.
         let normalized = rect.standardized
         guard normalized.width > 0, normalized.height > 0 else { return nil }
 
