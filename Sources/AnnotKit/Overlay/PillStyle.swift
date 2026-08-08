@@ -62,21 +62,12 @@ enum IconPart {
 struct LucideIcon {
     let parts: [IconPart]
 
-    /// Lucide `pencil` — the annotate toggle's IDLE glyph. Uses the real Lucide
-    /// `d` strings; the parser approximates the small corner arcs (`a`) as a line
-    /// to the arc endpoint, which reads identically at 16pt.
+    /// Lucide `pencil` — the idle pill's ENTER-annotate-mode glyph. Uses the real
+    /// Lucide `d` strings; the parser approximates the small corner arcs (`a`) as
+    /// a line to the arc endpoint, which reads identically at 16pt.
     static let pencil = LucideIcon(parts: [
         .path("M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"),
         .path("m15 5 4 4"),
-    ])
-
-    /// Lucide `pencil-off` — the annotate toggle's ACTIVE (annotating) glyph: the
-    /// pencil with a diagonal slash through it.
-    static let pencilOff = LucideIcon(parts: [
-        .path("m10 10-6.157 6.162a2 2 0 0 0-.5.833l-1.322 4.36a.5.5 0 0 0 .622.624l4.358-1.323a2 2 0 0 0 .83-.5L14 13.982"),
-        .path("m12.829 7.172 4.359-4.346a1 1 0 1 1 3.986 3.986l-4.353 4.353"),
-        .path("m15 5 4 4"),
-        .path("m2 2 20 20"),
     ])
 
     static let check = LucideIcon(parts: [.path("M20 6 9 17l-5-5")])
@@ -210,10 +201,10 @@ struct LucideShape: Shape {
                 path.addQuadCurve(to: scaled(end), control: scaled(ctrl))
             case "A", "a":
                 // Elliptical arc. The parser has no arc-to-bezier, so it draws a
-                // straight segment to the arc ENDPOINT — Lucide's pencil/pencil-off
-                // arcs are small corner rounds and the flat eraser diagonal, which
-                // read the same at 16pt. Consume all 7 params (rx ry rot large
-                // sweep x y).
+                // straight segment to the arc ENDPOINT — the only arcs in use are
+                // Lucide's pencil corner rounds and its flat eraser diagonal,
+                // which read the same at 16pt. Consume all 7 params (rx ry rot
+                // large sweep x y).
                 guard nextNumber() != nil, nextNumber() != nil, nextNumber() != nil,
                       nextNumber() != nil, nextNumber() != nil,
                       let ax = nextNumber(), let ay = nextNumber() else { return }
