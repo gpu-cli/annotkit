@@ -4,9 +4,10 @@ import SwiftUI
 ///
 /// Interaction is driven entirely through SwiftUI hit-testing, which fixes the
 /// two ways a global click monitor went wrong: a full-screen catcher (active
-/// only in annotate mode, behind the chrome) receives hover, taps, and marquee
-/// drags over the app (see ``MarqueeDrag`` for the click-vs-frame branch), while
-/// the toolbar and composer sit on top and consume their own clicks,
+/// only in annotate mode, behind the chrome) receives hover, taps, and frame
+/// drags over the app (see ``SelectionGesture`` for the point-vs-frame routing,
+/// which follows the toolbar's chosen tool rather than guessing from travel),
+/// while the toolbar and composer sit on top and consume their own clicks,
 /// so tapping "Add note" can never re-select the element under the button. The
 /// whole overlay is `accessibilityHidden` so the AX point query sees through it
 /// to the app beneath.
@@ -45,9 +46,10 @@ struct OverlayView: View {
     /// editing begins (see the `editingNoteID` seeding hook on the ZStack).
     @State private var editDraft: String = ""
     /// The in-progress marquee band, WINDOW-LOCAL (gesture coordinates), non-nil
-    /// only between "this press has travelled far enough to be a frame" and the
-    /// release that resolves it. It is never the resolved selection — that comes
-    /// back as `session.selected` and is drawn by the highlight branch.
+    /// only in FRAME mode, between "this press has travelled far enough to be a
+    /// real drag" and the release that resolves it. It is never the resolved
+    /// selection — that comes back as `session.selected` and is drawn by the
+    /// highlight branch.
     @State private var marqueeRect: CGRect?
 
     var body: some View {
@@ -166,43 +168,61 @@ struct OverlayView: View {
                         session.clearHover()
                     }
                 }
-                // ONE gesture handles both clicks and frames, branching on travel at
-                // release. It is deliberately NOT a DragGesture composed with the
-                // old SpatialTapGesture: `.exclusively`/`.simultaneously` make the
+                // ONE gesture serves BOTH tools, branching on `session.tool` at
+                // release. It is deliberately NOT a DragGesture composed with a
+                // SpatialTapGesture: `.exclusively`/`.simultaneously` make the
                 // recognizers negotiate, and the case that loses that negotiation is
                 // the plain click — which then does nothing at all in annotate mode.
-                // A single recognizer with a distance branch has no ambiguity to
-                // lose a click in. `minimumDistance: 0` is what lets it also see the
-                // press that never moved.
+                // A single recognizer that asks ``SelectionGesture`` what a press
+                // meant has no ambiguity to lose a click in. `minimumDistance: 0` is
+                // what lets it also see the press that never moved.
                 .gesture(
                     DragGesture(minimumDistance: 0)
                         .onChanged { value in
-                            // Below the threshold nothing is drawn: a band that
-                            // flickered up on every click would advertise a marquee
-                            // the release is going to route as a click.
-                            guard MarqueeDrag.isFrame(from: value.startLocation, to: value.location) else { return }
-                            marqueeRect = MarqueeDrag.localRect(from: value.startLocation, to: value.location)
+                            // The band is FRAME-MODE-ONLY chrome. Drawing it in point
+                            // mode would promise a rectangle the release is never
+                            // going to honour — the user would let go expecting what
+                            // they swept and get the element they first pressed on.
+                            guard session.tool == .frame,
+                                  SelectionGesture.travelledFarEnough(from: value.startLocation, to: value.location)
+                            else { return }
+                            marqueeRect = SelectionGesture.localRect(from: value.startLocation, to: value.location)
                             session.clearHover()
                         }
                         .onEnded { value in
                             marqueeRect = nil
-                            if MarqueeDrag.isFrame(from: value.startLocation, to: value.location) {
-                                session.select(inAXRect: MarqueeDrag.axRect(
-                                    from: value.startLocation,
-                                    to: value.location,
-                                    axOrigin: axOrigin
-                                ))
-                            } else {
-                                // `startLocation`, not `location`: it is where the
-                                // user AIMED, and it is stable for a press that
-                                // drifted a point or two under the finger/cursor.
-                                session.select(atAXPoint: CGPoint(
-                                    x: value.startLocation.x + axOrigin.x,
-                                    y: value.startLocation.y + axOrigin.y
-                                ))
+                            switch SelectionGesture.resolve(
+                                tool: session.tool,
+                                from: value.startLocation,
+                                to: value.location,
+                                axOrigin: axOrigin
+                            ) {
+                            case .point(let point):
+                                session.select(atAXPoint: point)
+                            case .frame(let rect):
+                                session.select(inAXRect: rect)
+                            case .none:
+                                // A too-short press in frame mode. Do NOTHING —
+                                // explicitly not `cancelSelection()`: this fires for
+                                // every stray click on the catcher, including the
+                                // ones a user makes while a composer is open, and
+                                // clearing there would discard a half-typed comment.
+                                break
                             }
                         }
                 )
+                #if os(macOS)
+                // The pointer is what stops frame mode reading as broken. A click
+                // does nothing there by design, so the cursor has to say "drag here"
+                // BEFORE the press, not after it fails to do anything.
+                //
+                // `.rectSelection` rather than a generic crosshair: it is the system
+                // pointer for "drag out a rectangular selection", which is exactly
+                // this gesture, so the affordance is one the user has already learned
+                // elsewhere. (SwiftUI's `PointerStyle` has no `.crosshair` member —
+                // reaching for one does not compile.)
+                .pointerStyle(session.tool == .frame ? .rectSelection : nil)
+                #endif
         } else {
             Color.clear.allowsHitTesting(false)
         }
@@ -488,10 +508,20 @@ private struct AnnotationCard<Footer: View>: View {
 /// (no settings model, no preview capability here) are deliberately omitted.
 ///
 /// Idle is JUST the pencil, so the resting affordance is one unambiguous "start
-/// annotating". Annotate mode replaces it outright with the working set, left to
-/// right: two DISTINCT persist actions (Copy to the clipboard as markdown, and
-/// Export to `AGENTATION_NOTES.md`), a destructive clear, and the X that leaves
-/// the mode. The X sits FAR RIGHT because that is where a "close this mode"
+/// annotating". Annotate mode replaces it outright with the working set, in two
+/// groups split by a hairline divider.
+///
+/// LEFT of the divider: the selection-tool segment — point (click the thing) and
+/// frame (draw a rectangle around it) — with the active one lit. It leads the row
+/// because it governs what every subsequent press on the catcher DOES, and because
+/// frame mode's "a click does nothing" contract is only honest if the mode is
+/// visible somewhere. These two are never disabled: they are how you get out of a
+/// mode, so gating them could strand a user in one.
+///
+/// RIGHT of the divider: what you then do with the notes, left to right — two
+/// DISTINCT persist actions (Copy to the clipboard as markdown, and Export to
+/// `AGENTATION_NOTES.md`), a destructive clear, and the X that leaves the mode.
+/// The X sits FAR RIGHT because that is where a "close this mode"
 /// control is looked for, and it is drawn as a plain action rather than a lit-up
 /// toggle — the expanded pill and the live catcher already say annotate mode is
 /// on, so a permanently bright glyph would only add noise. The three note actions
@@ -500,8 +530,8 @@ private struct AnnotationCard<Footer: View>: View {
 /// overlays the pill whenever notes exist. Copy and Export never clear the
 /// retained set (only Clear does), so the same notes can be both copied and
 /// exported. Copy/Export flow through host callbacks (they need a sink); the mode
-/// control needs the controller (activation); clear reads/writes the session
-/// directly.
+/// control needs the controller (activation); clear and the tool segment
+/// read/write the session directly.
 ///
 /// The pill itself is rendered unconditionally and is NEVER gated on an entrance
 /// flag, so it stays visible across idle<->annotate; only its contents swap as
@@ -522,9 +552,33 @@ private struct ToolbarView: View {
         HStack(spacing: 2) {
             // The two modes share no controls, so they are two whole rows rather
             // than one row with conditional members: idle is the pencil alone,
-            // annotate is the note actions (dimmed/disabled with no notes to act
-            // on) closed by the exit X.
+            // annotate is the tool segment, a divider, then the note actions
+            // (dimmed/disabled with no notes to act on) closed by the exit X.
             if annotating {
+                // Selection-tool segment. NOT gated on `hasNotes` — unlike every
+                // control to its right, these change how the NEXT press behaves, so
+                // they must stay live in an empty session, which is exactly when a
+                // user is choosing how to make their first selection.
+                PillButton(
+                    icon: .mousePointer,
+                    isActive: session.tool == .point,
+                    tooltip: "Select by clicking",
+                    action: { session.setTool(.point) }
+                )
+                PillButton(
+                    icon: .squareDashed,
+                    isActive: session.tool == .frame,
+                    tooltip: "Select by drawing a frame",
+                    action: { session.setTool(.frame) }
+                )
+                // Groups "how you select" apart from "what you do with the notes".
+                // Without it the six glyphs read as one undifferentiated strip and
+                // the two stateful buttons look like two more one-shot actions.
+                Rectangle()
+                    .fill(PillStyle.divider)
+                    .frame(width: 1, height: 16)
+                    .padding(.horizontal, 3)
+                    .allowsHitTesting(false)
                 PillButton(
                     icon: justCopied ? .check : .copy,
                     isDisabled: !hasNotes,
@@ -551,8 +605,10 @@ private struct ToolbarView: View {
         }
         // Idle shows ONE 28pt button, so the inset must be EVEN (8pt all around ->
         // a concentric 44x44 capsule hugging the hover wash). The 6pt horizontal
-        // inset is for the annotate-mode 4-button ROW only, where the buttons'
-        // own spacing makes the tighter ends read as balanced.
+        // inset is for the annotate-mode ROW only — now SIX buttons plus a divider,
+        // so the row is wide enough that trimming 2pt off each end reads as balanced
+        // rather than cramped, and the saved width keeps the pill off the window
+        // edge it is anchored 20pt from.
         .padding(.horizontal, annotating ? 6 : 8)
         .padding(.vertical, 8) // 28pt buttons + 8*2 -> 44pt pill height
         .background(
@@ -611,6 +667,13 @@ private struct PillButton: View {
     /// Dims the glyph and makes the button a true no-op (used by copy/export/clear
     /// while there are no notes to act on).
     var isDisabled: Bool = false
+    /// Lights the glyph to full white for the SELECTED member of a segmented
+    /// control. Back after being removed as dead code: the selection-tool pair is
+    /// the pill's only control carrying PERSISTENT state — every other button is a
+    /// one-shot action, which is why hover was briefly the only state that existed.
+    /// A segment with no lit member is worse than no segment at all, because the
+    /// user cannot tell whether a click will select a point or do nothing.
+    var isActive: Bool = false
     var glyphTint: Color? = nil
     let tooltip: String
     let action: () -> Void
@@ -623,12 +686,17 @@ private struct PillButton: View {
         // treatment reads as unavailable.
         if isDisabled { return PillStyle.iconIdle.opacity(0.4) }
         if let glyphTint { return glyphTint }
+        // Active outranks hover: hovering the ALREADY-active tool must not dim it
+        // toward the inactive treatment, which would read as "clicking this turns
+        // it off" for a segment that has no off.
+        if isActive { return PillStyle.iconActive }
         if isDestructive && hovering { return .white }
         return hovering ? PillStyle.iconHover : PillStyle.iconIdle
     }
 
-    // Hover is the ONLY fill state: every control in the pill is a one-shot
-    // action, so no button ever wears a persistent chip.
+    // Hover is the ONLY fill state, even for the active tool: the segment is
+    // distinguished by glyph BRIGHTNESS alone, so a persistent circle behind the
+    // active tool cannot be mistaken for the hover wash sitting on a neighbour.
     private var fillColor: Color {
         // No hover wash while disabled — the button must look inert.
         if hovering && !isDisabled { return isDestructive ? PillStyle.destructive : PillStyle.hoverBackground }
