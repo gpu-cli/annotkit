@@ -43,6 +43,48 @@ final class SinkTests: XCTestCase {
                        "element notes have no region line")
     }
 
+    func testMarkdownIncludesFramedRegionLineForMarqueeNotes() {
+        // The exact shape a consuming skill parses — do not reword.
+        var n = note(selector: "#Settings.Models")
+        n.regionRect = CGRect(x: 12, y: 40, width: 320, height: 48)
+        let md = AnnotationFormatter.markdown([n])
+        XCTAssertTrue(
+            md.contains("**Region**: framed 320x48 at (x: 12, y: 40) from the top-left of #Settings.Models"),
+            md
+        )
+    }
+
+    func testMarkdownKeepsThePointRegionLineUnchangedWithoutARect() {
+        // The framed branch must not disturb the existing point-offset line: notes
+        // captured before marquee existed still render exactly as they did.
+        var n = note()
+        n.regionOffset = CGPoint(x: 22, y: 114)
+        XCTAssertTrue(AnnotationFormatter.markdown([n])
+            .contains("**Region**: (x: 22, y: 114) from the top-left of #SaveButton"))
+        XCTAssertFalse(AnnotationFormatter.markdown([n]).contains("framed"))
+    }
+
+    func testJSONCarriesTheFramedRectAsIntegers() throws {
+        var n = note()
+        n.regionRect = CGRect(x: 12, y: 40, width: 320, height: 48)
+        let json = try AnnotationFormatter.json([n])
+        XCTAssertTrue(json.contains("\"regionRectX\" : 12"))
+        XCTAssertTrue(json.contains("\"regionRectY\" : 40"))
+        XCTAssertTrue(json.contains("\"regionRectWidth\" : 320"))
+        XCTAssertTrue(json.contains("\"regionRectHeight\" : 48"))
+        XCTAssertFalse(try AnnotationFormatter.json([note()]).contains("regionRect"),
+                       "click notes gain no rect keys")
+    }
+
+    func testRegionRectSurvivesAJSONRoundTrip() throws {
+        var n = note()
+        n.regionRect = CGRect(x: 12, y: 40, width: 320, height: 48)
+        let data = try JSONEncoder().encode([n])
+        let decoded = try JSONDecoder().decode([AnnotationNote].self, from: data)
+        XCTAssertEqual(decoded[0].regionRect, CGRect(x: 12, y: 40, width: 320, height: 48),
+                       "regionRect is PERSISTED, unlike `anchor`")
+    }
+
     func testMarkdownIncludesComponentRoleAndUnseededHints() {
         var n = note()
         n.component = "Settings.Models"
@@ -81,8 +123,10 @@ final class SinkTests: XCTestCase {
         """.utf8)
         let notes = try JSONDecoder().decode([AnnotationNote].self, from: old)
         XCTAssertNil(notes[0].regionOffset)
+        XCTAssertNil(notes[0].regionRect, "JSON predating the marquee field decodes with no rect")
         let reencoded = String(decoding: try JSONEncoder().encode(notes), as: UTF8.self)
         XCTAssertFalse(reencoded.contains("regionOffset"))
+        XCTAssertFalse(reencoded.contains("regionRect"))
     }
 
     func testJSONOmitsRawScreenshotButKeepsDimensions() throws {

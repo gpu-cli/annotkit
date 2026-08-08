@@ -23,12 +23,15 @@ public final class AnnotationSession: ObservableObject {
     @Published public private(set) var pending: [AnnotationNote] = []
     @Published public private(set) var hovered: Element?
     @Published public private(set) var selected: Element? {
-        // The region offset and the widening ladder only make sense while their
-        // selection is alive; clearing the selection (capture, cancel, stop, pin
-        // editing) must never leave a stale offset or ladder for the NEXT note.
+        // The region offset, the drawn marquee frame, and the widening ladder only
+        // make sense while their selection is alive; clearing the selection
+        // (capture, cancel, stop, pin editing) must never leave a stale offset,
+        // frame, or ladder for the NEXT note.
         didSet {
             if selected == nil {
                 selectedRegionOffset = nil
+                selectedMarqueeRect = nil
+                marqueeRegionOrigin = nil
                 componentLadder = []
                 ladderIndex = 0
             }
@@ -37,6 +40,19 @@ public final class AnnotationSession: ObservableObject {
     /// Offset of a REGION selection's point from its anchor element's top-left
     /// (see ``select(atAXPoint:)``); nil for ordinary element selections.
     public private(set) var selectedRegionOffset: CGPoint?
+
+    /// The frame the user DREW for the current selection, in ABSOLUTE AX screen
+    /// coordinates; nil for click selections. Kept absolute (not element-relative)
+    /// so ``widenSelection()`` re-relativizes it for free: widening rebinds the
+    /// note to an enclosing element with a different origin, and a frame already
+    /// relativized at selection time would then silently describe the drag against
+    /// a box the note no longer names.
+    public private(set) var selectedMarqueeRect: CGRect?
+    /// Origin the drawn frame is measured from when the selection is a synthetic
+    /// REGION — whose own `frame` IS the drawn rect, so it cannot be its own
+    /// reference (it would relativize to 0,0 and locate nothing). nil for element
+    /// selections, which measure from the selected element's origin.
+    private var marqueeRegionOrigin: CGPoint?
 
     /// The component-widening ladder for the current selection (target first, each
     /// enclosing identified component after), and the index of the currently
@@ -122,11 +138,15 @@ public final class AnnotationSession: ObservableObject {
         // Any catcher tap dismisses an open pin editor: a tap on empty space is a
         // click-away close, and a tap on an element hands the stage to the composer.
         editingNoteID = nil
-        // Every selection starts offset-free and ladder-free: a region -> element
-        // re-selection (the catcher stays active behind an open composer) must not
-        // leak the previous region's offset or ladder onto an ELEMENT note — the
-        // didSet only clears them when `selected` becomes nil, not on replacement.
+        // Every selection starts offset-free, frame-free and ladder-free: a
+        // region -> element or marquee -> click re-selection (the catcher stays
+        // active behind an open composer) must not leak the previous region's
+        // offset, the previous drag's drawn frame, or a stale ladder onto the next
+        // note — the didSet only clears them when `selected` becomes nil, not on
+        // replacement.
         selectedRegionOffset = nil
+        selectedMarqueeRect = nil
+        marqueeRegionOrigin = nil
         componentLadder = []
         ladderIndex = 0
         selected = source.hitTest(point)
@@ -160,6 +180,84 @@ public final class AnnotationSession: ObservableObject {
         return selected
     }
 
+    /// Select the annotation target for a frame the user DREW (AX top-left screen
+    /// coordinates) — the marquee gesture: press-drag a rectangle AROUND what you
+    /// mean instead of hunting for the one pixel that hit-tests to it.
+    ///
+    /// The source resolves the frame (``MarqueeTargetSource``) and hands back the
+    /// same target-first, broadest-last ladder ``ComponentLadderSource`` produces,
+    /// so widening and the note's `component` field work unchanged. When nothing
+    /// in the frame is annotatable the drag is NOT dropped: it degrades to a
+    /// REGION note anchored at the frame's centre, exactly as a no-hit click does,
+    /// but carrying the drawn frame rather than a single point.
+    @discardableResult
+    public func select(inAXRect rect: CGRect) -> Element? {
+        guard mode == .annotating else { return nil }
+        // A drag on the catcher dismisses an open pin editor for the same reason a
+        // tap does: the composer is about to take the stage.
+        editingNoteID = nil
+        // Same stale-state hazard as the point path, and then some — a marquee ->
+        // click flow must not leak `selectedMarqueeRect` onto the click's note, and
+        // a region-click -> marquee flow must not leak `selectedRegionOffset` onto
+        // the framed one. The didSet only fires on nil, not on replacement.
+        selectedRegionOffset = nil
+        selectedMarqueeRect = nil
+        marqueeRegionOrigin = nil
+        componentLadder = []
+        ladderIndex = 0
+
+        // Normalize once: a right-to-left or bottom-to-top drag arrives with
+        // negative extents. A zero-width or zero-height rect is a click that never
+        // moved, not a marquee — bail before the region fallback too, or a stray
+        // press would silently plant a degenerate framed note.
+        let normalized = rect.standardized
+        guard normalized.width > 0, normalized.height > 0 else { return nil }
+
+        if let marqueeSource = source as? MarqueeTargetSource {
+            let ladder = marqueeSource.marqueeLadder(in: normalized)
+            if let target = ladder.first {
+                selected = target
+                componentLadder = ladder
+                ladderIndex = 0
+                selectedMarqueeRect = normalized
+                return selected
+            }
+        }
+
+        // Region fallback, mirroring the point path but anchored at the frame's
+        // CENTRE — the one point inside a drawn rect that is nearest everything it
+        // covers, so the anchor a user would name themselves.
+        if let anchorSource = source as? RegionAnchorSource,
+           let anchorElement = anchorSource.regionAnchor(at: CGPoint(x: normalized.midX, y: normalized.midY)) {
+            let offset = CGPoint(
+                x: (normalized.minX - anchorElement.frame.minX).rounded(),
+                y: (normalized.minY - anchorElement.frame.minY).rounded()
+            )
+            let anchorName = anchorElement.label.isEmpty ? anchorElement.id : anchorElement.label
+            selected = Element(
+                id: anchorElement.id,
+                role: "AXRegion",
+                type: "Region",
+                label: "Region \(Int(normalized.width))x\(Int(normalized.height)) at (\(Int(offset.x)), \(Int(offset.y))) in \(anchorName)",
+                value: "",
+                // The DRAWN rect, not a marker at a point, so the overlay
+                // highlights the frame the user actually swept.
+                frame: normalized,
+                isVisible: true,
+                isActionable: false,
+                path: anchorElement.path
+            )
+            selectedMarqueeRect = normalized
+            // The synthetic element's frame IS the drawn rect, so it cannot be its
+            // own measuring stick; record the anchor's origin instead.
+            marqueeRegionOrigin = anchorElement.frame.origin
+            // Deliberately NOT setting `selectedRegionOffset`: `regionOffset` stays
+            // the point-click locator so every note carries exactly one, and the
+            // formatter's framed/offset branches stay mutually exclusive.
+        }
+        return selected
+    }
+
     /// Step the current selection UP to the next enclosing identified component
     /// (a coarser-grained note: the card instead of the label inside it). No-op
     /// when the selection is already at the broadest rung, is a region, or the
@@ -171,6 +269,10 @@ public final class AnnotationSession: ObservableObject {
         ladderIndex += 1
         // Widening always lands on a real element, so it is never a region note.
         selectedRegionOffset = nil
+        // `selectedMarqueeRect` is deliberately KEPT: it is absolute, so it is
+        // still the frame the user drew whichever rung is now bound, and `addNote`
+        // re-relativizes it against the widened element. `marqueeRegionOrigin` is
+        // moot here — regions get no ladder, so a widen can never start from one.
         // A non-nil assignment does not trip the didSet clear, so the ladder and
         // index survive for a further widen.
         selected = componentLadder[ladderIndex]
@@ -206,6 +308,20 @@ public final class AnnotationSession: ObservableObject {
             ? ownIdentifier
             : (componentLadder.dropFirst().first?.id
                 ?? element.path.last(where: { !($0.identifier ?? "").isEmpty })?.identifier)
+        // Relativize the drawn frame HERE rather than at selection — the asymmetry
+        // with `regionOffset` (computed at selection) is deliberate:
+        // ``widenSelection()`` can rebind the note to an enclosing element AFTER
+        // the frame was drawn, so the persisted rect must be measured against
+        // whatever element the note FINALLY names. A region never widens, so its
+        // offset's anchor is fixed the moment it is picked.
+        let regionRect: CGRect? = selectedMarqueeRect.map { drawn in
+            // A synthetic region's own frame IS the drawn rect, so it measures from
+            // its anchor (else it would trivially be 0,0); elements measure from
+            // themselves.
+            let base = marqueeRegionOrigin ?? element.frame.origin
+            return CGRect(x: (drawn.minX - base.x).rounded(), y: (drawn.minY - base.y).rounded(),
+                          width: drawn.width.rounded(), height: drawn.height.rounded())
+        }
         let note = AnnotationNote(
             id: makeID(),
             route: route(),
@@ -220,7 +336,8 @@ public final class AnnotationSession: ObservableObject {
             screenshot: screenshot,
             timestamp: timestamp(),
             anchor: anchor,
-            regionOffset: selectedRegionOffset
+            regionOffset: selectedRegionOffset,
+            regionRect: regionRect
         )
         pending.append(note)
         selected = nil
