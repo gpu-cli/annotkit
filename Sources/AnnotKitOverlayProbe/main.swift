@@ -1159,6 +1159,166 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
 
             self.specController?.unmount()
             window.orderOut(nil)
+            self.phase7Marquee()
+        }
+    }
+
+    // ---- Phase 7: marquee frame selection (F4) ------------------------------
+    // The user press-drags a rectangle around what they mean. Unlike a click
+    // (deepest-wins) a FRAME means "this whole thing", so the LARGEST element the
+    // frame surrounds wins — the promise being that a sloppy rect around a card
+    // binds to the card and not to the label inside it. Reuses the Phase 6
+    // fixture, whose seeded card / card text / section / button are exactly the
+    // nesting a marquee must disambiguate, and runs through the EXPANDED overlay
+    // because that is when a drag actually happens.
+    var marqueeController: OverlayController?
+    var marqueeSession: AnnotationSession?
+    var marqueeHost: NSWindow?
+    var passMarquee = true
+    func check7(_ cond: Bool, _ msg: String) {
+        passMarquee = passMarquee && cond
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+    }
+
+    /// One-line rendering of a ladder for the log.
+    func describe(_ ladder: [Element]) -> String {
+        ladder.isEmpty ? "[] (region fallback)" : ladder.map { "#\($0.id) \(fmt($0.frame))" }.joined(separator: "  ->  ")
+    }
+
+    /// The ladder contract the session depends on: `ladder[0]` is the bound
+    /// target, and every further rung is a DISTINCT, strictly enclosing component
+    /// (so widening from a framed selection only ever gets coarser).
+    func checkLadderShape(_ ladder: [Element], label: String) {
+        guard let target = ladder.first else {
+            check7(false, "\(label): ladder is non-empty")
+            return
+        }
+        var seen: Set<String> = [target.id]
+        let targetArea = target.frame.width * target.frame.height
+        var wellFormed = true
+        for rung in ladder.dropFirst() {
+            let encloses = rung.frame.contains(target.frame)
+            let notSmaller = rung.frame.width * rung.frame.height >= targetArea
+            let distinct = seen.insert(rung.id).inserted
+            if !(encloses && notSmaller && distinct) {
+                wellFormed = false
+                print("        rung #\(rung.id) \(fmt(rung.frame)) encloses=\(encloses) " +
+                      "notSmaller=\(notSmaller) distinct=\(distinct)")
+            }
+        }
+        check7(wellFormed, "\(label): every rung above ladder[0] encloses the target, is no smaller, and is distinct")
+        // Regression guard for a defect this probe found: the ancestor chain climbs
+        // to AXApplication, whose direct CHILDREN are the app's windows — our own
+        // overlay panel among them, identified and enclosing everything. It used to
+        // be the top rung of every ladder, so widening bound the note to AnnotKit's
+        // own UI. Never a host component, so never a rung.
+        check7(!ladder.contains { $0.id == overlayWindowIdentifier },
+               "\(label): no rung is AnnotKit's own overlay panel")
+    }
+
+    func phase7Marquee() {
+        print("\n--- Phase 7: marquee frame selection (drawn rect -> element) ---")
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 480),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "AnnotKit Harness W7 (marquee)"
+        window.contentView = NSHostingView(rootView: ProbeSpecificityView())
+        window.makeKeyAndOrderFront(nil)
+        marqueeHost = window
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-marquee.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: window)
+        controller.start()
+        marqueeController = controller
+        marqueeSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self else { return }
+            let source = MacElementSource()
+            let roots = source.snapshot().map(\.root)
+            guard let button = self.findElement(id: "Spec.Button", in: roots),
+                  let card = self.findElement(id: "Spec.Card", in: roots),
+                  let cardText = self.findElement(id: "Spec.CardText", in: roots),
+                  let section = self.findElement(id: "Spec.Section", in: roots) else {
+                check7(false, "snapshot exposes Spec.Button/Card/CardText/Section")
+                self.marqueeController?.unmount()
+                window.orderOut(nil)
+                self.finish()
+                return
+            }
+            print("      fixture: card=\(fmt(card.frame)) cardText=\(fmt(cardText.frame)) " +
+                  "section=\(fmt(section.frame)) button=\(fmt(button.frame))")
+
+            // 7a — a SLOPPY frame around the card (drawn 8pt proud of it, the way a
+            // hand-drag overshoots) binds to the CARD. The frame also fully
+            // surrounds the card's text, so this is the check that largest-wins is
+            // in force: without it the drag would bind to the label inside.
+            let aroundCard = card.frame.insetBy(dx: -8, dy: -8)
+            let cardLadder = source.marqueeLadder(in: aroundCard)
+            print("      frame around card \(fmt(aroundCard)) -> \(self.describe(cardLadder))")
+            check7(aroundCard.contains(cardText.frame), "sanity: the drawn frame also surrounds the card's TEXT")
+            check7(cardLadder.first?.id == "Spec.Card",
+                   "frame around the card -> #Spec.Card (got \(cardLadder.first.map { "#\($0.id)" } ?? "nil"))")
+            check7(cardLadder.first?.id != "Spec.CardText",
+                   "frame around the card is NOT bound to the text inside it (the feature's core promise)")
+            self.checkLadderShape(cardLadder, label: "card ladder")
+            check7(cardLadder.dropFirst().contains { $0.id == "Spec.Section" },
+                   "the card ladder can still widen to #Spec.Section (widening works from a framed selection)")
+
+            // 7b — a frame around the whole section binds to the SECTION, even
+            // though it surrounds the card, the button and the texts as well.
+            let aroundSection = section.frame.insetBy(dx: -6, dy: -6)
+            let sectionLadder = source.marqueeLadder(in: aroundSection)
+            print("      frame around section \(fmt(aroundSection)) -> \(self.describe(sectionLadder))")
+            check7(sectionLadder.first?.id == "Spec.Section",
+                   "frame around the section -> #Spec.Section (got \(sectionLadder.first.map { "#\($0.id)" } ?? "nil"))")
+            self.checkLadderShape(sectionLadder, label: "section ladder")
+
+            // 7c — a tight frame around just the button binds to the BUTTON: a
+            // small drag stays as specific as a click would have been.
+            let aroundButton = button.frame.insetBy(dx: -4, dy: -4)
+            let buttonLadder = source.marqueeLadder(in: aroundButton)
+            print("      frame around button \(fmt(aroundButton)) -> \(self.describe(buttonLadder))")
+            check7(buttonLadder.first?.id == "Spec.Button",
+                   "frame around the button -> #Spec.Button (got \(buttonLadder.first.map { "#\($0.id)" } ?? "nil"))")
+            self.checkLadderShape(buttonLadder, label: "button ladder")
+
+            // 7d — a frame drawn strictly INSIDE the card, in its padding, that
+            // surrounds NOTHING: the enclosing fallback binds it to the tightest
+            // thing it was drawn inside, the card — not the section that also
+            // contains it. This is the rect generalization of the point-region path.
+            let insideCard = CGRect(x: card.frame.minX + 6, y: card.frame.midY - 8, width: 16, height: 16)
+            let insideLadder = source.marqueeLadder(in: insideCard)
+            print("      frame inside card \(fmt(insideCard)) -> \(self.describe(insideLadder))")
+            check7(card.frame.contains(insideCard), "sanity: the inside frame is strictly within the card")
+            check7(!insideCard.intersects(cardText.frame), "sanity: the inside frame surrounds nothing (misses the text)")
+            check7(insideLadder.first?.id == "Spec.Card",
+                   "frame inside the card -> #Spec.Card via the enclosing fallback (got \(insideLadder.first.map { "#\($0.id)" } ?? "nil"))")
+            self.checkLadderShape(insideLadder, label: "inside-card ladder")
+
+            // 7e — a frame over empty space, outside every window: the adapter
+            // returns [] and hands the drag to the session's region fallback rather
+            // than binding a note to whatever happened to be frontmost.
+            let nowhere = CGRect(x: -20000, y: -20000, width: 120, height: 90)
+            let nowhereLadder = source.marqueeLadder(in: nowhere)
+            print("      frame over empty space \(fmt(nowhere)) -> \(self.describe(nowhereLadder))")
+            check7(nowhereLadder.isEmpty, "frame outside any window -> [] (region-fallback handoff)")
+
+            // 7f — a press-release that never moved is a CLICK, not a marquee: a
+            // degenerate rect must not bind to everything that encloses it.
+            let degenerate = CGRect(origin: center(of: card.frame), size: .zero)
+            check7(source.marqueeLadder(in: degenerate).isEmpty,
+                   "zero-area frame -> [] (a click is not a marquee)")
+
+            self.marqueeController?.unmount()
+            window.orderOut(nil)
             self.finish()
         }
     }
@@ -1200,8 +1360,9 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 4 (window chrome excluded from the hit-test): \(passChrome ? "PASS" : "FAIL")")
         print("  Phase 5 (seeded container resolves on body hover): \(passCard ? "PASS" : "FAIL")")
         print("  Phase 6 (positional specificity by cursor position): \(passSpec ? "PASS" : "FAIL")")
+        print("  Phase 7 (marquee frame selection: drawn rect -> element): \(passMarquee ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {
