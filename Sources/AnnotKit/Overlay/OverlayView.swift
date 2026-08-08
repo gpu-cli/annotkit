@@ -426,20 +426,25 @@ private struct AnnotationCard<Footer: View>: View {
 /// capability — no dead buttons (CLAUDE.md) — so Agentation's `settings`/`eye`
 /// (no settings model, no preview capability here) are deliberately omitted.
 ///
-/// Left to right: annotate toggle (always), then — ONLY while annotating — two
-/// DISTINCT persist actions (Copy to the clipboard as markdown, and Export to
-/// `AGENTATION_NOTES.md`) and a destructive clear. Idle shows JUST the pencil; the
-/// tools appear when annotate mode is on, and are disabled/dimmed while `pending`
-/// is empty (acting on zero notes is a no-op). A count badge overlays the pill
-/// whenever notes exist. The pencil toggle exits annotate mode, so there is no
-/// separate close/exit control. Copy and Export never clear the retained set (only
-/// Clear does), so the same notes can be both copied and exported. Copy/Export
-/// flow through host callbacks (they need a sink); toggle needs the controller
-/// (activation); clear reads/writes the session directly.
+/// Idle is JUST the pencil, so the resting affordance is one unambiguous "start
+/// annotating". Annotate mode replaces it outright with the working set, left to
+/// right: two DISTINCT persist actions (Copy to the clipboard as markdown, and
+/// Export to `AGENTATION_NOTES.md`), a destructive clear, and the X that leaves
+/// the mode. The X sits FAR RIGHT because that is where a "close this mode"
+/// control is looked for, and it is drawn as a plain action rather than a lit-up
+/// toggle — the expanded pill and the live catcher already say annotate mode is
+/// on, so a permanently bright glyph would only add noise. The three note actions
+/// are disabled/dimmed while `pending` is empty (acting on zero notes is a
+/// no-op); the X is never gated, because leaving must always work. A count badge
+/// overlays the pill whenever notes exist. Copy and Export never clear the
+/// retained set (only Clear does), so the same notes can be both copied and
+/// exported. Copy/Export flow through host callbacks (they need a sink); the mode
+/// control needs the controller (activation); clear reads/writes the session
+/// directly.
 ///
 /// The pill itself is rendered unconditionally and is NEVER gated on an entrance
-/// flag, so it stays visible across idle<->annotate; the note-action cluster
-/// animates in and out as annotate mode toggles.
+/// flag, so it stays visible across idle<->annotate; only its contents swap as
+/// annotate mode toggles.
 private struct ToolbarView: View {
     @ObservedObject var session: AnnotationSession
     let onToggle: () -> Void
@@ -454,16 +459,10 @@ private struct ToolbarView: View {
 
     var body: some View {
         HStack(spacing: 2) {
-            PillButton(
-                icon: annotating ? .pencilOff : .pencil,
-                isActive: annotating,
-                tooltip: annotating ? "Stop annotating" : "Annotate",
-                action: onToggle
-            )
-
-            // Copy/Export/Clear appear ONLY in annotate mode; idle shows just the
-            // pencil. While annotating they dim/disable when there are no notes
-            // (acting on zero notes is a no-op).
+            // The two modes share no controls, so they are two whole rows rather
+            // than one row with conditional members: idle is the pencil alone,
+            // annotate is the note actions (dimmed/disabled with no notes to act
+            // on) closed by the exit X.
             if annotating {
                 PillButton(
                     icon: justCopied ? .check : .copy,
@@ -481,6 +480,12 @@ private struct ToolbarView: View {
                 PillButton(icon: .trash, isDestructive: true, isDisabled: !hasNotes, tooltip: "Clear notes") {
                     session.clear()
                 }
+                // Deliberately NOT gated on `hasNotes`: with zero notes every other
+                // control is inert, so the X is the only live thing left and must
+                // still work.
+                PillButton(icon: .close, tooltip: "Stop annotating", action: onToggle)
+            } else {
+                PillButton(icon: .pencil, tooltip: "Annotate", action: onToggle)
             }
         }
         // Idle shows ONE 28pt button, so the inset must be EVEN (8pt all around ->
@@ -504,9 +509,9 @@ private struct ToolbarView: View {
             }
         }
         .shadow(color: .black.opacity(0.4), radius: 12, y: 8)
-        // Animate the note-action cluster in/out as annotate mode toggles. The
-        // pill itself has no entrance gate: it is always visible (just the pencil
-        // when idle).
+        // Animate the row swap (and the pill's width with it) as annotate mode
+        // toggles. The pill itself has no entrance gate: it is always visible
+        // (just the pencil when idle).
         .animation(reduceMotion ? nil : .easeOut(duration: 0.15), value: annotating)
     }
 
@@ -537,12 +542,10 @@ private struct ToolbarView: View {
 }
 
 /// A single 28pt circular icon button in the pill: transparent when idle, a faint
-/// white wash on hover (red for destructive), and a bright white glyph (no circle
-/// fill) when its toggle is active. Each carries a tooltip (`.help`) and a
-/// matching accessibility label.
+/// white wash on hover (red for destructive). Each carries a tooltip (`.help`)
+/// and a matching accessibility label.
 private struct PillButton: View {
     let icon: LucideIcon
-    var isActive: Bool = false
     var isDestructive: Bool = false
     /// Dims the glyph and makes the button a true no-op (used by copy/export/clear
     /// while there are no notes to act on).
@@ -560,12 +563,11 @@ private struct PillButton: View {
         if isDisabled { return PillStyle.iconIdle.opacity(0.4) }
         if let glyphTint { return glyphTint }
         if isDestructive && hovering { return .white }
-        if isActive { return .white }
         return hovering ? PillStyle.iconHover : PillStyle.iconIdle
     }
 
-    // Active state is carried by `glyphColor` (white when active) with NO circle
-    // fill, so the annotate toggle reads as a bright glyph, not a blue chip.
+    // Hover is the ONLY fill state: every control in the pill is a one-shot
+    // action, so no button ever wears a persistent chip.
     private var fillColor: Color {
         // No hover wash while disabled — the button must look inert.
         if hovering && !isDisabled { return isDestructive ? PillStyle.destructive : PillStyle.hoverBackground }
