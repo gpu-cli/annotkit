@@ -58,3 +58,22 @@ public protocol RegionAnchorSource {
 public protocol ComponentLadderSource {
     func componentLadder(at point: CGPoint) -> [Element]
 }
+
+/// Optional element-source capability: resolve a frame the user DREW (a marquee
+/// press-drag) to an annotation target, per ``MarqueeTargetRule`` — the largest
+/// meaningful element the frame surrounds, else the tightest element the frame
+/// was drawn inside. Lets the user say "I mean this whole card" by circling it
+/// rather than hunting for the one pixel that hit-tests to the card. Sources that
+/// cannot offer it simply don't conform; the session then leaves marquee
+/// selection off and only point selection is available.
+@MainActor
+public protocol MarqueeTargetSource {
+    /// The annotation target for a frame the user DREW (AX top-left screen
+    /// coordinates), with its component-widening ladder: the target first, then
+    /// each enclosing identified component, broadest last — the SAME contract as
+    /// ``ComponentLadderSource/componentLadder(at:)``, so the session's existing
+    /// ladder handling (widening, and the note's `component` field) works
+    /// unchanged. Empty when nothing in the frame is annotatable; the session
+    /// then falls back to a region note anchored near the frame.
+    func marqueeLadder(in rect: CGRect) -> [Element]
+}
