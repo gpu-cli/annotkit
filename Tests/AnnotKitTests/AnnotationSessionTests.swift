@@ -62,12 +62,43 @@ private final class LadderSource: ElementSource, ComponentLadderSource {
     }
 }
 
+/// A source that serves a marquee ladder AND a point hit-test (and optionally a
+/// region anchor), so one test can interleave drags and clicks — the mixed flow
+/// the catcher actually produces, and the one that surfaces stale per-selection
+/// state.
+@MainActor
+private final class MarqueeSource: ElementSource, MarqueeTargetSource, RegionAnchorSource {
+    var ladder: [Element]
+    var hit: Element?
+    var anchor: Element?
+    /// The last rect handed to ``marqueeLadder(in:)`` — lets a test assert the
+    /// session normalized before delegating.
+    private(set) var lastRect: CGRect?
+
+    init(ladder: [Element], hit: Element? = nil, anchor: Element? = nil) {
+        self.ladder = ladder
+        self.hit = hit
+        self.anchor = anchor
+    }
+    func snapshot() -> [WindowSnapshot] { [] }
+    func hitTest(_ point: CGPoint) -> Element? { hit }
+    func marqueeLadder(in rect: CGRect) -> [Element] {
+        lastRect = rect
+        return ladder
+    }
+    func regionAnchor(at point: CGPoint) -> Element? { anchor }
+    func selector(for element: Element) -> String { "#\(element.id)" }
+    func screenshot(of element: Element?) async throws -> CapturedImage {
+        CapturedImage(pngData: Data(), pixelWidth: 1, pixelHeight: 1)
+    }
+}
+
 @MainActor
 final class AnnotationSessionTests: XCTestCase {
-    private func makeLadderElement(_ id: String) -> Element {
+    private func makeLadderElement(_ id: String, frame: CGRect = CGRect(x: 0, y: 0, width: 10, height: 10)) -> Element {
         Element(
             id: id, role: "AXGroup", type: "AXGroup", label: id, value: "",
-            frame: CGRect(x: 0, y: 0, width: 10, height: 10), isVisible: true, isActionable: false,
+            frame: frame, isVisible: true, isActionable: false,
             path: [PathComponent(role: "AXGroup", label: id, identifier: id, indexAmongRole: 0)]
         )
     }
@@ -197,6 +228,161 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertNil(session.selectedRegionOffset, "the region offset must not survive re-selection")
         let note = session.addNote(comment: "element after region")
         XCTAssertNil(note?.regionOffset, "element note must not inherit the stale region offset")
+    }
+
+    // MARK: - Marquee selection
+
+    func testMarqueeBindsToLadderTargetAndCapturesTheLadder() {
+        let ladder = [makeLadderElement("Card"), makeLadderElement("Settings.Models")]
+        let session = AnnotationSession(source: MarqueeSource(ladder: ladder), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
+        XCTAssertEqual(session.select(inAXRect: drawn)?.id, "Card", "a marquee binds to the ladder's first rung")
+        XCTAssertEqual(session.selectedMarqueeRect, drawn, "the drawn frame is kept absolute")
+        XCTAssertNil(session.selectedRegionOffset, "a framed note carries no point locator")
+        XCTAssertTrue(session.canWidenSelection, "the marquee ladder drives widening like the point ladder")
+    }
+
+    func testMarqueeNormalizesABackwardsDrag() {
+        // A bottom-right -> top-left drag arrives with negative extents. The
+        // session must normalize BEFORE delegating, or the source sees a rect whose
+        // `contains` degenerates and the persisted frame gets a negative size.
+        let source = MarqueeSource(ladder: [makeLadderElement("Card")])
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(inAXRect: CGRect(x: 150, y: 140, width: -40, height: -20))
+        XCTAssertEqual(source.lastRect, CGRect(x: 110, y: 120, width: 40, height: 20))
+        XCTAssertEqual(session.selectedMarqueeRect, CGRect(x: 110, y: 120, width: 40, height: 20))
+    }
+
+    func testMarqueeThenClickDropsTheStaleFrame() {
+        // The 7993a67 hazard, marquee edition: the catcher stays live behind an
+        // open composer, so drag-then-click WITHOUT capturing is a supported flow.
+        // The click's note must not inherit the drag's frame — the `selected`
+        // didSet cannot help, because the value is replaced, never nilled.
+        let leaf = makeLadderElement("Card", frame: CGRect(x: 100, y: 100, width: 60, height: 40))
+        let source = MarqueeSource(ladder: [leaf])
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(inAXRect: CGRect(x: 110, y: 120, width: 40, height: 20))
+        XCTAssertNotNil(session.selectedMarqueeRect)
+
+        source.hit = makeElement()
+        source.ladder = []
+        session.select(atAXPoint: .zero)
+        XCTAssertEqual(session.selected?.id, "SaveButton", "the click re-selects a real element")
+        XCTAssertNil(session.selectedMarqueeRect, "the drawn frame must not survive re-selection")
+        XCTAssertNil(session.addNote(comment: "click after drag")?.regionRect,
+                     "a click note must not inherit the stale marquee frame")
+    }
+
+    func testRegionClickThenMarqueeDropsTheStaleOffset() {
+        // The other direction: a no-hit CLICK lands a point-region (setting
+        // `selectedRegionOffset`), then a drag lands a framed note. The framed note
+        // must carry exactly one locator — the rect — or the formatter would have
+        // two mutually exclusive Region lines to choose between.
+        let anchor = makeElement()
+        let source = MarqueeSource(ladder: [makeLadderElement("Card")], hit: nil, anchor: anchor)
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: CGPoint(x: 22, y: 14))
+        XCTAssertEqual(session.selectedRegionOffset, CGPoint(x: 22, y: 14), "the click lands a point-region")
+
+        session.select(inAXRect: CGRect(x: 110, y: 120, width: 40, height: 20))
+        XCTAssertEqual(session.selected?.id, "Card", "the drag re-selects a real element")
+        XCTAssertNil(session.selectedRegionOffset, "the region offset must not survive re-selection")
+        let note = session.addNote(comment: "drag after region click")
+        XCTAssertNil(note?.regionOffset, "a framed note must not inherit the stale point offset")
+        XCTAssertNotNil(note?.regionRect)
+    }
+
+    func testWideningAfterAMarqueeReRelativizesTheFrame() {
+        // The frame is stored ABSOLUTE precisely so widening stays correct: the
+        // note rebinds to a bigger element with a different origin AFTER the drag,
+        // so the persisted rect must be measured against the widened element. A
+        // frame relativized at selection time would keep the leaf's numbers.
+        let leaf = makeLadderElement("Leaf", frame: CGRect(x: 100, y: 100, width: 60, height: 40))
+        let card = makeLadderElement("Card", frame: CGRect(x: 80, y: 60, width: 200, height: 150))
+        let session = AnnotationSession(
+            source: MarqueeSource(ladder: [leaf, card]), sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
+        session.select(inAXRect: drawn)
+        XCTAssertEqual(session.widenSelection()?.id, "Card")
+        XCTAssertEqual(session.selectedMarqueeRect, drawn, "widening keeps the absolute drawn frame")
+        let note = session.addNote(comment: "framed then widened")
+        XCTAssertEqual(note?.selector, "#Card")
+        XCTAssertEqual(note?.regionRect, CGRect(x: 30, y: 60, width: 40, height: 20),
+                       "origin re-measured from the widened element; size unchanged")
+    }
+
+    func testCaptureClearsTheMarqueeFrame() {
+        // The didSet path (selection -> nil), distinct from the re-selection path
+        // above: after a capture the NEXT note must start frame-free.
+        let source = MarqueeSource(ladder: [makeLadderElement("Card", frame: CGRect(x: 100, y: 100, width: 60, height: 40))])
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(inAXRect: CGRect(x: 110, y: 120, width: 40, height: 20))
+        XCTAssertNotNil(session.addNote(comment: "framed")?.regionRect)
+        XCTAssertNil(session.selectedMarqueeRect, "capture clears the drawn frame")
+
+        source.hit = makeElement()
+        session.select(atAXPoint: .zero)
+        XCTAssertNil(session.addNote(comment: "plain")?.regionRect, "the next note carries no frame")
+    }
+
+    func testMarqueeWithoutMarqueeSourceFallsBackToAnAnchoredRegion() {
+        // No `MarqueeTargetSource` conformance: the drag degrades to a region note,
+        // but the FRAME survives — and it is measured from the ANCHOR, because the
+        // synthetic element's own frame IS the drawn rect and would trivially
+        // relativize to (0, 0), locating nothing.
+        let anchor = Element(
+            id: "SaveButton", role: "AXButton", type: "AXButton", label: "Save", value: "",
+            frame: CGRect(x: 10, y: 5, width: 100, height: 40), isVisible: true, isActionable: true,
+            path: [PathComponent(role: "AXButton", label: "Save", identifier: "SaveButton", indexAmongRole: 0)]
+        )
+        let session = AnnotationSession(
+            source: EmptyWithAnchorSource(anchor: anchor), sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        let drawn = CGRect(x: 22, y: 14, width: 30, height: 12)
+        let selected = session.select(inAXRect: drawn)
+        XCTAssertEqual(selected?.role, "AXRegion")
+        XCTAssertEqual(selected?.frame, drawn, "the highlight shows the frame the user drew")
+        XCTAssertEqual(selected?.label, "Region 30x12 at (12, 9) in Save")
+        XCTAssertNil(session.selectedRegionOffset, "a framed region carries the rect, not a point offset")
+
+        let note = session.addNote(comment: "gap looks off")
+        XCTAssertNil(note?.regionOffset)
+        XCTAssertEqual(note?.regionRect, CGRect(x: 12, y: 9, width: 30, height: 12))
+        XCTAssertNotEqual(note?.regionRect?.origin, .zero,
+                          "measured from the anchor, NOT from the synthetic element (which would be 0,0)")
+    }
+
+    func testDegenerateMarqueeSelectsNothing() {
+        // A press that never moved (or moved on one axis only) is a click, not a
+        // marquee. It must not even reach the region fallback, or a stray press
+        // would plant a zero-area framed note.
+        let anchor = makeElement()
+        let source = MarqueeSource(ladder: [makeLadderElement("Card")], anchor: anchor)
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        XCTAssertNil(session.select(inAXRect: CGRect(x: 10, y: 10, width: 0, height: 20)))
+        XCTAssertNil(session.select(inAXRect: CGRect(x: 10, y: 10, width: 20, height: 0)))
+        XCTAssertNil(session.select(inAXRect: .zero))
+        XCTAssertNil(session.selected, "a degenerate drag selects nothing at all")
+        XCTAssertNil(source.lastRect, "the source is never consulted for a degenerate frame")
+    }
+
+    func testSelectInRectIsGatedOnAnnotatingMode() {
+        let session = AnnotationSession(
+            source: MarqueeSource(ladder: [makeLadderElement("Card")]), sink: NotesFileSink(path: "/dev/null")
+        )
+        let drawn = CGRect(x: 0, y: 0, width: 10, height: 10)
+        XCTAssertNil(session.select(inAXRect: drawn), "a drag before start must be nil")
+        session.start()
+        XCTAssertEqual(session.select(inAXRect: drawn)?.id, "Card")
     }
 
     func testClearHoverDropsHighlightButKeepsSelection() {
