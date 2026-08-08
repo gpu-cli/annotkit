@@ -1317,6 +1317,39 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             check7(source.marqueeLadder(in: degenerate).isEmpty,
                    "zero-area frame -> [] (a click is not a marquee)")
 
+            // 7g — NOTHING from AnnotKit's own overlay can enter the candidate set.
+            // Sharper for a marquee than for a click: a drag rect by construction
+            // spans screen the overlay is drawn across, and overlay elements are
+            // genuinely identified and genuinely meaningful, so the rule cannot
+            // reject them — a large overlay surface would WIN pass 1 on area and
+            // bind the user's note to our own UI. The walk is rooted at the HOST
+            // window (the overlay is filtered out of `kAXWindows` by identifier
+            // BEFORE the root is picked, never by "key" or "frontmost"), so the
+            // overlay's descendants are out of reach by construction. This asserts
+            // that construction against the live tree instead of trusting it.
+            let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            let rawWindows = AX.windows(app)
+            let overlayPanel = rawWindows.first { AX.string($0, kAXIdentifierAttribute) == overlayWindowIdentifier }
+            check7(overlayPanel != nil, "the overlay panel IS a live AX window during the drag (a real shadowing risk)")
+            if let overlayPanel {
+                let panelFrame = AX.frame(overlayPanel)
+                // Without this the whole sub-phase would be vacuous: an overlay that
+                // does not cover the drag region proves nothing about one that does.
+                check7(panelFrame.contains(card.frame),
+                       "sanity: the expanded overlay SPANS the drag region (the card is drawn beneath it)")
+                let overlayIDs = Set(self.axCollectIDs(in: overlayPanel, depth: 0))
+                let hostWindow = rawWindows.first { AX.string($0, kAXTitleAttribute) == "AnnotKit Harness W7 (marquee)" }
+                let panelIsAXChildOfHost = hostWindow.map { host in
+                    AX.children(host).contains { CFEqual($0, overlayPanel) }
+                } ?? false
+                print("      overlay panel \(fmt(panelFrame)) carries \(overlayIDs.count) identified element(s); " +
+                      "exposed as an AX CHILD of the host window: \(panelIsAXChildOfHost)")
+                let everyResult = cardLadder + sectionLadder + buttonLadder + insideLadder
+                check7(!everyResult.contains { overlayIDs.contains($0.id) },
+                       "no marquee result — target or rung — is an element from AnnotKit's own overlay subtree")
+            }
+
             self.marqueeController?.unmount()
             window.orderOut(nil)
             self.finish()
@@ -1330,6 +1363,19 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             if let found = findFirst(in: element.children, where: predicate) { return found }
         }
         return nil
+    }
+
+    /// Every non-empty AX identifier in `element`'s subtree, including its own —
+    /// the set of ids a walk that strayed into the overlay would surface.
+    func axCollectIDs(in element: AXUIElement, depth: Int) -> [String] {
+        guard depth < 32 else { return [] }
+        var out: [String] = []
+        let id = AX.string(element, kAXIdentifierAttribute)
+        if !id.isEmpty { out.append(id) }
+        for child in AX.children(element) {
+            out.append(contentsOf: axCollectIDs(in: child, depth: depth + 1))
+        }
+        return out
     }
 
     /// Recursive raw-AX search for elements matching one of `subroles`.
