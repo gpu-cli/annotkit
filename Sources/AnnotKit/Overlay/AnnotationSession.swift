@@ -269,10 +269,17 @@ public final class AnnotationSession: ObservableObject {
         ladderIndex += 1
         // Widening always lands on a real element, so it is never a region note.
         selectedRegionOffset = nil
+        // ...and for the same reason it can never keep a region's measuring stick:
+        // every rung is a real element, so the drawn frame is measured from the
+        // element itself. Clearing is cheap insurance rather than a live fix —
+        // regions get no ladder today, so this state is currently unreachable —
+        // but leaving a stale anchor origin behind would silently measure the
+        // persisted rect from the wrong box, and that is exactly the class of bug
+        // `7993a67` was.
+        marqueeRegionOrigin = nil
         // `selectedMarqueeRect` is deliberately KEPT: it is absolute, so it is
         // still the frame the user drew whichever rung is now bound, and `addNote`
-        // re-relativizes it against the widened element. `marqueeRegionOrigin` is
-        // moot here — regions get no ladder, so a widen can never start from one.
+        // re-relativizes it against the widened element.
         // A non-nil assignment does not trip the didSet clear, so the ladder and
         // index survive for a further widen.
         selected = componentLadder[ladderIndex]
