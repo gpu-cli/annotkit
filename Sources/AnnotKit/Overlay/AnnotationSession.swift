@@ -16,7 +16,28 @@ public final class AnnotationSession: ObservableObject {
         case annotating
     }
 
+    /// Which gesture the catcher interprets: click a point, or draw a frame around
+    /// what you mean. Explicit rather than inferred from how far a press travelled —
+    /// an implicit branch means the mode you get depends on how steady your hand was,
+    /// so a jittery click silently plants a FRAMED note bound to whatever container
+    /// the pointer sat in. Making it a chosen tool means the user always knows which
+    /// outcome a press can produce before they make it.
+    ///
+    /// Nested here (rather than beside ``SelectionGesture``) because it is session
+    /// state the UI binds to; `nonisolated` so the pure ``SelectionGesture/resolve``
+    /// can switch on it without hopping to the main actor.
+    public nonisolated enum SelectionTool: Sendable, Hashable {
+        case point
+        case frame
+    }
+
     @Published public private(set) var mode: Mode = .idle
+    /// The active selection tool. A user PREFERENCE, not per-session state:
+    /// ``stop()``, ``clear()`` and capturing a note deliberately leave it alone, so
+    /// a user who chose frame mode does not silently get dropped back to clicking
+    /// after every note. ``point`` is the default so existing muscle memory (click
+    /// the thing, type the note) is untouched for anyone who never opens the picker.
+    @Published public private(set) var tool: SelectionTool = .point
     /// The retained set of captured notes. Grows via ``addNote(comment:selectedText:screenshot:)``
     /// and is emptied ONLY by ``clear()`` — ``export()`` and copy read it without
     /// mutating it, so the same set survives repeated copy/export.
@@ -98,6 +119,14 @@ public final class AnnotationSession: ObservableObject {
     }
 
     public func start() { mode = .annotating }
+
+    /// Switch which gesture the catcher interprets. Deliberately touches NOTHING
+    /// else: an open composer, the current selection and the retained notes all
+    /// survive, because changing how you will pick the NEXT target says nothing
+    /// about the note you are in the middle of writing. Discarding a half-typed
+    /// comment because the user reached for the other tool would be the kind of
+    /// data loss nobody reports — they just stop using the picker.
+    public func setTool(_ tool: SelectionTool) { self.tool = tool }
 
     public func stop() {
         mode = .idle

@@ -17,6 +17,8 @@ final class LucideIconTests: XCTestCase {
         ("download", .download),
         ("trash", .trash),
         ("close", .close),
+        ("mousePointer", .mousePointer),
+        ("squareDashed", .squareDashed),
     ]
 
     func testEachIconRendersNonEmptyPath() {

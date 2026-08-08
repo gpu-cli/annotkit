@@ -385,6 +385,47 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertEqual(session.select(inAXRect: drawn)?.id, "Card")
     }
 
+    // MARK: - Selection tool
+
+    /// Point selection is the default, so a host that never touches the tool keeps
+    /// the click-to-annotate behaviour that predates frame selection.
+    func testSelectionToolDefaultsToPoint() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        XCTAssertEqual(session.tool, .point)
+    }
+
+    func testSetToolSwitchesBetweenPointAndFrame() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.setTool(.frame)
+        XCTAssertEqual(session.tool, .frame)
+        session.setTool(.point)
+        XCTAssertEqual(session.tool, .point)
+    }
+
+    /// The tool is a PREFERENCE, not per-selection state: it must survive leaving
+    /// annotate mode, clearing the notes, and capturing. Resetting it on any of
+    /// these would silently drop the user back to point selection mid-session —
+    /// and the next drag would then do nothing at all, since a drag in point mode
+    /// is treated as a click.
+    func testSelectionToolSurvivesStopClearAndCapture() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.setTool(.frame)
+
+        session.select(atAXPoint: .zero)
+        session.addNote(comment: "captured")
+        XCTAssertEqual(session.tool, .frame, "capturing a note must not reset the tool")
+
+        session.clear()
+        XCTAssertEqual(session.tool, .frame, "clearing the notes must not reset the tool")
+
+        session.stop()
+        XCTAssertEqual(session.tool, .frame, "leaving annotate mode must not reset the tool")
+
+        session.start()
+        XCTAssertEqual(session.tool, .frame, "re-entering annotate mode keeps the chosen tool")
+    }
+
     func testClearHoverDropsHighlightButKeepsSelection() {
         let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
         session.start()

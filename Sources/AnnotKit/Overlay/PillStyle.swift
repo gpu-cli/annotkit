@@ -28,8 +28,9 @@ extension Color {
 /// sibling tools read the same: an opaque `#1A1A1A` container (the AnnotKit
 /// overlay is transparent, so material would show desktop through it), hairline
 /// white borders, low-opacity white glyphs that brighten on hover, and a red
-/// destructive hover. The toggle-active and count-badge fills reuse
-/// `Color.accentColor` to stay consistent with the highlight stroke.
+/// destructive hover. The count-badge fill reuses `Color.accentColor` to stay
+/// consistent with the highlight stroke; the active selection tool is marked with
+/// a full-white glyph instead, so the accent keeps meaning "notes exist".
 enum PillStyle {
     static let background = Color(hex: "1A1A1A")
     static let border = Color.white.opacity(0.08)
@@ -38,13 +39,22 @@ enum PillStyle {
     static let hoverBackground = Color.white.opacity(0.1)
     static let destructive = Color(hex: "EF4444")
     static let success = Color(hex: "22C55E")
+    /// The glyph of the ACTIVE tool in the selection-tool segment. Full white, not
+    /// an accent chip: the pill's only other lit state is the count badge, and a
+    /// second accent-colored thing in the row would read as another notification
+    /// rather than as "this tool is armed".
+    static let iconActive = Color.white
+    /// Hairline rule separating the tool segment from the note actions. The same
+    /// white-on-dark weight as ``border`` but a touch stronger, so it reads as a
+    /// deliberate group boundary at 1pt instead of disappearing into the capsule.
+    static let divider = Color.white.opacity(0.1)
 }
 
 // MARK: - Lucide icon model
 
 /// A primitive on Lucide's 24x24 design grid. Modeling each glyph as a small
-/// union of primitives (instead of shipping a general SVG renderer for six static
-/// icons) keeps them offline, dependency-free, and unit-testable — the
+/// union of primitives (instead of shipping a general SVG renderer for a handful
+/// of static icons) keeps them offline, dependency-free, and unit-testable — the
 /// no-speculative-abstraction rule from CLAUDE.md. `path` backs the few glyphs
 /// that need real curves, parsed from an SVG `d` string.
 enum IconPart {
@@ -100,6 +110,33 @@ struct LucideIcon {
     static let close = LucideIcon(parts: [
         .path("M18 6 6 18"),
         .path("M6 6l12 12"),
+    ])
+
+    /// Lucide `mouse-pointer-2` — the POINT tool: select by clicking. The real
+    /// Lucide `d` string; its two tiny corner arcs (`a`) are approximated by the
+    /// parser as a line to the arc endpoint, which is invisible at 16pt on a shape
+    /// this angular.
+    static let mousePointer = LucideIcon(parts: [
+        .path("M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"),
+    ])
+
+    /// Lucide `square-dashed` — the FRAME tool: select by drawing a frame. Twelve
+    /// short strokes rather than one outline, and that is the point: the gaps echo
+    /// the dashed rubber band the tool draws, so the button previews its own
+    /// gesture instead of reading as a generic square.
+    static let squareDashed = LucideIcon(parts: [
+        .path("M5 3a2 2 0 0 0-2 2"),
+        .path("M19 3a2 2 0 0 1 2 2"),
+        .path("M21 19a2 2 0 0 1-2 2"),
+        .path("M5 21a2 2 0 0 1-2-2"),
+        .path("M9 3h1"),
+        .path("M9 21h1"),
+        .path("M14 3h1"),
+        .path("M14 21h1"),
+        .path("M3 9v1"),
+        .path("M21 9v1"),
+        .path("M3 14v1"),
+        .path("M21 14v1"),
     ])
 }
 
