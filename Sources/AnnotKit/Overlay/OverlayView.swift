@@ -4,8 +4,9 @@ import SwiftUI
 ///
 /// Interaction is driven entirely through SwiftUI hit-testing, which fixes the
 /// two ways a global click monitor went wrong: a full-screen catcher (active
-/// only in annotate mode, behind the chrome) receives hover and taps over the
-/// app, while the toolbar and composer sit on top and consume their own clicks,
+/// only in annotate mode, behind the chrome) receives hover, taps, and marquee
+/// drags over the app (see ``MarqueeDrag`` for the click-vs-frame branch), while
+/// the toolbar and composer sit on top and consume their own clicks,
 /// so tapping "Add note" can never re-select the element under the button. The
 /// whole overlay is `accessibilityHidden` so the AX point query sees through it
 /// to the app beneath.
@@ -43,12 +44,34 @@ struct OverlayView: View {
     /// Draft text for the pin edit card, seeded from the note's comment when
     /// editing begins (see the `editingNoteID` seeding hook on the ZStack).
     @State private var editDraft: String = ""
+    /// The in-progress marquee band, WINDOW-LOCAL (gesture coordinates), non-nil
+    /// only between "this press has travelled far enough to be a frame" and the
+    /// release that resolves it. It is never the resolved selection — that comes
+    /// back as `session.selected` and is drawn by the highlight branch.
+    @State private var marqueeRect: CGRect?
 
     var body: some View {
         ZStack(alignment: .topLeading) {
             catcher
 
-            if let element = session.selected ?? session.hovered {
+            // The band REPLACES the element highlight while a frame is being drawn
+            // (same ZStack slot: above the catcher, below the chrome). Showing both
+            // would put a solid "this is what you get" highlight under a rectangle
+            // that has not resolved to anything yet.
+            if let marqueeRect {
+                // COORDINATES: `marqueeRect` is already window-local, so it is
+                // offset DIRECTLY — no `axOrigin` subtraction, unlike the element
+                // highlight one branch down, which arrives in AX screen space.
+                // Subtracting here "for symmetry" would slide the band off by the
+                // window's screen origin, invisible on the primary display at the
+                // global origin and badly wrong on every secondary display.
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                    .background(Color.accentColor.opacity(0.08))
+                    .frame(width: marqueeRect.width, height: marqueeRect.height)
+                    .offset(x: marqueeRect.minX, y: marqueeRect.minY)
+                    .allowsHitTesting(false)
+            } else if let element = session.selected ?? session.hovered {
                 let originX = element.frame.minX - axOrigin.x
                 let originY = element.frame.minY - axOrigin.y
                 RoundedRectangle(cornerRadius: 3)
@@ -126,6 +149,12 @@ struct OverlayView: View {
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let point):
+                        // While a band is live the user is FRAMING, not hovering:
+                        // resolving an element under the moving pointer would draw a
+                        // competing highlight underneath the band (and burn an AX
+                        // query per motion event) for a selection the release is
+                        // about to overwrite anyway.
+                        guard marqueeRect == nil else { return }
                         session.hover(atAXPoint: CGPoint(x: point.x + axOrigin.x, y: point.y + axOrigin.y))
                     case .ended:
                         // The cursor left the catcher (it covers the host's full
@@ -137,10 +166,42 @@ struct OverlayView: View {
                         session.clearHover()
                     }
                 }
+                // ONE gesture handles both clicks and frames, branching on travel at
+                // release. It is deliberately NOT a DragGesture composed with the
+                // old SpatialTapGesture: `.exclusively`/`.simultaneously` make the
+                // recognizers negotiate, and the case that loses that negotiation is
+                // the plain click — which then does nothing at all in annotate mode.
+                // A single recognizer with a distance branch has no ambiguity to
+                // lose a click in. `minimumDistance: 0` is what lets it also see the
+                // press that never moved.
                 .gesture(
-                    SpatialTapGesture().onEnded { event in
-                        session.select(atAXPoint: CGPoint(x: event.location.x + axOrigin.x, y: event.location.y + axOrigin.y))
-                    }
+                    DragGesture(minimumDistance: 0)
+                        .onChanged { value in
+                            // Below the threshold nothing is drawn: a band that
+                            // flickered up on every click would advertise a marquee
+                            // the release is going to route as a click.
+                            guard MarqueeDrag.isFrame(from: value.startLocation, to: value.location) else { return }
+                            marqueeRect = MarqueeDrag.localRect(from: value.startLocation, to: value.location)
+                            session.clearHover()
+                        }
+                        .onEnded { value in
+                            marqueeRect = nil
+                            if MarqueeDrag.isFrame(from: value.startLocation, to: value.location) {
+                                session.select(inAXRect: MarqueeDrag.axRect(
+                                    from: value.startLocation,
+                                    to: value.location,
+                                    axOrigin: axOrigin
+                                ))
+                            } else {
+                                // `startLocation`, not `location`: it is where the
+                                // user AIMED, and it is stable for a press that
+                                // drifted a point or two under the finger/cursor.
+                                session.select(atAXPoint: CGPoint(
+                                    x: value.startLocation.x + axOrigin.x,
+                                    y: value.startLocation.y + axOrigin.y
+                                ))
+                            }
+                        }
                 )
         } else {
             Color.clear.allowsHitTesting(false)
