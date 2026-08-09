@@ -44,17 +44,19 @@ public final class AnnotationSession: ObservableObject {
     @Published public private(set) var pending: [AnnotationNote] = []
     @Published public private(set) var hovered: Element?
     @Published public private(set) var selected: Element? {
-        // The region offset, the drawn marquee frame, and the widening ladder only
+        // The region offset, the drawn marquee frame, and the navigation path only
         // make sense while their selection is alive; clearing the selection
         // (capture, cancel, stop, pin editing) must never leave a stale offset,
-        // frame, or ladder for the NEXT note.
+        // frame, or path for the NEXT note.
         didSet {
             if selected == nil {
                 selectedRegionOffset = nil
                 selectedMarqueeRect = nil
                 marqueeRegionOrigin = nil
-                componentLadder = []
-                ladderIndex = 0
+                selectionPath = []
+                pathIndex = 0
+                cachedChildren = []
+                selectionHint = nil
             }
         }
     }
@@ -64,10 +66,10 @@ public final class AnnotationSession: ObservableObject {
 
     /// The frame the user DREW for the current selection, in ABSOLUTE AX screen
     /// coordinates; nil for click selections. Kept absolute (not element-relative)
-    /// so ``widenSelection()`` re-relativizes it for free: widening rebinds the
-    /// note to an enclosing element with a different origin, and a frame already
-    /// relativized at selection time would then silently describe the drag against
-    /// a box the note no longer names.
+    /// so navigation re-relativizes it for free: ``selectParent()``/``selectChild()``
+    /// rebind the note to a different element with a different origin, and a frame
+    /// already relativized at selection time would then silently describe the drag
+    /// against a box the note no longer names.
     public private(set) var selectedMarqueeRect: CGRect?
     /// Origin the drawn frame is measured from when the selection is a synthetic
     /// REGION — whose own `frame` IS the drawn rect, so it cannot be its own
@@ -75,17 +77,46 @@ public final class AnnotationSession: ObservableObject {
     /// selections, which measure from the selected element's origin.
     private var marqueeRegionOrigin: CGPoint?
 
-    /// The component-widening ladder for the current selection (target first, each
-    /// enclosing identified component after), and the index of the currently
-    /// selected rung. Populated on ``select(atAXPoint:)`` when the source offers a
-    /// ``ComponentLadderSource``; empty for region selections and unsupported
-    /// sources, which disables widening.
-    private var componentLadder: [Element] = []
-    private var ladderIndex: Int = 0
+    /// The BIDIRECTIONAL navigation path for the current selection, and the index
+    /// of the bound rung. Ordering is a CONVENTION the whole file depends on:
+    /// index 0 is the deepest rung known so far, ascending indices are
+    /// progressively broader, and `pathIndex` points at the rung the note is bound
+    /// to. Seeded on selection from the source's ``ComponentLadderSource`` /
+    /// ``MarqueeTargetSource`` ladder (which has exactly that shape), or from the
+    /// bare hit-test target when the source offers neither. EMPTY for region
+    /// selections, which is what makes both navigation directions inert for them.
+    ///
+    /// ``selectChild()`` PREPENDS a newly-discovered child, keeping index 0 "the
+    /// deepest known rung" — see that method for why re-querying instead would make
+    /// a round trip non-deterministic.
+    private var selectionPath: [Element] = []
+    private var pathIndex: Int = 0
+    /// Children of the CURRENTLY BOUND rung, cached because ``canSelectChild`` is
+    /// read on every SwiftUI render and a source-side child query is an AX/view
+    /// walk. Refreshed exactly where the bound element changes (the two `select`
+    /// paths, ``selectParent()``, ``selectChild()``); querying from the property
+    /// instead would put a tree walk in the render loop.
+    private var cachedChildren: [Element] = []
+    /// The gesture's own anchor for the current selection — the point clicked, or
+    /// the centre of the frame drawn. Handed to the source as the child-ordering
+    /// hint, so descending prefers the child the user was already pointing at over
+    /// one picked from geometry alone. nil once the selection is gone.
+    private var selectionHint: CGPoint?
 
-    /// Whether ``widenSelection()`` can step the current selection up to an
-    /// enclosing component. Drives the composer's widen affordance.
-    public var canWidenSelection: Bool { ladderIndex + 1 < componentLadder.count }
+    /// Whether ``selectParent()`` can bind the note to an enclosing component.
+    /// O(1) — read during rendering.
+    public var canSelectParent: Bool { pathIndex + 1 < selectionPath.count }
+    /// Whether ``selectChild()`` can bind the note to a component inside the
+    /// current one: either back down through an already-visited rung (history), or
+    /// into a freshly-discovered child. O(1) by construction — it reads the cache
+    /// and NEVER calls into the source, because it runs on every render.
+    ///
+    /// The `!selectionPath.isEmpty` term is load-bearing beyond redundancy: a
+    /// REGION selection has no path, and this is what guarantees it never even
+    /// triggers a child query.
+    public var canSelectChild: Bool {
+        pathIndex > 0 || (!selectionPath.isEmpty && !cachedChildren.isEmpty)
+    }
     /// The id of the retained note whose in-overlay edit card is open, or nil when
     /// no editor is showing. UI-only: drives which pin's edit card the overlay
     /// renders. Mutually exclusive with ``selected`` (the composer) — opening one
@@ -167,23 +198,28 @@ public final class AnnotationSession: ObservableObject {
         // Any catcher tap dismisses an open pin editor: a tap on empty space is a
         // click-away close, and a tap on an element hands the stage to the composer.
         editingNoteID = nil
-        // Every selection starts offset-free, frame-free and ladder-free: a
+        // Every selection starts offset-free, frame-free and path-free: a
         // region -> element or marquee -> click re-selection (the catcher stays
         // active behind an open composer) must not leak the previous region's
-        // offset, the previous drag's drawn frame, or a stale ladder onto the next
-        // note — the didSet only clears them when `selected` becomes nil, not on
-        // replacement.
+        // offset, the previous drag's drawn frame, or a stale navigation path onto
+        // the next note — the didSet only clears them when `selected` becomes nil,
+        // not on replacement.
         selectedRegionOffset = nil
         selectedMarqueeRect = nil
         marqueeRegionOrigin = nil
-        componentLadder = []
-        ladderIndex = 0
+        resetNavigation(hint: point)
         selected = source.hitTest(point)
-        // Capture the widening ladder for a real element selection (its first rung
-        // equals the hit-test target). Region selections get no ladder.
-        if selected != nil, let ladderSource = source as? ComponentLadderSource {
-            componentLadder = ladderSource.componentLadder(at: point)
-            ladderIndex = 0
+        // Seed the navigation path for a real element selection. The ladder's first
+        // rung equals the hit-test target by contract, so it already satisfies the
+        // current-first convention. A source with no ladder capability (or one that
+        // returns nothing) still gets a ONE-rung path: that disables Select Parent
+        // exactly as before, but keeps Select Child live, since descending needs
+        // only a bound element and a `ChildNavigationSource`. Region selections
+        // fall through with an empty path and navigate nowhere.
+        if let target = selected {
+            let ladder = (source as? ComponentLadderSource)?.componentLadder(at: point) ?? []
+            selectionPath = ladder.isEmpty ? [target] : ladder
+            refreshChildCache()
         }
         if selected == nil,
            let anchorSource = source as? RegionAnchorSource,
@@ -241,8 +277,10 @@ public final class AnnotationSession: ObservableObject {
         selectedRegionOffset = nil
         selectedMarqueeRect = nil
         marqueeRegionOrigin = nil
-        componentLadder = []
-        ladderIndex = 0
+        // The hint is set below, once the rect is normalized — a backwards drag's
+        // raw `midX`/`midY` are still correct, but deriving it from the standardized
+        // rect keeps one definition of "the centre of what was drawn".
+        resetNavigation(hint: nil)
 
         // Normalize once: a right-to-left or bottom-to-top drag arrives with
         // negative extents.
@@ -265,8 +303,13 @@ public final class AnnotationSession: ObservableObject {
             let ladder = marqueeSource.marqueeLadder(in: normalized)
             if let target = ladder.first {
                 selected = target
-                componentLadder = ladder
-                ladderIndex = 0
+                selectionPath = ladder
+                pathIndex = 0
+                // The centre of the drawn frame is the anchor a user would name
+                // themselves, so it is the child-ordering hint — the same point the
+                // region fallback below anchors to.
+                selectionHint = CGPoint(x: normalized.midX, y: normalized.midY)
+                refreshChildCache()
                 selectedMarqueeRect = normalized
                 return selected
             }
@@ -306,32 +349,97 @@ public final class AnnotationSession: ObservableObject {
         return selected
     }
 
-    /// Step the current selection UP to the next enclosing identified component
-    /// (a coarser-grained note: the card instead of the label inside it). No-op
-    /// when the selection is already at the broadest rung, is a region, or the
-    /// source offers no ``ComponentLadderSource``. The composer re-anchors to the
-    /// widened element's frame for free (it renders `selected`).
+    /// Bind the note to the ENCLOSING component (the card instead of the label
+    /// inside it). No-op at the broadest known rung, for a region selection, or
+    /// when the source offers no ``ComponentLadderSource``. The composer re-anchors
+    /// to the new element's frame for free (it renders `selected`).
     @discardableResult
-    public func widenSelection() -> Element? {
-        guard ladderIndex + 1 < componentLadder.count else { return nil }
-        ladderIndex += 1
-        // Widening always lands on a real element, so it is never a region note.
+    public func selectParent() -> Element? {
+        guard canSelectParent else { return nil }
+        pathIndex += 1
+        return bindCurrentRung()
+    }
+
+    /// Bind the note to a component INSIDE the current one. Two sources, and the
+    /// priority between them is the whole design:
+    ///
+    /// 1. **History** (`pathIndex > 0`) — step back down a rung already walked.
+    ///    Deterministic, free, and it is the overwhelmingly common case: the user
+    ///    pressed Parent once too often and wants to undo it.
+    /// 2. **Below the deepest known rung** (`pathIndex == 0`) — ask the source for
+    ///    the bound element's children, take the most likely, and PREPEND it, so
+    ///    index 0 still means "deepest known rung".
+    ///
+    /// Prepending (rather than re-querying on every descent) is what makes a round
+    /// trip hold in BOTH directions: after descending to child C, Parent returns to
+    /// the original target and Child returns to C ITSELF via case 1. Re-querying
+    /// would let a live UI — a hover state resolving, a list reflowing — hand back
+    /// a different "most likely" child, so pressing Parent then Child would land
+    /// somewhere the user never chose. No-op for a region selection (empty path, so
+    /// case 1 is false and ``canSelectChild``'s cache guard blocks case 2) and for
+    /// a leaf with no ``ChildNavigationSource`` children.
+    @discardableResult
+    public func selectChild() -> Element? {
+        if pathIndex > 0 {
+            pathIndex -= 1
+            return bindCurrentRung()
+        }
+        // `canSelectChild`'s `!selectionPath.isEmpty` guard, restated where it is
+        // enforced: a region must never mutate the path into existence.
+        guard !selectionPath.isEmpty, let child = cachedChildren.first else { return nil }
+        selectionPath.insert(child, at: 0)
+        // `pathIndex` deliberately STAYS 0 — the insert moved every existing rung up
+        // one, so 0 now addresses the child and the old target sits at 1.
+        return bindCurrentRung()
+    }
+
+    /// Bind the note to `selectionPath[pathIndex]` and re-derive everything that
+    /// hangs off the bound element. Shared by both directions so they can never
+    /// drift into clearing different state.
+    private func bindCurrentRung() -> Element? {
+        // Navigation always lands on a real element, so it is never a region note.
         selectedRegionOffset = nil
         // ...and for the same reason it can never keep a region's measuring stick:
         // every rung is a real element, so the drawn frame is measured from the
         // element itself. Clearing is cheap insurance rather than a live fix —
-        // regions get no ladder today, so this state is currently unreachable —
-        // but leaving a stale anchor origin behind would silently measure the
-        // persisted rect from the wrong box, and that is exactly the class of bug
-        // `7993a67` was.
+        // regions get no path today, so this state is currently unreachable — but
+        // leaving a stale anchor origin behind would silently measure the persisted
+        // rect from the wrong box, and that is exactly the class of bug `7993a67`
+        // was.
         marqueeRegionOrigin = nil
         // `selectedMarqueeRect` is deliberately KEPT: it is absolute, so it is
         // still the frame the user drew whichever rung is now bound, and `addNote`
-        // re-relativizes it against the widened element.
-        // A non-nil assignment does not trip the didSet clear, so the ladder and
-        // index survive for a further widen.
-        selected = componentLadder[ladderIndex]
+        // re-relativizes it against that rung.
+        // A non-nil assignment does not trip the didSet clear, so the path and
+        // index survive for further navigation.
+        selected = selectionPath[pathIndex]
+        refreshChildCache()
         return selected
+    }
+
+    /// Drop the whole navigation state for a selection that is being replaced.
+    /// Called at the top of both `select` paths because the `selected` didSet only
+    /// fires on nil, never on replacement.
+    private func resetNavigation(hint: CGPoint?) {
+        selectionPath = []
+        pathIndex = 0
+        cachedChildren = []
+        selectionHint = hint
+    }
+
+    /// Re-read the bound rung's children into the cache, so ``canSelectChild`` can
+    /// stay a pure property read. Costs one source-side query per SELECTION change
+    /// — not per render, and not per hover.
+    private func refreshChildCache() {
+        // An empty path means a region (or nothing selected): never query.
+        guard !selectionPath.isEmpty,
+              let element = selected,
+              let childSource = source as? ChildNavigationSource
+        else {
+            cachedChildren = []
+            return
+        }
+        cachedChildren = childSource.children(of: element, near: selectionHint)
     }
 
     /// Capture a screenshot of the currently selected element, if any.
@@ -353,22 +461,35 @@ public final class AnnotationSession: ObservableObject {
         // identifier of its own (the selector anchored to an ancestor or went
         // positional) — a miss worth turning into a seeding task rather than a
         // silent misattribution. `component` is the seeded component to grep: the
-        // target's own id when seeded, else the tightest enclosing seeded
-        // component from the GEOMETRIC widening ladder — which reaches a SwiftUI
-        // `.axCardSurface` card whose identifier sits on a background sibling, not
-        // an ancestor, so plain ancestry (the fallback for region/ladderless
-        // sources) would miss it.
+        // target's own identifier when seeded, else the first SEEDED rung strictly
+        // ABOVE the bound one on the GEOMETRIC navigation path — which reaches a
+        // SwiftUI `.axCardSurface` card whose identifier sits on a background
+        // sibling, not an ancestor, so plain ancestry (the fallback, for
+        // region/pathless sources) would miss it.
+        //
+        // Two details here are silent-corruption guards, not style:
+        //
+        // - `dropFirst(pathIndex + 1)`, not `dropFirst()`. The old form assumed the
+        //   bound rung was index 0 and index 1 was seeded. ``selectChild()``
+        //   prepends, so index 1 can now be the ORIGINAL target — which may be
+        //   unseeded — and the search must start above whatever rung is bound.
+        // - `path.last?.identifier`, not `.id`. An UNSEEDED element's `id` is a
+        //   slash-joined path string, so taking `.id` would hand the agent a grep
+        //   target that matches nothing while looking perfectly plausible in the
+        //   exported note.
         let ownIdentifier = element.path.last?.identifier ?? ""
         let component = !ownIdentifier.isEmpty
             ? ownIdentifier
-            : (componentLadder.dropFirst().first?.id
+            : (selectionPath.dropFirst(pathIndex + 1)
+                .first(where: { !($0.path.last?.identifier ?? "").isEmpty })?
+                .path.last?.identifier
                 ?? element.path.last(where: { !($0.identifier ?? "").isEmpty })?.identifier)
         // Relativize the drawn frame HERE rather than at selection — the asymmetry
         // with `regionOffset` (computed at selection) is deliberate:
-        // ``widenSelection()`` can rebind the note to an enclosing element AFTER
-        // the frame was drawn, so the persisted rect must be measured against
-        // whatever element the note FINALLY names. A region never widens, so its
-        // offset's anchor is fixed the moment it is picked.
+        // ``selectParent()``/``selectChild()`` can rebind the note to a different
+        // element AFTER the frame was drawn, so the persisted rect must be measured
+        // against whatever element the note FINALLY names. A region never navigates,
+        // so its offset's anchor is fixed the moment it is picked.
         let regionRect: CGRect? = selectedMarqueeRect.map { drawn in
             // A synthetic region's own frame IS the drawn rect, so it measures from
             // its anchor (else it would trivially be 0,0); elements measure from

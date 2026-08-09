@@ -418,6 +418,123 @@ enum AXIntrospection {
         }
     }
 
+    // MARK: - Child navigation (element -> the component inside it)
+
+    /// The meaningful children of `element`, most-likely-intended first — the
+    /// DOWNWARD counterpart of ``componentLadder(for:)``. Ordering is the shared
+    /// pure ``ChildNavigationRule``, so macOS and iOS descend identically.
+    ///
+    /// Cost: deliberately NOT a snapshot. `selector(for:)` walks the entire app via
+    /// ``snapshotNodes()``, which is affordable once per CAPTURE but not here —
+    /// this runs on every selection change, including each step of a rapid
+    /// Parent/Child exploration. Instead the bound element's frame CENTRE gives a
+    /// containment descent from its window (the same trick ``hitBeneathOverlay(_:)``
+    /// uses) to find the live handle, then only that element's own subtree is
+    /// visited, and each branch of it stops at the first meaningful node.
+    static func children(of target: Element, near hint: CGPoint?) -> [Element] {
+        let centre = CGPoint(x: target.frame.midX, y: target.frame.midY)
+        guard let node = locate(target, at: centre) else { return [] }
+        let windowFrame = ancestorChain(from: node)
+            .first { string($0, kAXRoleAttribute) == "AXWindow" }
+            .map(frameScreen(of:))
+
+        var found: [AXUIElement] = []
+        collectNearestMeaningful(under: node, windowFrame: windowFrame, depth: 0, into: &found)
+        let candidates = found.map {
+            ChildCandidate(element: candidate(for: $0, windowFrame: windowFrame), frame: frameScreen(of: $0))
+        }
+        return ChildNavigationRule.order(candidates, near: hint).map {
+            element(for: found[$0], ancestorChain: ancestorChain(from: found[$0]))
+        }
+    }
+
+    /// The live AX handle behind a public ``Element``, found by descending the
+    /// containing window along frames that contain the element's own centre.
+    /// Bounded by tree DEPTH rather than tree size, which is the whole point: an
+    /// identity map would have to be rebuilt from a full snapshot every time the
+    /// tree changed.
+    ///
+    /// Returns nil when the element has left the tree, or when a clipping ancestor
+    /// does not contain the element's centre. Both degrade the same benign way —
+    /// no children, so the composer's Child control stays disabled — rather than
+    /// offering a descent into something that is not the bound element.
+    private static func locate(_ element: Element, at centre: CGPoint) -> AXUIElement? {
+        let app = appElement()
+        let windows = elementArray(app, kAXWindowsAttribute).filter { !isOverlayWindow($0) }
+        guard let window = windows.first(where: { frameScreen(of: $0).contains(centre) }) else { return nil }
+        return descend(window, matching: element, containing: centre, depth: 0)
+    }
+
+    private static func descend(
+        _ node: AXUIElement,
+        matching element: Element,
+        containing point: CGPoint,
+        depth: Int
+    ) -> AXUIElement? {
+        if matches(node, element) { return node }
+        guard depth < maxDepth else { return nil }
+        for child in elementArray(node, kAXChildrenAttribute) {
+            if isOverlayWindow(child) || isChrome(child) { continue }
+            let frame = frameScreen(of: child)
+            guard frame.width > 0, frame.height > 0, frame.contains(point) else { continue }
+            if let found = descend(child, matching: element, containing: point, depth: depth + 1) { return found }
+        }
+        return nil
+    }
+
+    /// Identity test for re-finding a captured ``Element``. Identifier AND role AND
+    /// frame, because none alone is enough: identifiers are absent on the unseeded
+    /// elements this feature exists to navigate around, roles repeat everywhere,
+    /// and a coextensive background surface shares a frame with the content group
+    /// in front of it (the `.axCardSurface` pattern) — matching on frame alone would
+    /// silently list the wrong node's children.
+    private static func matches(_ node: AXUIElement, _ element: Element) -> Bool {
+        guard (string(node, kAXIdentifierAttribute) ?? "") == (element.path.last?.identifier ?? "") else {
+            return false
+        }
+        guard (string(node, kAXRoleAttribute) ?? "") == element.role else { return false }
+        let frame = frameScreen(of: node)
+        // Half a point of slack: AX geometry round-trips through CGFloat conversions
+        // and a strict `==` would make re-finding fail on a fractional layout.
+        return abs(frame.minX - element.frame.minX) < 0.5 && abs(frame.minY - element.frame.minY) < 0.5
+            && abs(frame.width - element.frame.width) < 0.5 && abs(frame.height - element.frame.height) < 0.5
+    }
+
+    /// The nearest MEANINGFUL descendants of `node`: each direct child that is a
+    /// target in its own right, and for each child that is not, the meaningful
+    /// nodes beneath it.
+    ///
+    /// Descending through unmeaningful wrappers is load-bearing, not thoroughness:
+    /// a SwiftUI `VStack` materializes as an unidentified, label-less `AXGroup`, so
+    /// a strict direct-children rule would find one ineligible group under most
+    /// cards, filter it out, and report every card as a leaf — the Child control
+    /// would be permanently disabled on exactly the UI it was built for. Each
+    /// branch stops at its first meaningful node, so this is not a subtree
+    /// enumeration.
+    private static func collectNearestMeaningful(
+        under node: AXUIElement,
+        windowFrame: CGRect?,
+        depth: Int,
+        into found: inout [AXUIElement]
+    ) {
+        guard depth < maxDepth else { return }
+        for child in elementArray(node, kAXChildrenAttribute) {
+            // Chrome and our own overlay are rejected here as well as by
+            // ``TargetCandidate/isEligibleMeaningful``: skipping the whole SUBTREE
+            // matters, because a traffic light's inner glyph groups carry no chrome
+            // subrole of their own and would otherwise be collected as children.
+            if isOverlayWindow(child) || isChrome(child) { continue }
+            let frame = frameScreen(of: child)
+            let isTarget = frame.width > 0 && frame.height > 0
+                && candidate(for: child, windowFrame: windowFrame).isEligibleMeaningful
+            if isTarget {
+                found.append(child)
+            } else {
+                collectNearestMeaningful(under: child, windowFrame: windowFrame, depth: depth + 1, into: &found)
+            }
+        }
+    }
+
     /// Resolve `point` to a root-first ancestor chain of the deepest host element
     /// beneath the overlay, or nil when nothing is annotatable (no hit, or a hit
     /// through window chrome). Shared by ``hitTest(_:)`` and ``componentLadder(for:)``.

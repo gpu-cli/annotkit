@@ -51,12 +51,33 @@ public protocol RegionAnchorSource {
 /// the annotation target first (same element ``ElementSource/hitTest(_:)``
 /// returns), then each enclosing identified component, broadest last. Lets the
 /// session step a selection UP to a parent component for a coarser-grained note
-/// (a click-again / widen affordance while the composer is open) without
-/// re-hit-testing. Sources that cannot offer it simply don't conform; the session
-/// then disables widening.
+/// (the composer's Select Parent control) without re-hit-testing. Sources that
+/// cannot offer it simply don't conform; the session then has a single-rung
+/// selection path and Select Parent stays disabled.
 @MainActor
 public protocol ComponentLadderSource {
     func componentLadder(at point: CGPoint) -> [Element]
+}
+
+/// Optional element-source capability: the meaningful children of an element —
+/// the DOWNWARD counterpart of ``ComponentLadderSource``. Lets the session step a
+/// selection INTO a component (the row inside the card, rather than the card) when
+/// the user overshot, or when the target rule bound coarser than they meant.
+/// Sources that cannot offer it simply don't conform; the session then leaves the
+/// composer's Child control permanently disabled, and only upward navigation (and
+/// downward navigation back through already-visited rungs) is available.
+@MainActor
+public protocol ChildNavigationSource {
+    /// Meaningful children of `element`, most-likely-intended FIRST. `hint` is the
+    /// gesture's anchor (the click point, or the drawn frame's centre) when there
+    /// is one. Empty when the element is a leaf.
+    ///
+    /// Ordering is the shared, pure ``ChildNavigationRule`` on every adapter, so
+    /// the same layout descends the same way on macOS and iOS. Implementations
+    /// MUST NOT snapshot the whole tree per call: this runs on every selection
+    /// change, and the bound element's frame centre gives a cheap descent path from
+    /// the containing window (the same trick the hit-test uses).
+    func children(of element: Element, near hint: CGPoint?) -> [Element]
 }
 
 /// Optional element-source capability: resolve a frame the user DREW (a marquee

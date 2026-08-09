@@ -40,6 +40,12 @@ extension MacElementSource: ComponentLadderSource {
     }
 }
 
+extension MacElementSource: ChildNavigationSource {
+    public func children(of element: Element, near hint: CGPoint?) -> [Element] {
+        AXIntrospection.children(of: element, near: hint)
+    }
+}
+
 extension MacElementSource: MarqueeTargetSource {
     public func marqueeLadder(in rect: CGRect) -> [Element] {
         AXIntrospection.marqueeLadder(for: rect)

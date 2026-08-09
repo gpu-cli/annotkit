@@ -246,6 +246,83 @@ public final class MacViewTreeElementSource: ElementSource, ComponentLadderSourc
     }
 }
 
+// MARK: - Child navigation (view -> the view inside it)
+
+extension MacViewTreeElementSource: ChildNavigationSource {
+    /// The meaningful subviews of `element`, most-likely-intended first, ordered by
+    /// the shared pure ``ChildNavigationRule`` so this source descends the same way
+    /// the AX and iOS sources do.
+    ///
+    /// Cost: no whole-tree walk. ``selector(for:)`` rebuilds every window's node
+    /// tree, which is fine once per capture but not here — this runs on every
+    /// selection change. The element's frame CENTRE instead gives a containment
+    /// descent from its window to the live `NSView`, after which only that view's
+    /// own subtree is visited, each branch stopping at its first meaningful node.
+    public func children(of element: Element, near hint: CGPoint?) -> [Element] {
+        let centre = CGPoint(x: element.frame.midX, y: element.frame.midY)
+        guard let root = Self.marqueeRoot(containing: centre),
+              let view = Self.descend(root, matching: element, containing: centre, depth: 0)
+        else { return [] }
+
+        var found: [NSView] = []
+        Self.collectNearestMeaningful(under: view, depth: 0, into: &found)
+        let candidates = found.map {
+            ChildCandidate(element: Self.candidate(for: $0), frame: Self.screenFrame(of: $0))
+        }
+        return ChildNavigationRule.order(candidates, near: hint).map { Self.element(for: found[$0]) }
+    }
+
+    /// The live `NSView` behind a public ``Element``, found by descending the
+    /// containing window along frames that contain the element's own centre —
+    /// bounded by tree DEPTH, not tree size. `hitTest` is deliberately not reused:
+    /// it honours `isHidden`/`hitTest` overrides and would refuse to re-find a
+    /// non-interactive view the user has already legitimately selected.
+    private static func descend(
+        _ view: NSView, matching element: Element, containing point: CGPoint, depth: Int
+    ) -> NSView? {
+        if matches(view, element) { return view }
+        guard depth < maxDepth else { return nil }
+        for subview in view.subviews where !subview.isHidden && subview.alphaValue > 0.01 {
+            let frame = screenFrame(of: subview)
+            guard frame.width > 0, frame.height > 0, frame.contains(point) else { continue }
+            if let found = descend(subview, matching: element, containing: point, depth: depth + 1) { return found }
+        }
+        return nil
+    }
+
+    /// Identity test for re-finding a captured ``Element``: identifier, view type,
+    /// and frame together. See the AX source's `matches` for why none of the three
+    /// is sufficient alone.
+    private static func matches(_ view: NSView, _ element: Element) -> Bool {
+        guard view.accessibilityIdentifier() == (element.path.last?.identifier ?? "") else { return false }
+        guard String(describing: Swift.type(of: view)) == element.role else { return false }
+        let frame = screenFrame(of: view)
+        // Half a point of slack — frames round-trip through a screen-space flip, and
+        // a strict `==` would make re-finding fail on a fractional layout.
+        return abs(frame.minX - element.frame.minX) < 0.5 && abs(frame.minY - element.frame.minY) < 0.5
+            && abs(frame.width - element.frame.width) < 0.5 && abs(frame.height - element.frame.height) < 0.5
+    }
+
+    /// The nearest MEANINGFUL descendants of `view`: each visible subview that is a
+    /// target in its own right, and for each that is not, the meaningful views
+    /// beneath it. Descending through unmeaningful wrappers is what keeps the Child
+    /// control alive under a SwiftUI/AppKit host, whose layout containers carry no
+    /// identifier or label of their own; each branch stops at its first meaningful
+    /// node, so this is not a subtree enumeration.
+    private static func collectNearestMeaningful(under view: NSView, depth: Int, into found: inout [NSView]) {
+        guard depth < maxDepth else { return }
+        for subview in view.subviews where !subview.isHidden && subview.alphaValue > 0.01 {
+            let frame = screenFrame(of: subview)
+            let isTarget = frame.width > 0 && frame.height > 0 && candidate(for: subview).isEligibleMeaningful
+            if isTarget {
+                found.append(subview)
+            } else {
+                collectNearestMeaningful(under: subview, depth: depth + 1, into: &found)
+            }
+        }
+    }
+}
+
 // MARK: - Marquee (drawn frame -> view)
 
 extension MacViewTreeElementSource: MarqueeTargetSource {
