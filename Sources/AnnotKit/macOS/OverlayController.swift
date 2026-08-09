@@ -42,6 +42,13 @@ public final class OverlayController: NSObject {
     /// host stops instead of re-syncing against a stale (or detached) window.
     private var settleGeneration = 0
 
+    /// The Escape key monitor's token, non-nil ONLY while annotate mode is running.
+    /// Held so it can be removed in both exits (``stop()`` and ``unmount()``): AppKit
+    /// keeps a local monitor alive until it is explicitly removed, so a leaked one
+    /// would keep swallowing the host app's own Escape long after the overlay was
+    /// gone — a bug that presents as "this app's dialogs stopped closing".
+    private var escapeMonitor: Any?
+
     public init(session: AnnotationSession) {
         self.session = session
         super.init()
@@ -75,6 +82,11 @@ public final class OverlayController: NSObject {
 
     public func unmount() {
         NotificationCenter.default.removeObserver(self)
+        // Unmounting can happen mid-annotate (a host window closing), which never
+        // routes through `stop()`. A monitor outliving the overlay it belongs to is
+        // the one failure here that damages the HOST rather than AnnotKit: it keeps
+        // eating Escape for the life of the process.
+        removeEscapeMonitor()
         // Invalidate any in-flight settle poll so it cannot re-sync a detached host.
         settleGeneration += 1
         lastSyncedHostFrame = .null
@@ -101,9 +113,14 @@ public final class OverlayController: NSObject {
         host?.orderFront(nil)
         session.start()
         syncFrameAndOrigin()
+        installEscapeMonitor()
     }
 
     public func stop() {
+        // Remove FIRST: the monitor exists to serve annotate mode, and leaving it
+        // installed for even the rest of this call would let a keystroke arrive while
+        // the session is half-torn-down.
+        removeEscapeMonitor()
         session.stop()
         syncFrameAndOrigin()
     }
@@ -114,6 +131,80 @@ public final class OverlayController: NSObject {
 
     private func copy() {
         try? ClipboardSink().flush(session.pending)
+    }
+
+    // MARK: - Escape
+
+    /// Start watching for Escape while annotate mode runs.
+    ///
+    /// A LOCAL monitor, not a SwiftUI modifier and not a global one, and both halves
+    /// of that matter:
+    ///
+    /// * A panel-scoped modifier (`.onExitCommand`) only fires when the overlay panel
+    ///   is KEY, and the panel is made key solely by a card focusing its text field.
+    ///   In the state a user most wants to leave — annotate mode with nothing open —
+    ///   the HOST window is key, so no view in the panel ever sees the keystroke.
+    /// * A local monitor sees events on their way to THIS process's windows, which
+    ///   works precisely because AnnotKit is in-process with its host: the Escape
+    ///   headed for the host window passes through here first. (A global monitor
+    ///   watches OTHER apps, cannot consume the event, and would need accessibility
+    ///   permission — all three wrong for this.)
+    private func installEscapeMonitor() {
+        guard escapeMonitor == nil else { return }
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self else { return event }
+            return self.handleKeyDown(event)
+        }
+    }
+
+    private func removeEscapeMonitor() {
+        guard let escapeMonitor else { return }
+        NSEvent.removeMonitor(escapeMonitor)
+        self.escapeMonitor = nil
+    }
+
+    /// Decide one key-down. EVERY event in the app flows through here while annotate
+    /// mode runs, so the non-Escape path does nothing but return the event: any work
+    /// on this path is work added to every keystroke the user types into their own
+    /// app, and any early `return nil` is a character they never see.
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        // 53 is Escape's virtual key code — a hardware position, so it is
+        // layout-independent (a character comparison would miss on layouts that
+        // remap, and `charactersIgnoringModifiers` is empty for some IMEs).
+        guard event.keyCode == 53 else { return event }
+
+        let action = EscapeRule.resolve(
+            isAnnotating: session.mode == .annotating,
+            isDrawingFrame: session.isDrawingFrame,
+            hasOpenCard: session.hasOpenCard
+        )
+        switch action {
+        case .cancelDrag:
+            session.cancelFrameDrag()
+        case .dismissCard:
+            // The composer and the pin editor are mutually exclusive, and the composer
+            // wins the same theoretical tie the view's render ladder gives it, so the
+            // card that closes is always the card that is drawn.
+            if session.selected != nil {
+                session.cancelSelection()
+            } else {
+                session.endEditing()
+            }
+        case .exitAnnotateMode:
+            // The CONTROLLER's stop, never `session.stop()`: leaving the mode also
+            // shrinks the panel back to the toolbar corner and re-syncs the AX origin.
+            // Stopping the session alone would leave a full-window transparent panel
+            // over the host, swallowing every click with no visible overlay to explain
+            // why — and this monitor would stay installed on top of that.
+            stop()
+        case .passThrough:
+            break
+        }
+        // Swallow anything we acted on. Forwarding a handled Escape means the host
+        // ALSO acts on it (we are in its process, and the event is still on its way to
+        // its key window), so one press would both leave annotate mode and close the
+        // host's sheet.
+        return action.consumesEvent ? nil : event
     }
 
     // MARK: - Host window

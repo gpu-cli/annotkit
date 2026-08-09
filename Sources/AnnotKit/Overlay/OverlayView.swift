@@ -51,6 +51,16 @@ struct OverlayView: View {
     /// selection — that comes back as `session.selected` and is drawn by the
     /// highlight branch.
     @State private var marqueeRect: CGRect?
+    /// `session.frameDragGeneration` as it stood when the current drag began, and
+    /// re-synced to the session's at every release (and whenever a fresh catcher
+    /// appears). The difference between this and the live value IS the cancellation:
+    /// AppKit delivers the gesture's `onEnded` whether or not Escape was pressed, and
+    /// nothing in SwiftUI can suppress it, so the release has to ask.
+    ///
+    /// Re-syncing at the END of every press is what makes the NEXT press start
+    /// uncancelled — without it, one cancelled drag would leave the two values apart
+    /// forever and kill frame mode for the rest of the session.
+    @State private var frameDragGeneration = 0
 
     var body: some View {
         ZStack(alignment: .topLeading) {
@@ -86,6 +96,25 @@ struct OverlayView: View {
             if let id, let note = session.pending.first(where: { $0.id == id }) {
                 editDraft = note.comment
             }
+        }
+        // The draft belongs to the composer, so it dies WITH the composer — for any
+        // reason it closes, not just the Cancel button. The button used to clear it
+        // itself, which made "no selection implies no draft" a property of one code
+        // path rather than an invariant: dismissing from anywhere else (Escape, which
+        // now goes through the key monitor, or `stop()`) left `comment` populated and
+        // it reappeared, pre-filled, over the NEXT element the user selected.
+        //
+        // Deliberately not `if session.selected == nil` inside the capture path: a
+        // capture also nils `selected`, and `addNote()` clearing the field itself is
+        // redundant with this rather than in conflict with it.
+        .onChange(of: session.selected) { _, element in
+            if element == nil { comment = "" }
+        }
+        // Drop the band the instant a drag is cancelled, rather than waiting for the
+        // release: the whole point of Escape here is that the rectangle stops being
+        // dragged around under the cursor.
+        .onChange(of: session.frameDragGeneration) { _, _ in
+            marqueeRect = nil
         }
     }
 
@@ -194,6 +223,12 @@ struct OverlayView: View {
         if session.mode == .annotating {
             Color.clear
                 .contentShape(Rectangle())
+                // A freshly-inserted catcher has no press in flight, so it must start
+                // in sync. This is not belt-and-braces: leaving annotate mode DURING a
+                // drag cancels it and then removes this view, so the release that
+                // would have re-armed the generation never arrives — and the first
+                // frame drag of the next session would be born cancelled.
+                .onAppear { frameDragGeneration = session.frameDragGeneration }
                 .onContinuousHover { phase in
                     switch phase {
                     case .active(let point):
@@ -232,11 +267,35 @@ struct OverlayView: View {
                             guard session.tool == .frame,
                                   SelectionGesture.travelledFarEnough(from: value.startLocation, to: value.location)
                             else { return }
+                            // A press Escape has already cancelled stays dead for the
+                            // REST of the press. The button is usually still held when
+                            // Escape lands, so the next twitch of the mouse arrives
+                            // here — and without this the band would spring back under
+                            // the cursor and the release would resolve it, which is
+                            // exactly what was just cancelled.
+                            guard frameDragGeneration == session.frameDragGeneration else { return }
+                            // Announce the drag on the band's FIRST appearance, when
+                            // it becomes a thing the user can see and therefore a
+                            // thing Escape can refer to.
+                            if marqueeRect == nil {
+                                frameDragGeneration = session.frameDragGeneration
+                                session.beginFrameDrag()
+                            }
                             marqueeRect = SelectionGesture.localRect(from: value.startLocation, to: value.location)
                             session.clearHover()
                         }
                         .onEnded { value in
                             marqueeRect = nil
+                            // A cancelled drag still delivers this release; the moved
+                            // generation is how we know to drop it on the floor.
+                            // Resolving anyway would plant exactly the note Escape
+                            // was pressed to prevent.
+                            let cancelled = frameDragGeneration != session.frameDragGeneration
+                            session.endFrameDrag()
+                            // Re-arm for the next press BEFORE bailing out, so a
+                            // cancellation costs one drag and not the mode.
+                            frameDragGeneration = session.frameDragGeneration
+                            guard !cancelled else { return }
                             switch SelectionGesture.resolve(
                                 tool: session.tool,
                                 from: value.startLocation,
@@ -275,7 +334,8 @@ struct OverlayView: View {
     }
 
     /// The WRITE card: a shared ``AnnotationCard`` anchored to the selected
-    /// element, with a Cancel / Add note footer. Enter submits, Escape cancels.
+    /// element, with a Cancel / Add note footer. Enter submits; Escape dismisses via
+    /// the host's key monitor (``EscapeRule``), not from inside this view.
     private var composer: some View {
         AnnotationCard(
             header: composerHeader,
@@ -285,10 +345,6 @@ struct OverlayView: View {
             // is not re-inserted, so `.onAppear` won't refire).
             focusKey: session.selected?.id ?? "",
             onSubmit: { addNote() },
-            onCancel: {
-                comment = ""
-                session.cancelSelection()
-            },
             onFocusRequest: onFocusRequest,
             // Tree navigation: rebind the note to the enclosing component, or to a
             // component inside the current one. Its own row rather than a third
@@ -328,10 +384,11 @@ struct OverlayView: View {
             }
         ) {
             HStack {
-                Button("Cancel") {
-                    comment = ""
-                    session.cancelSelection()
-                }
+                // No `comment = ""` here any more: the draft is cleared by the
+                // composer CLOSING (see the `session.selected` hook on the ZStack), so
+                // every dismissal path — this button, Escape, leaving the mode —
+                // clears it identically.
+                Button("Cancel") { session.cancelSelection() }
                 Spacer()
                 Button("Add note") { addNote() }
                     .buttonStyle(.borderedProminent)
@@ -355,7 +412,8 @@ struct OverlayView: View {
 
     /// The EDIT card: the SAME shared ``AnnotationCard`` chrome as the composer,
     /// anchored to the tapped pin instead of an element, with a Delete / Save
-    /// footer. Enter saves, Escape cancels, and Save/Delete/click-away all end
+    /// footer. Enter saves, Escape (via the host's key monitor) closes it, and
+    /// Save/Delete/click-away all end
     /// editing. Because it lives in the overlay panel (not a system `.popover`),
     /// it inherits the composer's reliable `panel.makeKey()` focus.
     private func editCard(note: AnnotationNote, anchor: CGPoint) -> some View {
@@ -366,7 +424,6 @@ struct OverlayView: View {
             // Re-focus when the editor moves pin→pin without re-insertion.
             focusKey: note.id,
             onSubmit: { saveEdit(note) },
-            onCancel: { session.endEditing() },
             onFocusRequest: onFocusRequest,
             // No navigation row: this card edits a note that has ALREADY been
             // captured, whose selector, component and element path were frozen at
@@ -508,10 +565,13 @@ struct OverlayView: View {
 /// ``ComposerCaret`` pointing at its anchor, the drop shadow, the
 /// ``ComposerPlacement`` offset, first-responder focus (host `makeKey` +
 /// `@FocusState` + a next-tick re-assert to beat the insertion race), and the
-/// keyboard contract (Enter submits, Shift+Enter inserts a newline, Escape
-/// cancels on macOS). The two flows differ ONLY in the `header` text, the `text`
-/// binding, the `placement` anchor, the optional `navigation` row, and the
-/// `footer` button row.
+/// keyboard contract it can actually honour: Enter submits and Shift+Enter inserts
+/// a newline. Escape is NOT handled here — it is the host key monitor's, because a
+/// view-level handler only ever sees it once the overlay panel is key (see the note
+/// at the bottom of `body`).
+///
+/// The two flows differ ONLY in the `header` text, the `text` binding, the
+/// `placement` anchor, the optional `navigation` row, and the `footer` button row.
 private struct AnnotationCard<Navigation: View, Footer: View>: View {
     /// Header label: the composer shows the element's selection label; the editor
     /// shows the note's selector.
@@ -527,8 +587,6 @@ private struct AnnotationCard<Navigation: View, Footer: View>: View {
     let focusKey: String
     /// Enter (no Shift) and the trailing footer button.
     let onSubmit: () -> Void
-    /// Escape (macOS) and the leading footer button (Cancel for the composer).
-    let onCancel: () -> Void
     /// Make the host panel key so the field accepts keystrokes (`panel.makeKey()`
     /// on macOS; a no-op on iOS, where `@FocusState` alone raises the keyboard).
     let onFocusRequest: () -> Void
@@ -549,7 +607,7 @@ private struct AnnotationCard<Navigation: View, Footer: View>: View {
                     .font(.headline)
                     .lineLimit(1)
                 Spacer(minLength: 8)
-                // Enter submits; Shift+Enter inserts a newline; Esc cancels.
+                // Enter submits; Shift+Enter inserts a newline.
                 Text("⏎ save · ⇧⏎ newline")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
@@ -599,10 +657,14 @@ private struct AnnotationCard<Navigation: View, Footer: View>: View {
         // the view (so `.onAppear` won't refire).
         .onAppear { focus() }
         .onChange(of: focusKey) { _, _ in focus() }
-        #if os(macOS)
-        // Escape cancels without committing (macOS-only API; iOS has no Esc key).
-        .onExitCommand { onCancel() }
-        #endif
+        // NO `.onExitCommand` here, deliberately. It only ever fired when the overlay
+        // PANEL was key — which happens only once a card has focused its text field —
+        // so it could not dismiss anything in the state a user most wants out of
+        // (annotate mode, nothing open, host window key). Escape now has exactly ONE
+        // owner, the controller's local key monitor, which sees the keystroke wherever
+        // it is delivered. Restoring this modifier would not be redundancy: with the
+        // panel key BOTH handlers would run on one press, closing the card and then
+        // acting again on the state that leaves behind.
     }
 
     /// Focus the text field, making the host panel key FIRST so the non-activating
