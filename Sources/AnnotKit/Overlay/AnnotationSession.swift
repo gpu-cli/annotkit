@@ -152,6 +152,33 @@ public final class AnnotationSession: ObservableObject {
     /// closes the other — so exactly one card is ever on screen.
     @Published public private(set) var editingNoteID: String?
 
+    /// True while the catcher is drawing a frame. UI-only state, and deliberately
+    /// only the FLAG: the band's rect stays `@State` in the view because it is
+    /// WINDOW-LOCAL while everything else here is AX screen space, and a rect that
+    /// looks like the others but is measured from a different origin is the exact
+    /// confusion `OverlayView`'s header warns about (invisible on the primary
+    /// display, off by the window origin on every other one).
+    ///
+    /// It lives here anyway because the Escape handler is OUTSIDE the view — a
+    /// process-wide key monitor owned by the host controller — and cannot otherwise
+    /// tell an in-flight gesture from an idle catcher.
+    @Published public private(set) var isDrawingFrame: Bool = false
+
+    /// Bumped when an in-flight frame drag is cancelled. The cancel signal has to be
+    /// an EDGE rather than a flag because AppKit delivers the gesture's `onEnded`
+    /// regardless — cancelling cannot suppress it — so the view compares the
+    /// generation it captured at drag start against this one on release and skips
+    /// resolution when they differ. A plain `isDrawingFrame == false` test would also
+    /// swallow the release of a NEW drag started in the same run, and a boolean
+    /// "wasCancelled" would need clearing by whoever read it last.
+    @Published public private(set) var frameDragGeneration: Int = 0
+
+    /// True when a composer or a pin editor is on screen. These two are mutually
+    /// exclusive by construction (``beginEditing(id:)`` nils `selected`; the `select`
+    /// paths nil `editingNoteID`), so this is "a card is up" — the single question
+    /// ``EscapeRule`` asks.
+    public var hasOpenCard: Bool { selected != nil || editingNoteID != nil }
+
     private let source: ElementSource
     private let sink: AnnotationSink
     private let route: () -> String?
@@ -206,6 +233,13 @@ public final class AnnotationSession: ObservableObject {
         selected = nil
         // Leaving annotate mode hides the pins, so any open pin editor must go too.
         editingNoteID = nil
+        // A drag in flight when the mode ends never receives its `onEnded`: the
+        // catcher is gated on annotate mode, so it is REMOVED from the view tree and
+        // SwiftUI drops the gesture silently. Without this, `isDrawingFrame` latches
+        // true into the next session — where Escape would "cancel" a drag nobody is
+        // making instead of exiting — and the drawn band, whose layer is not gated on
+        // mode, keeps painting over the idle overlay.
+        if isDrawingFrame { cancelFrameDrag() }
     }
 
     /// Update the hover highlight for a screen point (AX top-left coordinates).
@@ -231,6 +265,32 @@ public final class AnnotationSession: ObservableObject {
     /// nothing is hovered. `selected` (an open composer) is deliberately kept.
     public func clearHover() {
         hovered = nil
+    }
+
+    /// The catcher's band just became visible (the press cleared the travel
+    /// threshold), so a frame drag is in flight.
+    public func beginFrameDrag() {
+        isDrawingFrame = true
+    }
+
+    /// The drag reached its natural end (the release). Deliberately does NOT bump the
+    /// generation: a normal release must still resolve into a selection, and the
+    /// generation is precisely the signal that says "don't".
+    public func endFrameDrag() {
+        isDrawingFrame = false
+    }
+
+    /// Abandon the frame being drawn. Bumping the generation is what actually
+    /// cancels: the release still arrives, and the view skips resolution because the
+    /// generation moved under it.
+    ///
+    /// Touches NOTHING else — not `selected`, not `pending`. The catcher stays live
+    /// behind an open composer, so the drag being abandoned may have started while a
+    /// previous note was half-typed; clearing the selection here would make Escape
+    /// destroy a draft the user was not even interacting with.
+    public func cancelFrameDrag() {
+        frameDragGeneration &+= 1
+        isDrawingFrame = false
     }
 
     /// Select the element under a screen point (AX top-left coordinates).

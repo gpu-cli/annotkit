@@ -793,6 +793,114 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertNil(session.selectionAnchorFrame, "and so does leaving annotate mode")
     }
 
+    // MARK: - Frame drag lifecycle (what Escape reads)
+
+    func testBeginAndEndFrameDragToggleTheFlag() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        XCTAssertFalse(session.isDrawingFrame, "no band, no drag")
+        session.beginFrameDrag()
+        XCTAssertTrue(session.isDrawingFrame)
+        session.endFrameDrag()
+        XCTAssertFalse(session.isDrawingFrame, "the release ends the drag")
+    }
+
+    func testEndingADragDoesNotLookLikeACancellation() {
+        // The generation is the CANCEL signal, so an ordinary release must leave it
+        // alone. Bumping it here would make the view discard every completed frame
+        // drag — the feature would appear to do nothing at all.
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let before = session.frameDragGeneration
+        session.beginFrameDrag()
+        session.endFrameDrag()
+        XCTAssertEqual(session.frameDragGeneration, before, "a normal release must still resolve")
+    }
+
+    func testCancelFrameDragBumpsTheGenerationAndEndsTheDrag() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let before = session.frameDragGeneration
+        session.beginFrameDrag()
+        session.cancelFrameDrag()
+        XCTAssertEqual(session.frameDragGeneration, before + 1, "the moved generation IS the cancellation")
+        XCTAssertFalse(session.isDrawingFrame, "and the drag is over")
+    }
+
+    func testCancellingADragLeavesAPreviousSelectionUntouched() {
+        // The catcher stays live BEHIND an open composer, so the drag being abandoned
+        // may have been started while an earlier note was half-typed. Escape on that
+        // drag must cost the drag and nothing else — clearing the selection here would
+        // destroy a draft the user was not even interacting with.
+        let leaf = makeLadderElement("Leaf", frame: CGRect(x: 100, y: 100, width: 60, height: 40))
+        let session = AnnotationSession(
+            source: MarqueeSource(ladder: [leaf]), sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
+        session.select(inAXRect: drawn)
+        XCTAssertEqual(session.selected?.id, "Leaf")
+
+        session.beginFrameDrag()
+        session.cancelFrameDrag()
+        XCTAssertEqual(session.selected?.id, "Leaf", "the open composer survives a cancelled drag")
+        XCTAssertEqual(session.selectionAnchorFrame, drawn, "and so does its anchor")
+    }
+
+    func testLeavingAnnotateModeMidDragCancelsIt() {
+        // A drag in flight when the mode ends never gets its release: the catcher is
+        // gated on annotate mode and SwiftUI drops the gesture with the view. A
+        // latched flag would tell the next session's Escape to cancel a drag nobody
+        // is making, and the moved generation is what clears the drawn band.
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let before = session.frameDragGeneration
+        session.beginFrameDrag()
+        session.stop()
+        XCTAssertFalse(session.isDrawingFrame, "the mode took the drag with it")
+        XCTAssertEqual(session.frameDragGeneration, before + 1, "and cancelled it, so the band clears")
+    }
+
+    func testStoppingWithNoDragInFlightDoesNotBumpTheGeneration() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let before = session.frameDragGeneration
+        session.stop()
+        XCTAssertEqual(session.frameDragGeneration, before, "nothing to cancel, nothing to signal")
+    }
+
+    // MARK: - hasOpenCard
+
+    func testHasOpenCardIsFalseWithNothingOnScreen() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        XCTAssertFalse(session.hasOpenCard, "idle shows no card")
+        session.start()
+        XCTAssertFalse(session.hasOpenCard, "and neither does an empty annotate mode")
+    }
+
+    func testHasOpenCardIsTrueForTheComposer() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        XCTAssertTrue(session.hasOpenCard, "a selection is an open composer")
+        session.cancelSelection()
+        XCTAssertFalse(session.hasOpenCard, "which closes with the selection")
+    }
+
+    func testHasOpenCardIsTrueForThePinEditor() {
+        // The other card. Missing this branch would make Escape skip straight past an
+        // open pin editor and leave annotate mode with the editor still on screen.
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        guard let note = session.addNote(comment: "fix this") else { return XCTFail("expected a note") }
+        XCTAssertFalse(session.hasOpenCard, "capturing closed the composer")
+        session.beginEditing(id: note.id)
+        XCTAssertTrue(session.hasOpenCard, "a pin editor is a card too")
+        session.endEditing()
+        XCTAssertFalse(session.hasOpenCard)
+    }
+
     func testClearHoverDropsHighlightButKeepsSelection() {
         let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
         session.start()
