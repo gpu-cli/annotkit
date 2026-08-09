@@ -11,6 +11,8 @@ Resolves the open decisions from the plan (planning/annotkit in the cli repo). P
 | Default element source | Accessibility hierarchy | The only strategy that surfaces SwiftUI `accessibilityIdentifier` values. |
 | Annotation target rule | Deepest actionable, else deepest meaningful; anchor the selector to the nearest identifier | One rule on both platforms. Supersedes the earlier macOS "deepest meaningful" and iOS "nearest identified" split. See below. |
 | Marquee target rule | Largest meaningful element ≥85% surrounded; else the tightest element enclosing the drawn frame | Rect selection, the deliberate inverse of the point rule's deepest-wins. See below. |
+| Selection navigation | Bidirectional Parent/Child over one path; descent replays history and only queries the source at the deepest rung | Replaces the one-way "Widen". Prepending the frontier child shifts every rung, so a note's `component` is the first SEEDED rung above the BOUND one. Whether the parent chain stays seeded-only is OPEN. See below. |
+| Frame mode anchoring | The frame the user DREW anchors the overlay until they navigate; the resolved element is NAMED in the composer, not drawn on the canvas | Hover is point-mode-only, gated in the session rather than the view. See below. |
 | Opt-in element source | View tree (NSView/UIView) | Surfaces concrete view class names; richer for AppKit/UIKit hosts. Collapses to hosting views in pure SwiftUI. |
 | `pathname` mapping | Host-supplied route, inferred fallback | A native app has no URL routes; the host sets a route, else infer from the key window title or identifier. |
 | Overlay coverage | Primary screen (MVP) | The overlay covers the primary display; SwiftUI-local points map to AX screen coordinates there. Full multi-display placement is deferred (cli-a99qm.4.2). |
@@ -128,6 +130,88 @@ always resolves to the same element. The pure decision lives in
 the optional `MarqueeTargetSource` capability, which returns a component-widening
 ladder identical in contract to `ComponentLadderSource`, so widening and the
 note's `component` field work unchanged.
+
+## Selection navigation (VRT-mijf.1)
+
+The composer's one-way "Widen" button is replaced by Parent and Child over a
+single path: index 0 is the deepest rung known so far, ascending indices are
+progressively broader, and one index marks the rung the note is bound to.
+
+The rename is not cosmetic. "Widen" named the MECHANISM — the highlighted area
+gets bigger — when the act is choosing which component the note is filed against.
+A button that makes things bigger implies no inverse, so a user who overshot, or
+whom the target rule bound coarser than they meant, had nothing to press.
+
+**Descent prefers HISTORY over re-querying.** Above the deepest rung, Child just
+steps the index back down what the user climbed. Only AT the deepest rung does it
+ask the source for children, and it then PREPENDS the one it takes, so index 0
+still means "deepest known rung". Re-querying on every press would be less code
+and wrong: the source's answer is a heuristic over a LIVE tree, so a hover state
+resolving or a list reflowing between two presses makes the same key produce a
+different result. Prepending is what makes the round trip hold in BOTH
+directions — after descending to child C, Parent returns to the original target
+and Child returns to C ITSELF rather than re-running the heuristic against a tree
+that has moved on.
+
+**The consequence that bit us.** Prepending shifts every existing rung up one, so
+"the note's `component` is the rung above the target" stopped being true: index 1
+is now the ORIGINAL target, which is frequently unseeded. `component` is
+therefore the first SEEDED rung strictly above the BOUND rung, and it is read
+from that rung's IDENTIFIER, never from its `Element.id`. An unseeded element's
+`id` is a slash-joined path (`AXWindow[0]/AXGroup[0]/AXStaticText[1]`); exported
+as a `component` it hands the consuming agent a grep target that matches nothing
+while looking entirely plausible in the note — a silent miss, not a visible one.
+The same path is rooted differently depending on which entry point produced the
+element (`snapshot()` roots at the window, the hit-test and marquee paths at the
+application), so the id is not even stable for one node, which is a second reason
+it can never be a code locator.
+
+**Open, pending dogfood: should the parent chain stay seeded-only?** It is today —
+every rung above the target is an identified component, so every rung locates
+code and no press can bind a note to something that names nothing. The cost is
+that it skips structural levels the user can SEE: a row inside an unseeded stack
+offers no rung for the stack, so Parent jumps from the row straight to the card
+and the level the user was aiming at is unreachable. Admitting unseeded rungs
+would fix the navigation and degrade the notes. Which failure is worse is not
+decidable from the design; it needs real use, so this is recorded as unresolved
+rather than settled.
+
+## Frame mode anchoring (VRT-mijf.2)
+
+When a drawn frame resolves to a real element, the overlay anchors its highlight,
+composer and pin to the FRAME the user drew — not to the element — until the user
+presses Parent or Child, at which point the bound element becomes the anchor and
+the frame stays on screen, dimmed.
+
+**Why the frame outranks the resolved element.** The user drew a box, so the box
+is the truth of the selection until they say otherwise. Anchoring to the
+resolution instead makes the rectangle vanish the instant the mouse comes up and
+the highlight snap to a card that was never swept, which reads as the tool having
+ignored the gesture.
+
+**Why the element is NAMED rather than DRAWN.** A note must never be captured
+against a target the user could not see, so the binding has to appear somewhere.
+But a second rectangle on the canvas is exactly what "show me only the frame I
+drew" rules out, and two boxes of different shapes leave it ambiguous which one
+the note records. The composer header carries the name behind a `Frame →` prefix,
+so it reads as what the frame RESOLVED to rather than as a label for the
+rectangle, and the prefix disappears the moment navigation puts a named element
+back on the canvas — the name is never qualified in two places at once.
+
+**Why navigating reveals the element.** Pressing Parent or Child IS the question
+"which element is this filed against?", so the answer has to become visible;
+moving the binding while the highlight stays on the drawn rect would give no
+feedback at all. The frame survives, weaker, because it is still what the note
+records (`regionRect`) even once it no longer decides the binding.
+
+**Why hover is gated in the SESSION, not the view.** Frame mode selects from a
+swept rectangle, so a hover highlight there advertises a click-selection no press
+in that mode can produce — the dogfooding report was a whole card lit up with its
+name tag while nothing had been drawn. The view keeps its own guard for the
+narrower during-the-drag case; the MODE gate belongs one level down because there
+it is unit-testable without a window, no future UI path can reintroduce it, and
+it removes a cross-process AX hit-test per pointer-motion event. It is a cost
+decision as much as a visual one.
 
 ## IP hygiene (carried into the F7 legal gate)
 
