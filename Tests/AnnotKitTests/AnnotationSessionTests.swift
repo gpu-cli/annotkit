@@ -47,8 +47,8 @@ private final class EmptyWithAnchorSource: ElementSource, RegionAnchorSource {
     }
 }
 
-/// A source that hit-tests to a leaf and exposes a widening ladder (leaf, then
-/// enclosing components), driving selection-widening tests.
+/// A source that hit-tests to a leaf and exposes a component ladder (leaf, then
+/// enclosing components), driving upward-navigation tests.
 @MainActor
 private final class LadderSource: ElementSource, ComponentLadderSource {
     let ladder: [Element]
@@ -56,6 +56,39 @@ private final class LadderSource: ElementSource, ComponentLadderSource {
     func snapshot() -> [WindowSnapshot] { [] }
     func hitTest(_ point: CGPoint) -> Element? { ladder.first }
     func componentLadder(at point: CGPoint) -> [Element] { ladder }
+    func selector(for element: Element) -> String { "#\(element.id)" }
+    func screenshot(of element: Element?) async throws -> CapturedImage {
+        CapturedImage(pngData: Data(), pixelWidth: 1, pixelHeight: 1)
+    }
+}
+
+/// A ladder source that ALSO answers child queries, so one test can drive a
+/// selection both up and down the tree. Records every query so a test can prove
+/// the session cached instead of re-asking (and that a region never asks at all).
+@MainActor
+private final class NavigableSource: ElementSource, ComponentLadderSource, ChildNavigationSource, RegionAnchorSource {
+    let ladder: [Element]
+    let anchor: Element?
+    /// Children keyed by the parent's id, so a test can shape a whole subtree —
+    /// and swap a branch mid-test to prove a re-descent does NOT re-query.
+    var childrenByID: [String: [Element]]
+    private(set) var childQueries: [String] = []
+    private(set) var lastHint: CGPoint?
+
+    init(ladder: [Element], childrenByID: [String: [Element]] = [:], anchor: Element? = nil) {
+        self.ladder = ladder
+        self.childrenByID = childrenByID
+        self.anchor = anchor
+    }
+    func snapshot() -> [WindowSnapshot] { [] }
+    func hitTest(_ point: CGPoint) -> Element? { ladder.first }
+    func componentLadder(at point: CGPoint) -> [Element] { ladder }
+    func regionAnchor(at point: CGPoint) -> Element? { anchor }
+    func children(of element: Element, near hint: CGPoint?) -> [Element] {
+        childQueries.append(element.id)
+        lastHint = hint
+        return childrenByID[element.id] ?? []
+    }
     func selector(for element: Element) -> String { "#\(element.id)" }
     func screenshot(of element: Element?) async throws -> CapturedImage {
         CapturedImage(pngData: Data(), pixelWidth: 1, pixelHeight: 1)
@@ -103,42 +136,117 @@ final class AnnotationSessionTests: XCTestCase {
         )
     }
 
-    func testWidenSelectionStepsUpTheComponentLadder() {
+    func testSelectParentStepsUpTheSelectionPath() {
         let ladder = [makeLadderElement("Leaf"), makeLadderElement("Settings.Models"), makeLadderElement("Settings")]
         let session = AnnotationSession(source: LadderSource(ladder: ladder), sink: NotesFileSink(path: "/dev/null"))
         session.start()
         session.select(atAXPoint: .zero)
         XCTAssertEqual(session.selected?.id, "Leaf", "selection starts at the hit-test target")
-        XCTAssertTrue(session.canWidenSelection)
+        XCTAssertTrue(session.canSelectParent)
+        XCTAssertFalse(session.canSelectChild, "nothing below the deepest rung, and no history yet")
 
-        XCTAssertEqual(session.widenSelection()?.id, "Settings.Models", "widen -> enclosing component")
-        XCTAssertTrue(session.canWidenSelection)
-        XCTAssertEqual(session.widenSelection()?.id, "Settings", "widen -> broader component")
-        XCTAssertFalse(session.canWidenSelection, "no widening past the broadest rung")
-        XCTAssertNil(session.widenSelection(), "widen at the top is a no-op")
+        XCTAssertEqual(session.selectParent()?.id, "Settings.Models", "parent -> enclosing component")
+        XCTAssertTrue(session.canSelectParent)
+        XCTAssertEqual(session.selectParent()?.id, "Settings", "parent -> broader component")
+        XCTAssertFalse(session.canSelectParent, "no stepping past the broadest rung")
+        XCTAssertNil(session.selectParent(), "parent at the top is a no-op")
     }
 
-    func testWideningResetsOnNewSelectionAndCapture() {
+    /// The overshoot case the one-way Widen button could not undo: every upward
+    /// step must be walkable back down through HISTORY, with no source involved.
+    func testSelectChildWalksBackDownThroughHistory() {
+        let ladder = [makeLadderElement("Leaf"), makeLadderElement("Settings.Models"), makeLadderElement("Settings")]
+        let source = NavigableSource(ladder: ladder)
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        session.selectParent()
+        session.selectParent()
+        XCTAssertEqual(session.selected?.id, "Settings")
+        XCTAssertTrue(session.canSelectChild, "an ascended selection can always come back down")
+
+        XCTAssertEqual(session.selectChild()?.id, "Settings.Models", "child -> back down one rung")
+        XCTAssertEqual(session.selectChild()?.id, "Leaf", "child -> back to the original target")
+        XCTAssertFalse(session.canSelectChild, "the leaf has no children and no history left")
+        XCTAssertNil(session.selectChild(), "child at a childless deepest rung is a no-op")
+    }
+
+    /// Below the deepest KNOWN rung there is no history, so the source is asked —
+    /// and the answer is PREPENDED, keeping index 0 "the deepest known rung" and
+    /// leaving the original target reachable with Parent.
+    func testSelectChildDescendsBelowTheDeepestRungAndKeepsTheParentReachable() {
+        let target = makeLadderElement("Card")
+        let row = makeLadderElement("Card.Row")
+        let source = NavigableSource(ladder: [target, makeLadderElement("Page")],
+                                     childrenByID: ["Card": [row]])
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: CGPoint(x: 7, y: 9))
+        XCTAssertEqual(source.lastHint, CGPoint(x: 7, y: 9), "the click point is handed on as the ordering hint")
+        XCTAssertTrue(session.canSelectChild, "a cached child enables descent")
+
+        XCTAssertEqual(session.selectChild()?.id, "Card.Row", "child -> the source's most likely child")
+        XCTAssertTrue(session.canSelectParent, "the original target is still one rung up")
+        XCTAssertEqual(session.selectParent()?.id, "Card", "parent returns to the original target")
+        XCTAssertEqual(session.selectParent()?.id, "Page", "and keeps climbing the original ladder")
+    }
+
+    /// The reason descent PREPENDS instead of re-querying: under a live UI the
+    /// source's "most likely child" can change between presses, so a re-query would
+    /// make Parent-then-Child land somewhere the user never chose.
+    func testReDescentReplaysHistoryRatherThanReQueryingTheSource() {
+        let target = makeLadderElement("Card")
+        let source = NavigableSource(ladder: [target], childrenByID: ["Card": [makeLadderElement("Card.Row")]])
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        XCTAssertEqual(session.selectChild()?.id, "Card.Row")
+
+        // The UI moves on: the same query would now answer differently.
+        source.childrenByID["Card"] = [makeLadderElement("Card.Chevron")]
+        XCTAssertEqual(session.selectParent()?.id, "Card")
+        XCTAssertEqual(session.selectChild()?.id, "Card.Row",
+                       "the round trip returns to the child actually visited, not to a fresh guess")
+    }
+
+    func testNavigationResetsOnNewSelectionAndCapture() {
         let ladder = [makeLadderElement("Leaf"), makeLadderElement("Card")]
         let session = AnnotationSession(source: LadderSource(ladder: ladder), sink: NotesFileSink(path: "/dev/null"))
         session.start()
         session.select(atAXPoint: .zero)
-        session.widenSelection()
+        session.selectParent()
         XCTAssertEqual(session.selected?.id, "Card")
-        // A fresh selection restarts the ladder at the leaf.
+        // A fresh selection restarts the path at the leaf — including the history
+        // that would otherwise let Child step down into the PREVIOUS selection.
         session.select(atAXPoint: .zero)
         XCTAssertEqual(session.selected?.id, "Leaf")
-        XCTAssertTrue(session.canWidenSelection)
-        // Capturing clears the ladder (no widening with nothing selected).
+        XCTAssertTrue(session.canSelectParent)
+        XCTAssertFalse(session.canSelectChild, "a new selection carries no navigation history")
+        // Capturing clears the path (nothing to navigate with nothing selected).
         session.addNote(comment: "note")
-        XCTAssertFalse(session.canWidenSelection)
+        XCTAssertFalse(session.canSelectParent)
+        XCTAssertFalse(session.canSelectChild)
+    }
+
+    /// `canSelectChild` is read on every SwiftUI render, so it must answer from the
+    /// cache. One query per bound-element change is the budget; a per-render walk
+    /// would be a serious regression.
+    func testChildAvailabilityIsAnsweredFromCacheNotTheSource() {
+        let source = NavigableSource(ladder: [makeLadderElement("Card")],
+                                     childrenByID: ["Card": [makeLadderElement("Card.Row")]])
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        XCTAssertEqual(source.childQueries, ["Card"], "exactly one query when the selection is made")
+        for _ in 0 ..< 50 { _ = session.canSelectChild }
+        XCTAssertEqual(source.childQueries, ["Card"], "reading the property must never reach the source")
     }
 
     /// An unseeded target whose enclosing card is only reachable via the GEOMETRIC
-    /// ladder (a `.axCardSurface` sibling, not an ancestor) still gets its
-    /// `component` set to that card — the ladder's tightest enclosing entry, not
+    /// path (a `.axCardSurface` sibling, not an ancestor) still gets its
+    /// `component` set to that card — the path's tightest enclosing entry, not
     /// the target's ancestry.
-    func testUnseededTargetTakesComponentFromGeometricLadder() {
+    func testUnseededTargetTakesComponentFromGeometricPath() {
         // Leaf with no identifier of its own; the card is a separate ladder entry
         // (as a sibling surface would be), not in the leaf's path.
         let leaf = Element(
@@ -162,7 +270,62 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertEqual(note?.elementText, "9:00 Standup")
     }
 
-    func testRegionSelectionCannotWiden() {
+    /// Descending below an UNSEEDED target must not hand the agent a grep target
+    /// that matches nothing.
+    ///
+    /// This pins the bug prepending created. `component` used to be
+    /// `path.dropFirst().first?.id` — index 0 is the target, index 1 is its
+    /// enclosing component — which held only while the path was strictly upward,
+    /// because every upward rung is seeded by construction. Insert a child at 0
+    /// and index 1 becomes the ORIGINAL TARGET, which may carry no identifier at
+    /// all; an unseeded `Element.id` is a slash-joined path string, so the note
+    /// would have exported `#AXWindow[0]/AXGroup[0]` as the thing to grep for and
+    /// looked entirely plausible doing it. The derivation must skip to the first
+    /// SEEDED rung above the bound one.
+    func testDescendingBelowAnUnseededTargetStillNamesASeededComponent() {
+        let unseededTarget = Element(
+            id: "AXWindow[0]/AXGroup[0]", role: "AXGroup", type: "AXGroup",
+            label: "", value: "", frame: CGRect(x: 0, y: 0, width: 40, height: 40),
+            isVisible: true, isActionable: false,
+            path: [
+                PathComponent(role: "AXWindow", label: "", identifier: nil, indexAmongRole: 0),
+                PathComponent(role: "AXGroup", label: "", identifier: nil, indexAmongRole: 0),
+            ]
+        )
+        let child = Element(
+            id: "AXWindow[0]/AXGroup[0]/AXStaticText[0]", role: "AXStaticText", type: "AXStaticText",
+            label: "", value: "Connect", frame: CGRect(x: 4, y: 4, width: 20, height: 10),
+            isVisible: true, isActionable: false,
+            path: [
+                PathComponent(role: "AXWindow", label: "", identifier: nil, indexAmongRole: 0),
+                PathComponent(role: "AXGroup", label: "", identifier: nil, indexAmongRole: 0),
+                PathComponent(role: "AXStaticText", label: "", identifier: nil, indexAmongRole: 0),
+            ]
+        )
+        let seededCard = makeLadderElement("Dashboard.FirstRun")
+        let source = NavigableSource(
+            ladder: [unseededTarget, seededCard],
+            childrenByID: [unseededTarget.id: [child]]
+        )
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        XCTAssertEqual(session.selectChild()?.id, child.id, "descends below the unseeded target")
+
+        let note = session.addNote(comment: "wrong copy here")
+        XCTAssertEqual(note?.component, "Dashboard.FirstRun",
+                       "skips the unseeded target to the first SEEDED rung above the bound one")
+        XCTAssertNotEqual(note?.component, unseededTarget.id,
+                          "a slash-path id must never be exported as the component to grep")
+        XCTAssertFalse(note?.component?.contains("/") ?? false, "no component is ever a path string")
+        XCTAssertEqual(note?.unseeded, true, "the bound child carries no identifier of its own")
+    }
+
+    /// A region is a synthetic marker, not a node in anyone's tree, so BOTH
+    /// navigation controls stay disabled. The empty `selectionPath` is what
+    /// guarantees it: `canSelectChild` refuses to query a source for the children
+    /// of an element that does not exist in the hierarchy.
+    func testRegionSelectionCannotNavigate() {
         let anchor = makeElement()
         let session = AnnotationSession(
             source: EmptyWithAnchorSource(anchor: anchor), sink: NotesFileSink(path: "/dev/null")
@@ -170,7 +333,8 @@ final class AnnotationSessionTests: XCTestCase {
         session.start()
         session.select(atAXPoint: CGPoint(x: 5, y: 5))
         XCTAssertEqual(session.selected?.role, "AXRegion")
-        XCTAssertFalse(session.canWidenSelection, "region notes have no widening ladder")
+        XCTAssertFalse(session.canSelectParent, "a region has no selection path to climb")
+        XCTAssertFalse(session.canSelectChild, "and none to descend into")
     }
 
     private func makeElement() -> Element {
@@ -240,7 +404,7 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertEqual(session.select(inAXRect: drawn)?.id, "Card", "a marquee binds to the ladder's first rung")
         XCTAssertEqual(session.selectedMarqueeRect, drawn, "the drawn frame is kept absolute")
         XCTAssertNil(session.selectedRegionOffset, "a framed note carries no point locator")
-        XCTAssertTrue(session.canWidenSelection, "the marquee ladder drives widening like the point ladder")
+        XCTAssertTrue(session.canSelectParent, "the marquee ladder drives navigation like the point ladder")
     }
 
     func testMarqueeNormalizesABackwardsDrag() {
@@ -296,7 +460,7 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertNotNil(note?.regionRect)
     }
 
-    func testWideningAfterAMarqueeReRelativizesTheFrame() {
+    func testSelectParentAfterAMarqueeReRelativizesTheFrame() {
         // The frame is stored ABSOLUTE precisely so widening stays correct: the
         // note rebinds to a bigger element with a different origin AFTER the drag,
         // so the persisted rect must be measured against the widened element. A
@@ -309,7 +473,7 @@ final class AnnotationSessionTests: XCTestCase {
         session.start()
         let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
         session.select(inAXRect: drawn)
-        XCTAssertEqual(session.widenSelection()?.id, "Card")
+        XCTAssertEqual(session.selectParent()?.id, "Card")
         XCTAssertEqual(session.selectedMarqueeRect, drawn, "widening keeps the absolute drawn frame")
         let note = session.addNote(comment: "framed then widened")
         XCTAssertEqual(note?.selector, "#Card")

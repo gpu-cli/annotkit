@@ -243,21 +243,48 @@ struct OverlayView: View {
                 comment = ""
                 session.cancelSelection()
             },
-            onFocusRequest: onFocusRequest
+            onFocusRequest: onFocusRequest,
+            // Tree navigation: rebind the note to the enclosing component, or to a
+            // component inside the current one. Its own row rather than a third
+            // footer button — the card is 260pt wide and Cancel/Add note already
+            // fill it, so a third control there would be cramped enough to misread.
+            //
+            // DISABLED, never hidden. The control this replaces (a lone "Widen"
+            // button) appeared and disappeared with availability, and that is a
+            // large part of why it was unlearnable: a control you have never seen
+            // is a control you cannot predict. Both buttons are always present, so
+            // "you can move the binding up and down the tree" is visible from the
+            // first note, and greying tells you where you are in the tree.
+            //
+            // No element name here: the card HEADER already shows the bound
+            // element (`session.selectionLabel`) and re-renders as you navigate, so
+            // it is the "where am I" indicator and repeating it would be noise.
+            navigation: {
+                HStack(spacing: 6) {
+                    Button { session.selectParent() } label: {
+                        Label("Parent", systemImage: "chevron.up")
+                    }
+                    .disabled(!session.canSelectParent)
+                    // Tooltips name the EFFECT, not the mechanism. "Widen" described
+                    // what the code did to the ladder and read as "make the
+                    // highlight bigger"; what the user is choosing is which
+                    // component the note is FILED AGAINST.
+                    .help("Bind this note to the enclosing component")
+                    Button { session.selectChild() } label: {
+                        Label("Child", systemImage: "chevron.down")
+                    }
+                    .disabled(!session.canSelectChild)
+                    .help("Bind this note to a component inside")
+                    Spacer()
+                }
+                .controlSize(.small)
+                .frame(width: 260)
+            }
         ) {
             HStack {
                 Button("Cancel") {
                     comment = ""
                     session.cancelSelection()
-                }
-                // Step the selection up to the enclosing component (the card
-                // instead of the label inside it) for a coarser-grained note.
-                // Shown only when a broader identified component is available.
-                if session.canWidenSelection {
-                    Button { session.widenSelection() } label: {
-                        Label("Widen", systemImage: "arrow.up.backward.and.arrow.down.forward")
-                    }
-                    .help("Select the enclosing component")
                 }
                 Spacer()
                 Button("Add note") { addNote() }
@@ -281,7 +308,12 @@ struct OverlayView: View {
             focusKey: note.id,
             onSubmit: { saveEdit(note) },
             onCancel: { session.endEditing() },
-            onFocusRequest: onFocusRequest
+            onFocusRequest: onFocusRequest,
+            // No navigation row: this card edits a note that has ALREADY been
+            // captured, whose selector, component and element path were frozen at
+            // capture. Offering Parent/Child here would move a highlight and change
+            // nothing about the record, which is worse than no control at all.
+            navigation: { EmptyView() }
         ) {
             HStack {
                 Button(role: .destructive) {
@@ -407,8 +439,9 @@ struct OverlayView: View {
 /// `@FocusState` + a next-tick re-assert to beat the insertion race), and the
 /// keyboard contract (Enter submits, Shift+Enter inserts a newline, Escape
 /// cancels on macOS). The two flows differ ONLY in the `header` text, the `text`
-/// binding, the `placement` anchor, and the `footer` button row.
-private struct AnnotationCard<Footer: View>: View {
+/// binding, the `placement` anchor, the optional `navigation` row, and the
+/// `footer` button row.
+private struct AnnotationCard<Navigation: View, Footer: View>: View {
     /// Header label: the composer shows the element's selection label; the editor
     /// shows the note's selector.
     let header: String
@@ -428,6 +461,11 @@ private struct AnnotationCard<Footer: View>: View {
     /// Make the host panel key so the field accepts keystrokes (`panel.makeKey()`
     /// on macOS; a no-op on iOS, where `@FocusState` alone raises the keyboard).
     let onFocusRequest: () -> Void
+    /// Row between the field and the footer: the composer's Parent/Child tree
+    /// navigation, `EmptyView` for the pin editor (whose binding is already fixed).
+    /// A separate slot rather than more footer buttons, so the 260pt footer keeps
+    /// exactly its two primary actions.
+    @ViewBuilder let navigation: () -> Navigation
     /// The differing two-button row (Cancel/Add note vs Delete/Save).
     @ViewBuilder let footer: () -> Footer
 
@@ -459,6 +497,11 @@ private struct AnnotationCard<Footer: View>: View {
                     onSubmit()
                     return .handled
                 }
+            // No `.frame(width:)` here, unlike the rows around it: the editor
+            // passes `EmptyView`, and a frame modifier would give that nothing a
+            // 260pt-wide slot and an 8pt VStack gap on a card that has no nav row.
+            // The composer's row carries its own width instead.
+            navigation()
             footer()
                 .frame(width: 260)
         }
