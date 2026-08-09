@@ -50,6 +50,70 @@ enum PillStyle {
     static let divider = Color.white.opacity(0.1)
 }
 
+// MARK: - Icon-button palette
+
+/// The colours a single ``IconButton`` needs, so ONE implementation of the button's
+/// mechanics (hover wash, disabled dim, press scale, tooltip + accessibility label)
+/// can serve two surfaces that must not look alike. The pill is an opaque `#1A1A1A`
+/// capsule, where white-on-dark is the only legible treatment; the note cards are
+/// `.regularMaterial`, where that same white glyph would all but vanish against a
+/// light desktop showing through. Parameterising the eight colours is what keeps
+/// the second surface from becoming a second copy of the interaction logic — which
+/// is the part that would actually drift.
+struct IconButtonPalette: Sendable {
+    let idle: Color
+    let hover: Color
+    /// The lit member of a segmented control (the pill's tool pair). The cards have
+    /// no persistent-state control, so this is simply never reached there.
+    let active: Color
+    /// Disabled is a colour, not an opacity modifier, because the two surfaces dim
+    /// from different starting points: white-at-0.4 on the pill, the system's
+    /// secondary label on the cards.
+    let disabled: Color
+    let destructiveIdle: Color
+    /// Glyph colour once the destructive fill is behind it — it has to survive a
+    /// saturated red, so it is not simply ``hover``.
+    let destructiveHover: Color
+    let hoverFill: Color
+    let destructiveFill: Color
+}
+
+extension IconButtonPalette {
+    /// The pill's palette, byte-identical to what ``PillStyle`` already drove: the
+    /// destructive glyph at rest is deliberately the SAME dim white as every other
+    /// glyph, because on the pill "this one deletes" is announced by the red hover
+    /// wash alone and a permanently red glyph in that row would read as an error.
+    static let pill = IconButtonPalette(
+        idle: PillStyle.iconIdle,
+        hover: PillStyle.iconHover,
+        active: PillStyle.iconActive,
+        disabled: PillStyle.iconIdle.opacity(0.4),
+        destructiveIdle: PillStyle.iconIdle,
+        destructiveHover: .white,
+        hoverFill: PillStyle.hoverBackground,
+        destructiveFill: PillStyle.destructive
+    )
+
+    /// The note cards' palette: system label colours, so the glyphs track the
+    /// viewer's appearance the way the `.regularMaterial` behind them already does.
+    /// Hard-coding the pill's white here is the specific failure this exists to
+    /// prevent — it is invisible on a light background, which is most of them.
+    ///
+    /// The card's destructive glyph IS red at rest, unlike the pill's: it replaces a
+    /// `Label("Delete")` that was already `.red`, and the card has no second red
+    /// element for it to be confused with.
+    static let card = IconButtonPalette(
+        idle: .secondary,
+        hover: .primary,
+        active: .primary,
+        disabled: Color.secondary.opacity(0.4),
+        destructiveIdle: .red,
+        destructiveHover: .white,
+        hoverFill: Color.primary.opacity(0.08),
+        destructiveFill: .red
+    )
+}
+
 // MARK: - Lucide icon model
 
 /// A primitive on Lucide's 24x24 design grid. Modeling each glyph as a small
@@ -122,6 +186,45 @@ struct LucideIcon {
     /// is what keeps the cursor's tail and notch from reading as hard mitres.
     static let mousePointer = LucideIcon(parts: [
         .path("M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"),
+    ])
+
+    /// Lucide `arrow-up` / `arrow-down` — the composer's tree navigation: bind the
+    /// note to the enclosing component, or to one inside it. Full-shaft arrows
+    /// rather than the bare `chevron.up`/`chevron.down` they replace: a lone
+    /// chevron at 16pt reads as "expand/collapse a disclosure", which is the wrong
+    /// promise for a control that MOVES the binding, and the shaft is what makes
+    /// the pair read as travel along an axis.
+    static let arrowUp = LucideIcon(parts: [
+        .path("m5 12 7-7 7 7"),
+        .path("M12 19V5"),
+    ])
+
+    static let arrowDown = LucideIcon(parts: [
+        .path("M12 5v14"),
+        .path("m19 12-7 7-7-7"),
+    ])
+
+    /// Lucide `undo-2` — dismiss the composer without capturing. Its identity is
+    /// the semicircular loop, authored upstream as TWO chained 5.5-radius quarter
+    /// arcs; both quarters must render as real curves or the glyph degrades to a
+    /// triangular pennant that reads as nothing in particular. `LucideArcTests`
+    /// pins the loop's 45-degree points for exactly that reason.
+    ///
+    /// Chosen over `x` for Cancel because the card's other neutral glyphs are all
+    /// directional: an X would be the only "destroy" mark on a row whose
+    /// destructive slot (the editor's trash) is a different button entirely.
+    static let undo2 = LucideIcon(parts: [
+        .path("M9 14 4 9l5-5"),
+        .path("M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5a5.5 5.5 0 0 1-5.5 5.5H11"),
+    ])
+
+    /// Lucide `send` — the commit action on both cards (Add note / Save). The real
+    /// `d`, whose body is one closed subpath of `a`-rounded corners, so it is a
+    /// filled-looking dart only because the corners are true arcs; flattened it
+    /// collapses into a scalene triangle with a nick in it.
+    static let send = LucideIcon(parts: [
+        .path("M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"),
+        .path("m21.854 2.147-10.94 10.939"),
     ])
 
     /// Lucide `square-dashed` — the FRAME tool: select by drawing a frame. Twelve
@@ -453,10 +556,13 @@ private struct ToolTipBacking: NSViewRepresentable {
 #endif
 
 extension View {
-    /// Hover tooltip for a pill control: SwiftUI `.help` plus (on macOS) an
-    /// NSView-backed `toolTip` for reliability inside the overlay panel.
+    /// Hover tooltip for an icon-only control (pill or note card): SwiftUI `.help`
+    /// plus (on macOS) an NSView-backed `toolTip` for reliability inside the overlay
+    /// panel. Both surfaces need the AppKit backing — the cards live in the same
+    /// borderless, non-activating panel the pill does, where `.help` alone can fail
+    /// to render, and a card button is now the ONLY place its action is named.
     @ViewBuilder
-    func pillToolTip(_ text: String) -> some View {
+    func iconToolTip(_ text: String) -> some View {
         #if os(macOS)
         help(text).background(ToolTipBacking(text: text))
         #else

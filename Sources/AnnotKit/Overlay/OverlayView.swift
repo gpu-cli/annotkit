@@ -334,8 +334,16 @@ struct OverlayView: View {
     }
 
     /// The WRITE card: a shared ``AnnotationCard`` anchored to the selected
-    /// element, with a Cancel / Add note footer. Enter submits; Escape dismisses via
-    /// the host's key monitor (``EscapeRule``), not from inside this view.
+    /// element, with a single icon row — tree navigation on the left, dismiss and
+    /// commit on the right. Enter submits; Escape dismisses via the host's key
+    /// monitor (``EscapeRule``), not from inside this view.
+    ///
+    /// The four controls used to be two rows of TEXT buttons (a Parent/Child
+    /// navigation row above a Cancel/Add note footer), because four labelled
+    /// buttons do not fit across 260pt. Four 28pt glyphs do, with room to spare, so
+    /// the split row was a symptom of the labels rather than of the grouping — and
+    /// a two-row footer on a card whose whole job is one text field read as heavier
+    /// than the thing it was framing.
     private var composer: some View {
         AnnotationCard(
             header: composerHeader,
@@ -345,54 +353,65 @@ struct OverlayView: View {
             // is not re-inserted, so `.onAppear` won't refire).
             focusKey: session.selected?.id ?? "",
             onSubmit: { addNote() },
-            onFocusRequest: onFocusRequest,
-            // Tree navigation: rebind the note to the enclosing component, or to a
-            // component inside the current one. Its own row rather than a third
-            // footer button — the card is 260pt wide and Cancel/Add note already
-            // fill it, so a third control there would be cramped enough to misread.
-            //
-            // DISABLED, never hidden. The control this replaces (a lone "Widen"
-            // button) appeared and disappeared with availability, and that is a
-            // large part of why it was unlearnable: a control you have never seen
-            // is a control you cannot predict. Both buttons are always present, so
-            // "you can move the binding up and down the tree" is visible from the
-            // first note, and greying tells you where you are in the tree.
-            //
-            // No element name here: the card HEADER already shows the bound
-            // element (`session.selectionLabel`) and re-renders as you navigate, so
-            // it is the "where am I" indicator and repeating it would be noise.
-            navigation: {
-                HStack(spacing: 6) {
-                    Button { session.selectParent() } label: {
-                        Label("Parent", systemImage: "chevron.up")
-                    }
-                    .disabled(!session.canSelectParent)
-                    // Tooltips name the EFFECT, not the mechanism. "Widen" described
-                    // what the code did to the ladder and read as "make the
-                    // highlight bigger"; what the user is choosing is which
-                    // component the note is FILED AGAINST.
-                    .help("Bind this note to the enclosing component")
-                    Button { session.selectChild() } label: {
-                        Label("Child", systemImage: "chevron.down")
-                    }
-                    .disabled(!session.canSelectChild)
-                    .help("Bind this note to a component inside")
-                    Spacer()
-                }
-                .controlSize(.small)
-                .frame(width: 260)
-            }
+            onFocusRequest: onFocusRequest
         ) {
-            HStack {
+            HStack(spacing: 4) {
+                // Tree navigation: rebind the note to the enclosing component, or to
+                // a component inside the current one. Leading, and separated from
+                // the commit pair by the Spacer, because they change WHAT the note
+                // is filed against — they are inputs to the note, not ways of
+                // ending it.
+                //
+                // DISABLED, never hidden. The control this replaces (a lone "Widen"
+                // button) appeared and disappeared with availability, and that is a
+                // large part of why it was unlearnable: a control you have never
+                // seen is a control you cannot predict. Both buttons are always
+                // present, so "you can move the binding up and down the tree" is
+                // visible from the first note, and the dim tells you where you are
+                // in the tree.
+                //
+                // No element name in these labels: the card HEADER already shows the
+                // bound element (`session.selectionLabel`) and re-renders as you
+                // navigate, so it is the "where am I" indicator and repeating it
+                // would be noise.
+                IconButton(
+                    icon: .arrowUp,
+                    palette: .card,
+                    isDisabled: !session.canSelectParent,
+                    tooltip: "Select parent component",
+                    action: { session.selectParent() }
+                )
+                IconButton(
+                    icon: .arrowDown,
+                    palette: .card,
+                    isDisabled: !session.canSelectChild,
+                    tooltip: "Select child component",
+                    action: { session.selectChild() }
+                )
+                Spacer()
                 // No `comment = ""` here any more: the draft is cleared by the
                 // composer CLOSING (see the `session.selected` hook on the ZStack), so
                 // every dismissal path — this button, Escape, leaving the mode —
                 // clears it identically.
-                Button("Cancel") { session.cancelSelection() }
-                Spacer()
-                Button("Add note") { addNote() }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                IconButton(
+                    icon: .undo2,
+                    palette: .card,
+                    tooltip: "Cancel",
+                    action: { session.cancelSelection() }
+                )
+                // The commit action, and the ONLY tinted glyph on the card. It lost
+                // `.borderedProminent` along with its label, and without the tint it
+                // would be one more grey 16pt glyph in a row of four — the user would
+                // have to read four tooltips to find out which one files the note.
+                // Colour carries the prominence that the filled capsule used to.
+                IconButton(
+                    icon: .send,
+                    palette: .card,
+                    isDisabled: comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    glyphTint: .accentColor,
+                    tooltip: "Add note",
+                    action: { addNote() }
+                )
             }
         }
     }
@@ -411,11 +430,21 @@ struct OverlayView: View {
     }
 
     /// The EDIT card: the SAME shared ``AnnotationCard`` chrome as the composer,
-    /// anchored to the tapped pin instead of an element, with a Delete / Save
-    /// footer. Enter saves, Escape (via the host's key monitor) closes it, and
+    /// anchored to the tapped pin instead of an element, with a Delete / Save icon
+    /// row. Enter saves, Escape (via the host's key monitor) closes it, and
     /// Save/Delete/click-away all end
     /// editing. Because it lives in the overlay panel (not a system `.popover`),
     /// it inherits the composer's reliable `panel.makeKey()` focus.
+    ///
+    /// Its row is icons for the same reason the composer's is, and it changed at the
+    /// same time on purpose: two cards that share every pixel of their chrome but
+    /// disagree about whether actions are words or glyphs would read as a bug in
+    /// whichever one the user opened second.
+    ///
+    /// No navigation pair here: this card edits a note that has ALREADY been
+    /// captured, whose selector, component and element path were frozen at capture.
+    /// Offering Parent/Child would move a highlight and change nothing about the
+    /// record, which is worse than no control at all.
     private func editCard(note: AnnotationNote, anchor: CGPoint) -> some View {
         AnnotationCard(
             header: note.selector,
@@ -424,26 +453,34 @@ struct OverlayView: View {
             // Re-focus when the editor moves pin→pin without re-insertion.
             focusKey: note.id,
             onSubmit: { saveEdit(note) },
-            onFocusRequest: onFocusRequest,
-            // No navigation row: this card edits a note that has ALREADY been
-            // captured, whose selector, component and element path were frozen at
-            // capture. Offering Parent/Child here would move a highlight and change
-            // nothing about the record, which is worse than no control at all.
-            navigation: { EmptyView() }
+            onFocusRequest: onFocusRequest
         ) {
-            HStack {
-                Button(role: .destructive) {
-                    session.deleteNote(id: note.id)
-                    session.endEditing()
-                } label: {
-                    Label("Delete", systemImage: "trash")
-                        .foregroundStyle(.red)
-                }
-                .tint(.red)
+            HStack(spacing: 4) {
+                // Destructive treatment survives the loss of the word "Delete": red
+                // at rest and a full red wash on hover (see ``IconButtonPalette.card``),
+                // so the one irreversible control on either card is still the only
+                // coloured thing besides the commit action.
+                IconButton(
+                    icon: .trash,
+                    palette: .card,
+                    isDestructive: true,
+                    tooltip: "Delete",
+                    action: {
+                        session.deleteNote(id: note.id)
+                        session.endEditing()
+                    }
+                )
                 Spacer()
-                Button("Save") { saveEdit(note) }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                // Same glyph and same accent as the composer's Add note: both cards
+                // commit with `send`, so the gesture is learned once.
+                IconButton(
+                    icon: .send,
+                    palette: .card,
+                    isDisabled: editDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                    glyphTint: .accentColor,
+                    tooltip: "Save",
+                    action: { saveEdit(note) }
+                )
             }
         }
     }
@@ -571,8 +608,8 @@ struct OverlayView: View {
 /// at the bottom of `body`).
 ///
 /// The two flows differ ONLY in the `header` text, the `text` binding, the
-/// `placement` anchor, the optional `navigation` row, and the `footer` button row.
-private struct AnnotationCard<Navigation: View, Footer: View>: View {
+/// `placement` anchor, and the `footer` icon row.
+private struct AnnotationCard<Footer: View>: View {
     /// Header label: the composer shows the element's selection label; the editor
     /// shows the note's selector.
     let header: String
@@ -590,12 +627,9 @@ private struct AnnotationCard<Navigation: View, Footer: View>: View {
     /// Make the host panel key so the field accepts keystrokes (`panel.makeKey()`
     /// on macOS; a no-op on iOS, where `@FocusState` alone raises the keyboard).
     let onFocusRequest: () -> Void
-    /// Row between the field and the footer: the composer's Parent/Child tree
-    /// navigation, `EmptyView` for the pin editor (whose binding is already fixed).
-    /// A separate slot rather than more footer buttons, so the 260pt footer keeps
-    /// exactly its two primary actions.
-    @ViewBuilder let navigation: () -> Navigation
-    /// The differing two-button row (Cancel/Add note vs Delete/Save).
+    /// The differing icon row (Parent/Child/Cancel/Add note vs Delete/Save). One
+    /// slot, not the two it used to be: the separate `navigation` row existed only
+    /// because four TEXT buttons could not share 260pt, and four glyphs can.
     @ViewBuilder let footer: () -> Footer
 
     @FocusState private var focused: Bool
@@ -626,11 +660,6 @@ private struct AnnotationCard<Navigation: View, Footer: View>: View {
                     onSubmit()
                     return .handled
                 }
-            // No `.frame(width:)` here, unlike the rows around it: the editor
-            // passes `EmptyView`, and a frame modifier would give that nothing a
-            // 260pt-wide slot and an 8pt VStack gap on a card that has no nav row.
-            // The composer's row carries its own width instead.
-            navigation()
             footer()
                 .frame(width: 260)
         }
@@ -735,13 +764,13 @@ private struct ToolbarView: View {
                 // control to its right, these change how the NEXT press behaves, so
                 // they must stay live in an empty session, which is exactly when a
                 // user is choosing how to make their first selection.
-                PillButton(
+                IconButton(
                     icon: .mousePointer,
                     isActive: session.tool == .point,
                     tooltip: "Select by clicking",
                     action: { session.setTool(.point) }
                 )
-                PillButton(
+                IconButton(
                     icon: .squareDashed,
                     isActive: session.tool == .frame,
                     tooltip: "Select by drawing a frame",
@@ -755,28 +784,28 @@ private struct ToolbarView: View {
                     .frame(width: 1, height: 16)
                     .padding(.horizontal, 3)
                     .allowsHitTesting(false)
-                PillButton(
+                IconButton(
                     icon: justCopied ? .check : .copy,
                     isDisabled: !hasNotes,
                     glyphTint: justCopied ? PillStyle.success : nil,
                     tooltip: justCopied ? "Copied" : "Copy notes (Markdown)",
                     action: { onCopy(); flashCopied() }
                 )
-                PillButton(
+                IconButton(
                     icon: .download,
                     isDisabled: !hasNotes,
                     tooltip: "Export to AGENTATION_NOTES.md",
                     action: onExport
                 )
-                PillButton(icon: .trash, isDestructive: true, isDisabled: !hasNotes, tooltip: "Clear notes") {
+                IconButton(icon: .trash, isDestructive: true, isDisabled: !hasNotes, tooltip: "Clear notes") {
                     session.clear()
                 }
                 // Deliberately NOT gated on `hasNotes`: with zero notes every other
                 // control is inert, so the X is the only live thing left and must
                 // still work.
-                PillButton(icon: .close, tooltip: "Stop annotating", action: onToggle)
+                IconButton(icon: .close, tooltip: "Stop annotating", action: onToggle)
             } else {
-                PillButton(icon: .pencil, tooltip: "Annotate", action: onToggle)
+                IconButton(icon: .pencil, tooltip: "Annotate", action: onToggle)
             }
         }
         // Idle shows ONE 28pt button, so the inset must be EVEN (8pt all around ->
@@ -834,11 +863,23 @@ private struct ToolbarView: View {
     }
 }
 
-/// A single 28pt circular icon button in the pill: transparent when idle, a faint
-/// white wash on hover (red for destructive). Each carries a tooltip (`.help`)
-/// and a matching accessibility label.
-private struct PillButton: View {
+/// A single 28pt circular Lucide icon button: transparent when idle, a faint wash
+/// on hover (the destructive fill for destructive actions), dimmed and inert when
+/// disabled, pressed in slightly on tap. Each carries a tooltip (`.help`) and a
+/// MATCHING accessibility label — an icon-only control with a tooltip alone is
+/// simply unlabelled to VoiceOver, which is why the two are one parameter here
+/// rather than two that can be filled in independently.
+///
+/// ONE implementation serves both the dark toolbar pill and the `.regularMaterial`
+/// note cards, differing only by ``IconButtonPalette``. The colours are the cheap
+/// part; the reason this is not two views is the interaction logic above, where a
+/// second copy would drift silently (hover that survives a disable, a press scale
+/// that stops honouring reduce-motion) and only ever be noticed on one surface.
+private struct IconButton: View {
     let icon: LucideIcon
+    /// Defaulted to the pill so the toolbar's seven call sites stay exactly as they
+    /// were — this is a refactor for the pill, not a restyle of it.
+    var palette: IconButtonPalette = .pill
     var isDestructive: Bool = false
     /// Dims the glyph and makes the button a true no-op (used by copy/export/clear
     /// while there are no notes to act on).
@@ -850,7 +891,15 @@ private struct PillButton: View {
     /// A segment with no lit member is worse than no segment at all, because the
     /// user cannot tell whether a click will select a point or do nothing.
     var isActive: Bool = false
+    /// Overrides the glyph colour outright, for a button whose MEANING is a colour:
+    /// the pill's copied-check flash, and the cards' accent-tinted commit action,
+    /// which is how `send` keeps the prominence `.borderedProminent` used to give it.
+    /// Ranked below `isDisabled` on purpose — an accent glyph on a dead button would
+    /// advertise a commit the empty field cannot make.
     var glyphTint: Color? = nil
+    /// Shown on hover AND read by VoiceOver. Name the effect in full: the glyph no
+    /// longer carries a word beside it, so this string is the only place the action
+    /// is named at all.
     let tooltip: String
     let action: () -> Void
 
@@ -860,14 +909,14 @@ private struct PillButton: View {
     private var glyphColor: Color {
         // Disabled outranks every other state: a dimmed glyph with no hover/active
         // treatment reads as unavailable.
-        if isDisabled { return PillStyle.iconIdle.opacity(0.4) }
+        if isDisabled { return palette.disabled }
         if let glyphTint { return glyphTint }
         // Active outranks hover: hovering the ALREADY-active tool must not dim it
         // toward the inactive treatment, which would read as "clicking this turns
         // it off" for a segment that has no off.
-        if isActive { return PillStyle.iconActive }
-        if isDestructive && hovering { return .white }
-        return hovering ? PillStyle.iconHover : PillStyle.iconIdle
+        if isActive { return palette.active }
+        if isDestructive { return hovering ? palette.destructiveHover : palette.destructiveIdle }
+        return hovering ? palette.hover : palette.idle
     }
 
     // Hover is the ONLY fill state, even for the active tool: the segment is
@@ -875,7 +924,7 @@ private struct PillButton: View {
     // active tool cannot be mistaken for the hover wash sitting on a neighbour.
     private var fillColor: Color {
         // No hover wash while disabled — the button must look inert.
-        if hovering && !isDisabled { return isDestructive ? PillStyle.destructive : PillStyle.hoverBackground }
+        if hovering && !isDisabled { return isDestructive ? palette.destructiveFill : palette.hoverFill }
         return .clear
     }
 
@@ -889,9 +938,9 @@ private struct PillButton: View {
                 .background(Circle().fill(fillColor))
                 .contentShape(Circle())
         }
-        .buttonStyle(PressablePillButtonStyle(reduceMotion: reduceMotion))
+        .buttonStyle(PressableIconButtonStyle(reduceMotion: reduceMotion))
         .disabled(isDisabled)
-        .pillToolTip(tooltip)
+        .iconToolTip(tooltip)
         .accessibilityLabel(tooltip)
         .onHover { value in
             // Ignore hover entirely while disabled so no wash/glyph change leaks in.
@@ -904,7 +953,7 @@ private struct PillButton: View {
 
 /// Presses the glyph in slightly on tap (`scaleEffect(0.96)`), honoring
 /// reduce-motion by dropping the animation.
-private struct PressablePillButtonStyle: ButtonStyle {
+private struct PressableIconButtonStyle: ButtonStyle {
     let reduceMotion: Bool
 
     func makeBody(configuration: Configuration) -> some View {

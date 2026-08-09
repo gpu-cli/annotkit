@@ -76,6 +76,14 @@ final class LucideArcTests: XCTestCase {
         return box
     }
 
+    /// The `d` strings of a SHIPPED glyph, so a test can assert on the icon the UI
+    /// actually draws rather than on a copy of its path retyped into the test.
+    private func pathData(_ icon: LucideIcon) -> [String] {
+        var strings: [String] = []
+        for case .path(let d) in icon.parts { strings.append(d) }
+        return strings
+    }
+
     private func distanceToCurve(_ d: String, _ target: CGPoint) -> CGFloat {
         samples(d, per: 64).map { hypot($0.x - target.x, $0.y - target.y) }.min() ?? .infinity
     }
@@ -299,13 +307,44 @@ final class LucideArcTests: XCTestCase {
 
     // MARK: Shipped glyphs
 
-    /// `pencil`, `mouse-pointer-2` and `square-dashed` all carry `a` commands and
-    /// therefore change shape with real arcs. Their curves must still land inside
-    /// the 24-unit design grid — the F.6.6.2 scale-up on `pencil`'s r=1 eraser
-    /// arc is the one that could plausibly push a glyph out of bounds.
+    /// The shipped `undo-2`, asserted on the glyph itself rather than on a `d`
+    /// string retyped here: what has to hold is that the icon the note cards draw
+    /// still contains a real loop. This is the one failure the rest of the suite
+    /// cannot see — a flattened arc keeps its ENDPOINTS, so the glyph would still
+    /// render, still fill the grid, still pass every non-empty/in-bounds check, and
+    /// simply stop looking like undo. Off-screen, nothing else would notice.
+    func testShippedUndoGlyphDrawsARealLoop() {
+        let strings = pathData(.undo2)
+        XCTAssertEqual(strings.count, 2, "undo2 is an arrowhead plus a loop")
+        let loop = strings[1]
+
+        // The loop spans from the shaft's start out to the circle's right and
+        // bottom extremes — centre (14.5, 14.5), radius 5.5.
+        let box = drawnBounds(loop)
+        XCTAssertEqual(box.minX, 4, accuracy: 0.02)
+        XCTAssertEqual(box.maxX, 20, accuracy: 0.02, "the loop never reached the circle's right extreme")
+        XCTAssertEqual(box.minY, 9, accuracy: 0.02)
+        XCTAssertEqual(box.maxY, 20, accuracy: 0.02, "the loop never reached the circle's bottom extreme")
+
+        // Both quarters' 45-degree points are ON the curve...
+        let offset: CGFloat = 5.5 / CGFloat(2).squareRoot()
+        XCTAssertLessThan(distanceToCurve(loop, CGPoint(x: 14.5 + offset, y: 14.5 - offset)), 0.02)
+        XCTAssertLessThan(distanceToCurve(loop, CGPoint(x: 14.5 + offset, y: 14.5 + offset)), 0.02)
+        // ...and the chord midpoints a straight-line arc would pass through are
+        // 1.61 units AWAY from it. This pair is the assertion with teeth: the
+        // bounding box above survives flattening, these do not.
+        XCTAssertGreaterThan(distanceToCurve(loop, CGPoint(x: 17.25, y: 11.75)), 1.5, "the first quarter is a chord")
+        XCTAssertGreaterThan(distanceToCurve(loop, CGPoint(x: 17.25, y: 17.25)), 1.5, "the second quarter is a chord")
+    }
+
+    /// Every `a`-carrying glyph must still land inside the 24-unit design grid —
+    /// the F.6.6.2 scale-up on `pencil`'s r=1 eraser arc and on `send`'s r=.5
+    /// corners is what could plausibly push one out of bounds, and a glyph that
+    /// spills is clipped by the 16pt frame rather than drawn small.
     func testArcCarryingGlyphsStayOnTheDesignGrid() {
         let glyphs: [(String, LucideIcon)] = [
             ("pencil", .pencil), ("mousePointer", .mousePointer), ("squareDashed", .squareDashed),
+            ("undo2", .undo2), ("send", .send),
         ]
         for (name, icon) in glyphs {
             var points: [CGPoint] = []
