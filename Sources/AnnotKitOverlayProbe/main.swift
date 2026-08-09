@@ -1352,8 +1352,285 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
 
             self.marqueeController?.unmount()
             window.orderOut(nil)
-            self.finish()
+            self.phase8Navigation()
         }
+    }
+
+    // ---- Phase 8: selection navigation (F1 + F2) ----------------------------
+    // Parent/Child is BIDIRECTIONAL navigation over one path, and the property
+    // that makes it usable is that it round-trips: whatever you climbed, you can
+    // walk back down to, and vice versa. That is a claim about a LIVE tree — the
+    // whole reason descent replays history instead of re-querying is that a live
+    // UI would answer the same question differently on consecutive presses — so it
+    // has to be asserted here rather than only against hand-built fixtures.
+    var navController: OverlayController?
+    var navSession: AnnotationSession?
+    var navHost: NSWindow?
+    var passNav = true
+    func check8(_ cond: Bool, _ msg: String) {
+        passNav = passNav && cond
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+    }
+
+    /// Climb to the broadest rung, returning how many rungs were actually walked.
+    /// Doubles as the probe's only view of the path's SHAPE: the session keeps the
+    /// path private, so "how many rungs sit above the bound one" is observable only
+    /// by walking them — which is what lets 8c prove no extra rung was inserted.
+    func climbToTop(_ session: AnnotationSession) -> Int {
+        var climbed = 0
+        while session.selectParent() != nil { climbed += 1 }
+        return climbed
+    }
+
+    /// Walk `count` rungs back down, returning how many actually moved.
+    @discardableResult
+    func descend(_ session: AnnotationSession, _ count: Int) -> Int {
+        var moved = 0
+        for _ in 0 ..< count where session.selectChild() != nil { moved += 1 }
+        return moved
+    }
+
+    /// Identity for a round-trip assertion: id AND frame. The id alone is not
+    /// enough — an UNSEEDED element's id is its slash-joined path, which two
+    /// sibling rows of the same role and depth can share — and the frame alone is
+    /// not enough either, because a coextensive surface shares it with the content
+    /// group in front of it.
+    func same(_ lhs: Element?, _ rhs: Element?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return lhs.id == rhs.id && approxEqual(lhs.frame, rhs.frame, tol: 0.5)
+    }
+
+    func label(_ element: Element?) -> String {
+        guard let element else { return "nil" }
+        let text = element.value.isEmpty ? element.label : element.value
+        return "#\(element.id) \(element.role)\(text.isEmpty ? "" : " \"\(text)\"") \(fmt(element.frame))"
+    }
+
+    func phase8Navigation() {
+        print("\n--- Phase 8: selection navigation (parent/child round trips, frame anchoring) ---")
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 700),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "AnnotKit Harness W8 (navigation)"
+        window.contentView = NSHostingView(rootView: ProbeNavigationView())
+        window.makeKeyAndOrderFront(nil)
+        navHost = window
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-navigation.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: window)
+        controller.start()
+        navController = controller
+        navSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self else { return }
+            let source = MacElementSource()
+            let roots = source.snapshot().map(\.root)
+            guard let card = self.findElement(id: "Spec.Card", in: roots),
+                  let cardText = self.findElement(id: "Spec.CardText", in: roots),
+                  let section = self.findElement(id: "Spec.Section", in: roots),
+                  let list = self.findFirst(in: roots, where: { $0.label == "Nav list" }) else {
+                check8(false, "snapshot exposes Spec.Card/CardText/Section + the Nav list container")
+                self.navController?.unmount()
+                window.orderOut(nil)
+                self.finish()
+                return
+            }
+            print("      fixture: card=\(fmt(card.frame)) cardText=\(fmt(cardText.frame)) " +
+                  "section=\(fmt(section.frame)) list=\(self.label(list))")
+
+            self.phase8aRoundTripUp(session: session, source: source, cardText: cardText)
+            self.phase8bcdDescent(session: session, source: source, list: list)
+            self.phase8eHover(session: session, cardText: cardText)
+            self.phase8fAnchoring(session: session, card: card)
+
+            // The hover re-check runs on a later turn ON PURPOSE: `hover` is
+            // throttled to ~60fps, so a re-hover issued in this same runloop turn
+            // would be dropped by the throttle and "still nil" would prove the
+            // throttle, not the tool gate.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self else { return }
+                self.phase8eHoverRevived(session: session, cardText: cardText)
+                self.navController?.unmount()
+                window.orderOut(nil)
+                self.finish()
+            }
+        }
+    }
+
+    /// 8a — climbing N rungs and descending N returns to the ORIGINAL element.
+    func phase8aRoundTripUp(session: AnnotationSession, source: MacElementSource, cardText: Element) {
+        print("\n  8a — round trip UP: climb N, descend N, land on the original element:")
+        let point = center(of: cardText.frame)
+        let origin = session.select(atAXPoint: point)
+        print("      click \(fmt(CGRect(origin: point, size: .zero))) -> \(self.label(origin))")
+        check8(origin?.id == "Spec.CardText", "click selects #Spec.CardText (got \(self.label(origin)))")
+
+        let climbed = climbToTop(session)
+        let top = session.selected
+        print("      climbed \(climbed) rung(s) -> \(self.label(top))")
+        // Without this the round trip is vacuous: descending zero rungs trivially
+        // "returns" to where it started. Two rungs, not one, so the descent has to
+        // replay a sequence rather than a single undo.
+        check8(climbed >= 2, "the click's ladder offered >=2 rungs to climb (got \(climbed) — a real multi-rung path)")
+        check8(!same(top, origin), "climbing actually moved the binding off the original element")
+        check8(!session.canSelectParent, "the climb stopped at the BROADEST rung (Select Parent is spent)")
+
+        let descended = descend(session, climbed)
+        print("      descended \(descended) rung(s) -> \(self.label(session.selected))")
+        check8(descended == climbed, "descending walks back exactly as many rungs as were climbed")
+        check8(same(session.selected, origin),
+               "N up then N down returns to the ORIGINAL element (got \(self.label(session.selected)))")
+    }
+
+    /// 8b/8c/8d — descending BELOW the target: a real `ChildNavigationSource` query
+    /// against the live tree, the history replay, and the `component` fix.
+    ///
+    /// Why this needs the Nav-list container rather than the Spec fixtures: every
+    /// element in `ProbeSpecificityView` is an AX LEAF (the card and section are
+    /// `children: .ignore` surfaces; the button and texts have no AX children), so
+    /// a child query there can only ever return [] and every assertion built on it
+    /// would pass while proving nothing. That is asserted below rather than assumed,
+    /// so the day the fixture grows children this comment does not quietly rot.
+    func phase8bcdDescent(session: AnnotationSession, source: MacElementSource, list: Element) {
+        print("\n  8b/8c/8d — descend BELOW the target (live child query), history replay, component:")
+
+        // The frame IS how this selection is made: the list container's AX frame is
+        // the union of its rows (the documented `children: .contain` behaviour), so
+        // there is no point inside it that hit-tests to the container itself. A
+        // drawn frame binds to it by the marquee rule's largest-surrounded pass.
+        let drawn = list.frame.insetBy(dx: -6, dy: -6)
+        let target = session.select(inAXRect: drawn)
+        print("      frame \(fmt(drawn)) -> \(self.label(target))")
+        // Matched on label + frame, NOT on id, and that is not laziness: an unseeded
+        // element's id is its slash-joined path, and the path is rooted differently
+        // depending on which entry point produced the element — `snapshot()` roots
+        // its trees at the window, while the hit-test / marquee / navigation paths
+        // build the chain from the AXApplication. So the SAME live node is
+        // `AXWindow[0]/AXGroup[0]/…` here and `AXApplication[0]/AXWindow[1]/…`
+        // there. Pre-existing and orthogonal to this phase — but it is the concrete
+        // reason a note's `component` must be an IDENTIFIER and never an id (8d).
+        check8(target?.label == list.label && approxEqual(target?.frame ?? .zero, list.frame, tol: 0.5),
+               "the drawn frame binds to the Nav list container (got \(self.label(target)))")
+        check8((target?.path.last?.identifier ?? "").isEmpty,
+               "the bound target is UNSEEDED (so `component` must come from a rung above it)")
+        check8(target?.id.contains("/") == true,
+               "the unseeded target's id IS a slash-joined path (got \(target?.id ?? "nil")) — the string that must never be exported as a grep target")
+
+        let children = source.children(of: list, near: center(of: drawn))
+        print("      live children(of: list) = \(children.isEmpty ? "[]" : children.map { self.label($0) }.joined(separator: "  |  "))")
+        check8(!children.isEmpty, "the live tree really offers children under the bound target (the query is not returning [])")
+
+        // 8b — descend below the target, then Parent returns to the target.
+        let child = session.selectChild()
+        print("      selectChild() -> \(self.label(child))")
+        check8(child != nil, "selectChild() descends below the deepest known rung")
+        check8(!same(child, target), "the descent landed on a DIFFERENT element than the target")
+        check8(same(child, children.first),
+               "the descent landed on the rule's most-likely child (got \(self.label(child)), rule ranked \(self.label(children.first)))")
+        let backUp = session.selectParent()
+        print("      selectParent() -> \(self.label(backUp))")
+        check8(same(backUp, target), "Parent from the prepended child returns to the ORIGINAL target (round trip DOWN)")
+
+        // 8c — history, not a re-query. `descend` measures the path's shape by
+        // walking it: a second descent that RE-QUERIED would prepend a second rung,
+        // so the number of rungs above the child would grow by one. That count is
+        // the only externally visible witness of the prepend, which is why the
+        // check is phrased as a depth comparison rather than "the ids match" alone.
+        let secondChild = session.selectChild()
+        print("      selectChild() again -> \(self.label(secondChild))")
+        check8(same(secondChild, child), "the second descent lands on the SAME child (history, not a fresh heuristic)")
+        let depthAfterFirst = climbToTop(session)
+        descend(session, depthAfterFirst)
+        let thirdChild = session.selected
+        session.selectParent()
+        let fourthChild = session.selectChild()
+        let depthAfterThird = climbToTop(session)
+        descend(session, depthAfterThird)
+        print("      rungs above the child: after descent \(depthAfterFirst), after an up-down replay \(depthAfterThird)")
+        check8(depthAfterFirst >= 2, "the descended path has >=2 rungs above the child (a real path to compare)")
+        check8(same(thirdChild, child), "a full climb-and-return still lands on that same child")
+        check8(same(fourthChild, child), "the replayed descent lands on that same child")
+        check8(depthAfterThird == depthAfterFirst,
+               "re-descending did NOT prepend another rung (\(depthAfterFirst) -> \(depthAfterThird)) — it replayed history rather than re-querying the live tree")
+
+        // 8d — the component fix, against the live tree. The bound element is
+        // unseeded, so `component` is searched UPWARD from the bound rung — and it
+        // must be an identifier, never an unseeded element's slash-joined id, which
+        // would export as a grep target that matches nothing while looking
+        // perfectly plausible in the note.
+        check8(same(session.selected, child), "still bound to the descended child going into the capture")
+        check8((session.selected?.path.last?.identifier ?? "").isEmpty,
+               "the descended child is itself UNSEEDED (so the note's component is not just its own id)")
+        let note = session.addNote(comment: "phase 8 descended note")
+        print("      note component=\(note?.component ?? "nil") unseeded=\(note?.unseeded.map(String.init) ?? "nil") selector=\(note?.selector ?? "nil")")
+        check8(note != nil, "a note captured from the descended selection")
+        check8(note?.component != nil, "the descended note names a component to grep")
+        check8(note?.component?.contains("/") != true,
+               "the component is NOT a slash-joined path (got \(note?.component ?? "nil")) — an unseeded id must never be exported as a grep target")
+        check8(note?.component == "Nav.Section",
+               "the component is the first SEEDED rung above the bound one (got \(note?.component ?? "nil"))")
+    }
+
+    /// 8e — frame mode makes hover inert, gated in the SESSION.
+    func phase8eHover(session: AnnotationSession, cardText: Element) {
+        print("\n  8e — hover is POINT-MODE ONLY (gated in the session, not the view):")
+        let point = center(of: cardText.frame)
+        session.setTool(.point)
+        session.hover(atAXPoint: point)
+        print("      point-mode hover at \(String(format: "(%.0f, %.0f)", point.x, point.y)) -> \(self.label(session.hovered))")
+        // Non-vacuity: a point that hits nothing would leave `hovered` nil in BOTH
+        // modes, and the frame-mode assertion below would prove nothing at all.
+        check8(session.hovered?.id == "Spec.CardText",
+               "sanity: this point DOES resolve to a real element in point mode (got \(self.label(session.hovered)))")
+
+        session.setTool(.frame)
+        check8(session.hovered == nil, "switching to frame mode drops the standing highlight")
+        session.hover(atAXPoint: point)
+        print("      frame-mode hover at the SAME live point -> \(self.label(session.hovered))")
+        check8(session.hovered == nil, "hover() in frame mode is inert (no highlight, and no AX hit-test spent)")
+    }
+
+    /// 8e (continued, a later runloop turn) — and it comes back in point mode, so
+    /// the gate is the TOOL and not a point that went dead.
+    func phase8eHoverRevived(session: AnnotationSession, cardText: Element) {
+        session.setTool(.point)
+        session.hover(atAXPoint: center(of: cardText.frame))
+        print("      back in point mode, same point -> \(self.label(session.hovered))")
+        check8(session.hovered?.id == "Spec.CardText",
+               "hover resolves again once the tool is point (the gate was the TOOL, not a dead point)")
+    }
+
+    /// 8f — the drawn frame is the anchor until the user navigates.
+    func phase8fAnchoring(session: AnnotationSession, card: Element) {
+        print("\n  8f — frame anchoring: the drawn rect anchors the overlay until Parent/Child is pressed:")
+        let drawn = card.frame.insetBy(dx: -8, dy: -8)
+        let target = session.select(inAXRect: drawn)
+        print("      frame \(fmt(drawn)) -> \(self.label(target)) anchor=\(session.selectionAnchorFrame.map(fmt) ?? "nil")")
+        check8(target?.id == "Spec.Card", "the drawn frame resolves to a real element (got \(self.label(target)))")
+        // Non-vacuity: the anchor must differ from the resolved element's own frame,
+        // or "anchors to the frame" and "anchors to the element" are the same claim.
+        check8(!approxEqual(drawn, target?.frame ?? .zero, tol: 0.5),
+               "sanity: the drawn frame is NOT the resolved element's own frame (8pt proud of it)")
+        check8(session.selectionAnchorFrame.map { approxEqual($0, drawn, tol: 0.5) } ?? false,
+               "selectionAnchorFrame IS the drawn rect (got \(session.selectionAnchorFrame.map(fmt) ?? "nil"))")
+
+        let parent = session.selectParent()
+        print("      selectParent() -> \(self.label(parent)) anchor=\(session.selectionAnchorFrame.map(fmt) ?? "nil") " +
+              "marquee=\(session.selectedMarqueeRect.map(fmt) ?? "nil")")
+        check8(parent != nil, "sanity: the framed selection really had a parent rung to navigate to")
+        check8(session.selectionAnchorFrame == nil,
+               "navigating drops the frame anchor, revealing the bound element (got \(session.selectionAnchorFrame.map(fmt) ?? "nil"))")
+        check8(session.selectedMarqueeRect.map { approxEqual($0, drawn, tol: 0.5) } ?? false,
+               "the drawn rect SURVIVES navigation (it is still what the note records)")
+        session.cancelSelection()
     }
 
     /// First element matching `predicate`, depth-first.
@@ -1407,8 +1684,9 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 5 (seeded container resolves on body hover): \(passCard ? "PASS" : "FAIL")")
         print("  Phase 6 (positional specificity by cursor position): \(passSpec ? "PASS" : "FAIL")")
         print("  Phase 7 (marquee frame selection: drawn rect -> element): \(passMarquee ? "PASS" : "FAIL")")
+        print("  Phase 8 (selection navigation: round trips, history, component, frame anchor): \(passNav ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {
@@ -1475,6 +1753,47 @@ struct ProbeSpecificityView: View {
                 .accessibilityIdentifier("Spec.Section")
         )
         .padding(24)
+    }
+}
+
+/// Phase 8 host content: the specificity fixture (reused unchanged — its card /
+/// card text / section are the nesting the UPWARD navigation and the frame anchor
+/// need) plus ONE addition it cannot supply: a container with real children.
+///
+/// The addition is deliberate and minimal. `ProbeSpecificityView`'s elements are
+/// all AX leaves, so `ChildNavigationSource` can only return [] for them and every
+/// descent assertion built on it would be vacuously green. This container is:
+///
+/// * MEANINGFUL but UNSEEDED (a label, no identifier) — so descending below it
+///   exercises the `component` search that must skip unseeded rungs, and its own
+///   `Element.id` is the slash-joined path that must never reach a note; and
+/// * a real AX parent (`children: .contain`) of two UNSEEDED rows — so the child
+///   the descent lands on is unseeded too, and the note's component has to be
+///   found further up, at `Nav.Section`.
+///
+/// Both fixtures share one window so the phase reads one snapshot; they are
+/// independent subtrees, so neither one's geometry disturbs the other.
+struct ProbeNavigationView: View {
+    var body: some View {
+        VStack(spacing: 24) {
+            ProbeSpecificityView()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Row one")
+                Text("Row two")
+            }
+            .padding(20)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Nav list")
+        }
+        .padding(24)
+        .background(
+            Color.clear
+                .contentShape(Rectangle())
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("Nav.Section")
+        )
+        .padding(16)
     }
 }
 
