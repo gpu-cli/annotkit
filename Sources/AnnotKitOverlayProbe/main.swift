@@ -273,6 +273,120 @@ func grownFrame(from base: CGRect) -> CGRect {
     CGRect(origin: base.origin, size: resizeLayout().grownSize)
 }
 
+// MARK: - Hosts that hang off the visible screen (Phase 9)
+
+/// A window that really goes where it is put, bypassing AppKit's
+/// keep-the-title-bar-below-the-menu-bar constraint. Needed ONLY by 9d: `setFrame`
+/// silently pins any window's top to `visibleFrame.maxY` (measured — a borderless one
+/// too), so a host tucked UNDER the menu bar, the one direction in which clamping moves
+/// the AX origin, cannot be built any other way. The window is genuinely there — real
+/// backing store at a real frame — so every assertion still reads real geometry.
+final class UnconstrainedWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
+/// Counts the wheel events that reach the HOST's view tree, and from WHERE.
+///
+/// The scroll question cannot be answered by watching an `NSScrollView`'s offset:
+/// measured, AppKit's scroll views ignore a synthesized `NSEvent` outright (a synthetic
+/// wheel moves nothing even when delivered straight to the scroll view). So 9c measures
+/// the ROUTING instead, which is the mechanism actually in question — does a wheel that
+/// lands on AnnotKit's panel reach the host at all, and does it reach the right view.
+final class ScrollSpyView: NSView {
+    let name: String
+    var scrollCount = 0
+    init(name: String, frame: NSRect) {
+        self.name = name
+        super.init(frame: frame)
+    }
+    required init?(coder: NSCoder) { fatalError("unused") }
+    override func scrollWheel(with event: NSEvent) { scrollCount += 1 }
+}
+
+@MainActor
+struct ClampedHost {
+    let window: NSWindow
+    /// Lower and upper halves of the host content. Which one a forwarded wheel lands in
+    /// is the only witness available for the panel→host coordinate conversion: the
+    /// forwarded event object still carries its PANEL-local `locationInWindow` (an
+    /// `NSEvent`'s location cannot be rewritten), so the conversion shows up in the
+    /// choice of target view, not in what the target reads off the event. Harmless for
+    /// real scroll handling, which uses the deltas.
+    let lowerSpy: ScrollSpyView
+    let upperSpy: ScrollSpyView
+    let button: NSButton
+}
+
+/// Build a host and stock its content: two stacked scroll spies and one identified
+/// button placed inside `visibleBand` (in screen coordinates) so 9b's click assertion is
+/// about a control the user can actually reach.
+@MainActor
+func makeClampedHost(title: String, frame: NSRect, unconstrained: Bool, visibleBand: NSRect) -> ClampedHost {
+    let window: NSWindow = unconstrained
+        ? UnconstrainedWindow(contentRect: frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        : NSWindow(contentRect: frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.title = title
+    window.makeKeyAndOrderFront(nil)
+    window.setFrame(frame, display: true)
+
+    let size = window.contentView?.bounds.size ?? frame.size
+    let content = NSView(frame: NSRect(origin: .zero, size: size))
+    let lower = ScrollSpyView(name: "lower", frame: NSRect(x: 0, y: 0, width: size.width, height: size.height / 2))
+    let upper = ScrollSpyView(name: "upper", frame: NSRect(x: 0, y: size.height / 2, width: size.width, height: size.height / 2))
+    content.addSubview(lower)
+    content.addSubview(upper)
+
+    // The button's y is chosen in SCREEN space and converted back, so it sits in the
+    // band that survives the clamp whichever edge is being clipped.
+    let button = NSButton(title: "Clamped action", target: nil, action: nil)
+    button.setAccessibilityIdentifier("Clamp.Button")
+    let buttonScreenY = visibleBand.midY
+    let contentOriginScreenY = window.convertPoint(toScreen: .zero).y
+    button.frame = NSRect(x: 60, y: buttonScreenY - contentOriginScreenY, width: 200, height: 32)
+    content.addSubview(button)
+
+    window.contentView = content
+    return ClampedHost(window: window, lowerSpy: lower, upperSpy: upper, button: button)
+}
+
+/// The pill's own rect inside a panel at `frame`, mirroring `OverlayView.toolbar`: the
+/// bottom-right corner, 20pt padding, and the pill's real bounds (~180x44 at its widest,
+/// the same numbers the 240x104 idle panel is built from). Asserting on the PILL and not
+/// the panel is the whole point — the idle panel is deliberately taller than the pill,
+/// so "the panel overlaps the screen" would pass while the pill itself sat under the
+/// Dock.
+func pillRect(inPanel frame: CGRect) -> CGRect {
+    CGRect(x: frame.maxX - 20 - 180, y: frame.minY + 20, width: 180, height: 44)
+}
+
+/// Read the overlay's private `axOrigin` / `surfaceSize` by reflection — the same trade
+/// `EscapeMonitorLifecycleTests` makes for the Escape monitor. Clamping the panel severs
+/// the witness Phase 3 could rely on (the panel frame equalling the host frame), and
+/// widening the library's public API purely so a probe can look is a worse deal than
+/// this coupling. Returns nil if the property is renamed, and every caller FAILS on nil,
+/// so this can never silently assert nothing.
+@MainActor
+func overlayValue<T>(_ controller: OverlayController, _ label: String, as type: T.Type) -> T? {
+    for child in Mirror(reflecting: controller).children where child.label == label {
+        return child.value as? T
+    }
+    return nil
+}
+
+/// A wheel event whose `locationInWindow` is exactly `panelLocal` (Cocoa, y-up, relative
+/// to the panel). `NSEvent(cgEvent:)` yields `windowNumber == 0`, and AppKit reports such
+/// an event's `locationInWindow` as the CG location flipped into Cocoa screen space — so
+/// writing the flipped panel-local point into the CG event reproduces exactly what a real
+/// wheel delivered to the panel carries. (Verified: the round trip is exact.)
+@MainActor
+func makeScrollEvent(panelLocal: CGPoint) -> NSEvent? {
+    guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                           wheel1: -120, wheel2: 0, wheel3: 0) else { return nil }
+    let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+    cg.location = CGPoint(x: panelLocal.x, y: primaryHeight - panelLocal.y)
+    return NSEvent(cgEvent: cg)
+}
+
 // MARK: - SwiftUI host (mirrors AnnotKitDemo's DemoView) for issue-2 coverage
 
 /// A SwiftUI control surface identical in shape to `AnnotKitDemo.DemoView`, so the
@@ -1440,7 +1554,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
                 check8(false, "snapshot exposes Spec.Card/CardText/Section + the Nav list container")
                 self.navController?.unmount()
                 window.orderOut(nil)
-                self.finish()
+                self.phase9Clamp()
                 return
             }
             print("      fixture: card=\(fmt(card.frame)) cardText=\(fmt(cardText.frame)) " +
@@ -1460,7 +1574,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
                 self.phase8eHoverRevived(session: session, cardText: cardText)
                 self.navController?.unmount()
                 window.orderOut(nil)
-                self.finish()
+                self.phase9Clamp()
             }
         }
     }
@@ -1675,6 +1789,315 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    // ---- Phase 9: a host that hangs off the visible screen ------------------
+    // The dogfooding report: "on scrollable screens, the menu in the bottom right
+    // disappears." A tall/scrollable host is a window taller than the display, and
+    // AppKit constrains a window's TOP under the menu bar but never lifts its bottom —
+    // so its bottom edge ends up below `visibleFrame`. BOTH overlay modes anchor the
+    // pill to that bottom edge (idle: a 240x104 panel at the host's bottom-right corner;
+    // annotate: the pill drawn at the bottom-right INSIDE a full-host-frame panel), so
+    // the toolbar is drawn under the Dock or off the display entirely and there is no
+    // way to reach it. Every sub-phase here first PROVES the host really extends past
+    // the visible area, or it would be asserting nothing.
+    var clampController: OverlayController?
+    var clampSession: AnnotationSession?
+    var clampHost: ClampedHost?
+    var passClamp = true
+    func check9(_ cond: Bool, _ msg: String) {
+        passClamp = passClamp && cond
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+    }
+
+    /// The display the clamp is measured against. `NSScreen.main` is the screen the
+    /// probe's own windows land on, which is what `host.screen` will report back.
+    var visibleFrame: NSRect {
+        (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+
+    /// How far the fixtures hang past the visible edge. Large enough that a stale,
+    /// unclamped placement is unambiguously off-screen rather than a rounding artifact.
+    let overhang: CGFloat = 300
+
+    func phase9Clamp() {
+        print("\n--- Phase 9: the pill on a host that hangs BELOW the visible screen (scrollable-window report) ---")
+        let visible = visibleFrame
+        // Top pinned to the visible top (so AppKit does not fight the placement) and
+        // TALLER than the visible height by `overhang` — exactly the shape a window
+        // takes when its content grows past the display.
+        let frame = NSRect(x: visible.midX - 310, y: visible.minY - overhang,
+                           width: 620, height: visible.height + overhang)
+        let host = makeClampedHost(title: "AnnotKit Harness W9 (below the fold)",
+                                   frame: frame, unconstrained: false,
+                                   visibleBand: visible.intersection(frame))
+        clampHost = host
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-clamp.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: host.window)
+        clampController = controller
+        clampSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.phase9aIdle()
+        }
+    }
+
+    /// The precondition every assertion in this phase rests on: the host really does
+    /// extend past the bottom of the visible area. Printed with the numbers so a run on
+    /// a different display arrangement is diagnosable.
+    @discardableResult
+    func assertHangsBelow(_ host: NSWindow) -> Bool {
+        let visible = visibleFrame
+        let hangs = host.frame.minY < visible.minY - 100
+        print("      host=\(fmt(host.frame)) visibleFrame=\(fmt(visible)) " +
+              "bottom hangs \(String(format: "%.0f", visible.minY - host.frame.minY))pt BELOW the visible area")
+        check9(hangs, "sanity: the host really extends past the bottom of the visible screen (else this phase is vacuous)")
+        return hangs
+    }
+
+    // ---- 9a: the IDLE pill stays on the visible screen ----------------------
+    func phase9aIdle() {
+        print("\n  9a — IDLE pill on a host whose bottom is below the visible area:")
+        guard let host = clampHost, let panel = host.window.childWindows?.first else {
+            check9(false, "the overlay mounted a child panel on the clamped host")
+            return phase9dTucked()
+        }
+        assertHangsBelow(host.window)
+
+        let visible = visibleFrame
+        let unclamped = idleFrame(host.window.frame)
+        print("      idle panel=\(fmt(panel.frame)) pill=\(fmt(pillRect(inPanel: panel.frame))) " +
+              "(unclamped placement would be \(fmt(unclamped)), pill \(fmt(pillRect(inPanel: unclamped))))")
+        check9(!visible.contains(pillRect(inPanel: unclamped)),
+               "sanity: the UNCLAMPED bottom-right placement really is off the visible screen (the reported bug)")
+        check9(visible.contains(pillRect(inPanel: panel.frame)),
+               "the idle pill is fully inside the visible screen")
+        // Size, not just position: clamping by intersecting the panel down to the
+        // visible region would leave the pill's own panel too short to draw it.
+        check9(approxEqual(panel.frame, CGRect(origin: panel.frame.origin, size: CGSize(width: 240, height: 104))),
+               "the idle panel keeps its full 240x104 size (a clipped panel would clip the pill)")
+        // Hit-testability, the property the user actually lost: AppKit's own
+        // "which window would a click here land on" answer must be OUR panel.
+        let pillCenter = center(of: pillRect(inPanel: panel.frame))
+        let hitNumber = NSWindow.windowNumber(at: pillCenter, belowWindowWithWindowNumber: 0)
+        print("      windowNumber(at: pill center \(String(format: "(%.0f, %.0f)", pillCenter.x, pillCenter.y)))=\(hitNumber) " +
+              "panel=\(panel.windowNumber) host=\(host.window.windowNumber)")
+        check9(hitNumber == panel.windowNumber, "a click at the pill's center lands on the overlay panel (it is hit-testable)")
+
+        clampController?.start()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.phase9bAnnotate()
+        }
+    }
+
+    // ---- 9b: the ANNOTATE pill stays on screen AND the hit-test stays true ---
+    func phase9bAnnotate() {
+        print("\n  9b — ANNOTATE pill + hit-test on the same clamped host:")
+        guard let host = clampHost, let controller = clampController,
+              let panel = host.window.childWindows?.first else {
+            check9(false, "the overlay is still mounted in annotate mode")
+            return phase9dTucked()
+        }
+        let visible = visibleFrame
+        assertHangsBelow(host.window)
+        print("      annotate panel=\(fmt(panel.frame)) pill=\(fmt(pillRect(inPanel: panel.frame))) " +
+              "(unclamped would be the host frame, pill \(fmt(pillRect(inPanel: host.window.frame))))")
+        check9(!visible.contains(pillRect(inPanel: host.window.frame)),
+               "sanity: the pill drawn at the bottom-right of the FULL host frame is off the visible screen")
+        check9(visible.contains(pillRect(inPanel: panel.frame)),
+               "the annotate pill is fully inside the visible screen")
+
+        // The part that would make a naive fix worse than the bug: the surface the
+        // overlay transforms clicks through must be the surface it is now DRAWN on.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let panelAXOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: panel.frame, primaryHeight: primaryHeight)
+        guard let axOrigin = overlayValue(controller, "axOrigin", as: CGPoint.self),
+              let surfaceSize = overlayValue(controller, "surfaceSize", as: CGSize.self) else {
+            check9(false, "the controller still has axOrigin/surfaceSize to read (this phase asserts nothing otherwise)")
+            return phase9cScroll()
+        }
+        print("      axOrigin=\(String(format: "(%.1f, %.1f)", axOrigin.x, axOrigin.y)) " +
+              "panel-derived=\(String(format: "(%.1f, %.1f)", panelAXOrigin.x, panelAXOrigin.y)) " +
+              "surfaceSize=\(String(format: "%.0fx%.0f", surfaceSize.width, surfaceSize.height)) " +
+              "panel=\(String(format: "%.0fx%.0f", panel.frame.width, panel.frame.height)) " +
+              "host=\(String(format: "%.0fx%.0f", host.window.frame.width, host.window.frame.height))")
+        check9(approxEqualPt(axOrigin, panelAXOrigin), "axOrigin is derived from the CLAMPED panel frame")
+        check9(abs(surfaceSize.height - panel.frame.height) < 2,
+               "surfaceSize is the CLAMPED panel's size (the composer clamps cards to the VISIBLE region)")
+        check9(surfaceSize.height < host.window.frame.height - 100,
+               "the clamped surface is materially shorter than the host (the clip is real, not a no-op)")
+
+        // And now the click itself, along the real path: SwiftUI hands the catcher a
+        // PANEL-local point, the catcher ADDS axOrigin, the source resolves that.
+        let source = MacElementSource()
+        guard let buttonFrame = frame(ofID: "Clamp.Button", in: source.snapshot()) else {
+            check9(false, "the host's button is in the AX tree (needed to test the click through the clamped panel)")
+            return phase9cScroll()
+        }
+        let buttonAXCenter = center(of: buttonFrame)
+        let local = CGPoint(x: buttonAXCenter.x - panelAXOrigin.x, y: buttonAXCenter.y - panelAXOrigin.y)
+        let queried = CGPoint(x: local.x + axOrigin.x, y: local.y + axOrigin.y)
+        let hit = source.hitTest(queried)
+        print("      button AX \(fmt(buttonFrame)) -> panel-local \(String(format: "(%.0f, %.0f)", local.x, local.y)) " +
+              "-> catcher queries \(String(format: "(%.0f, %.0f)", queried.x, queried.y)) -> hit=\(hit?.id ?? "nil")")
+        check9(panel.frame.contains(CGPoint(x: buttonAXCenter.x, y: primaryHeight - buttonAXCenter.y)),
+               "sanity: the button really is under the clamped panel (a click on it goes through the catcher)")
+        check9(hit?.id == "Clamp.Button",
+               "a click on the clamped host still resolves to the element under it (got \(hit?.id ?? "nil"))")
+
+        phase9cScroll()
+    }
+
+    // ---- 9c: can the host be scrolled AT ALL while annotating? --------------
+    // The other half of the report: the expanded catcher covers the host with
+    // `ignoresMouseEvents = false`, and an event no view handles walks the PANEL's own
+    // responder chain, never the window beneath. If the wheel dies there, nothing below
+    // the fold can be annotated — on precisely the screens the report is about.
+    func phase9cScroll() {
+        print("\n  9c — scroll WHILE ANNOTATING: does a wheel over the catcher reach the host?")
+        guard let host = clampHost, let panel = host.window.childWindows?.first else {
+            check9(false, "the overlay panel is present for the scroll measurement")
+            return phase9dTucked()
+        }
+        // Aim at the vertical middle of the VISIBLE band. Chosen so the correct
+        // (converted) host-local point lands in the UPPER spy while the unconverted
+        // panel-local point would land in the LOWER one — the two answers are
+        // distinguishable, so this measures the conversion and not just the routing.
+        let visible = visibleFrame
+        let aimScreen = CGPoint(x: panel.frame.midX, y: visible.midY)
+        let panelLocal = CGPoint(x: aimScreen.x - panel.frame.minX, y: aimScreen.y - panel.frame.minY)
+        let hostLocal = CGPoint(x: aimScreen.x - host.window.frame.minX, y: aimScreen.y - host.window.frame.minY)
+        let split = (host.window.contentView?.bounds.height ?? 0) / 2
+        print("      aim screen=\(String(format: "(%.0f, %.0f)", aimScreen.x, aimScreen.y)) " +
+              "panel-local=\(String(format: "(%.0f, %.0f)", panelLocal.x, panelLocal.y)) " +
+              "host-local=\(String(format: "(%.0f, %.0f)", hostLocal.x, hostLocal.y)) spy split at y=\(String(format: "%.0f", split))")
+        check9(panel.frame.contains(aimScreen), "sanity: the annotate catcher really covers the point being scrolled")
+        check9((hostLocal.y > split) != (panelLocal.y > split),
+               "sanity: converted and unconverted points land in DIFFERENT spies (so the target proves the conversion)")
+
+        guard let event = makeScrollEvent(panelLocal: panelLocal) else {
+            check9(false, "a synthesized wheel event could be built")
+            return phase9dTucked()
+        }
+        check9(approxEqualPt(event.locationInWindow, panelLocal),
+               "sanity: the synthesized event carries the panel-local location a real wheel would")
+
+        // Baseline: the spies are live and reachable when an event is handed to them
+        // directly, so a zero count later means "swallowed", not "broken fixture".
+        host.upperSpy.scrollWheel(with: event)
+        check9(host.upperSpy.scrollCount == 1, "sanity: the host's spy DOES record a wheel delivered straight to it")
+        let base = (lower: host.lowerSpy.scrollCount, upper: host.upperSpy.scrollCount)
+
+        // Deliver the way AppKit does once it has picked the window: hit-test the
+        // panel's content and hand the event to the deepest view.
+        let target = panel.contentView?.hitTest(panelLocal)
+        var chain: [String] = []
+        var responder: NSResponder? = target
+        while let current = responder, chain.count < 8 {
+            chain.append("\(type(of: current))")
+            responder = current.nextResponder
+        }
+        print("      panel hit-test -> \(target.map { "\(type(of: $0))" } ?? "nil"); responder chain: \(chain)")
+        check9(target != nil, "sanity: the wheel lands on the overlay's own content view (it is over the catcher)")
+        check9(chain.contains { $0.contains("KeyablePanel") },
+               "sanity: nothing in the overlay's view tree consumes the wheel — it reaches the panel WINDOW")
+
+        target?.scrollWheel(with: event)
+        let lower = host.lowerSpy.scrollCount - base.lower
+        let upper = host.upperSpy.scrollCount - base.upper
+        print("      after the wheel: lower spy +\(lower), upper spy +\(upper)")
+        check9(lower + upper == 1, "a wheel over the annotate catcher reaches the HOST (it is not swallowed by the panel)")
+        check9(upper == 1, "it reaches the view actually under the pointer (the panel→host conversion is applied)")
+
+        clampController?.unmount()
+        clampHost?.window.orderOut(nil)
+        phase9dTucked()
+    }
+
+    // ---- 9d: the OTHER clamp direction — a host tucked under the menu bar ----
+    // Clamping the bottom leaves `axOrigin` untouched (it hangs off the frame's TOP
+    // edge), so 9b cannot tell a fix that re-derives the origin from one that forgot to.
+    // A host whose TOP is clipped can: there the origin really moves, and a host-derived
+    // origin offsets every click by exactly the clipped amount.
+    func phase9dTucked() {
+        print("\n  9d — the other direction: a host whose TOP is tucked under the menu bar:")
+        let visible = visibleFrame
+        let frame = NSRect(x: visible.midX - 310, y: visible.minY + 80,
+                           width: 620, height: visible.height - 80 + overhang)
+        let host = makeClampedHost(title: "AnnotKit Harness W9 (under the menu bar)",
+                                   frame: frame, unconstrained: true,
+                                   visibleBand: visible.intersection(frame))
+        clampHost = host
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-clamp-top.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: host.window)
+        controller.start()
+        clampController = controller
+        clampSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+            self?.phase9dChecks()
+        }
+    }
+
+    func phase9dChecks() {
+        guard let host = clampHost, let controller = clampController,
+              let panel = host.window.childWindows?.first else {
+            check9(false, "the overlay mounted on the menu-bar-tucked host")
+            return finish()
+        }
+        let visible = visibleFrame
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        print("      host=\(fmt(host.window.frame)) visibleFrame=\(fmt(visible)) " +
+              "top is \(String(format: "%.0f", host.window.frame.maxY - visible.maxY))pt ABOVE the visible top")
+        check9(host.window.frame.maxY > visible.maxY + 50,
+               "sanity: the host's top really is under the menu bar (else the origin never moves and this proves nothing)")
+
+        let hostAXOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: host.window.frame, primaryHeight: primaryHeight)
+        let panelAXOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: panel.frame, primaryHeight: primaryHeight)
+        guard let axOrigin = overlayValue(controller, "axOrigin", as: CGPoint.self) else {
+            check9(false, "the controller still has an axOrigin to read")
+            return finish()
+        }
+        print("      panel=\(fmt(panel.frame)) axOrigin=\(String(format: "(%.1f, %.1f)", axOrigin.x, axOrigin.y)) " +
+              "panel-derived=\(String(format: "(%.1f, %.1f)", panelAXOrigin.x, panelAXOrigin.y)) " +
+              "host-derived=\(String(format: "(%.1f, %.1f)", hostAXOrigin.x, hostAXOrigin.y))")
+        check9(!approxEqualPt(panelAXOrigin, hostAXOrigin),
+               "sanity: clamping the TOP really does move the AX origin (the two candidates differ)")
+        check9(approxEqualPt(axOrigin, panelAXOrigin),
+               "axOrigin follows the CLAMPED panel, not the host (a host-derived origin offsets every click here)")
+
+        let source = MacElementSource()
+        guard let buttonFrame = frame(ofID: "Clamp.Button", in: source.snapshot()) else {
+            check9(false, "the tucked host's button is in the AX tree")
+            return finish()
+        }
+        let buttonAXCenter = center(of: buttonFrame)
+        let local = CGPoint(x: buttonAXCenter.x - panelAXOrigin.x, y: buttonAXCenter.y - panelAXOrigin.y)
+        let queried = CGPoint(x: local.x + axOrigin.x, y: local.y + axOrigin.y)
+        let hit = source.hitTest(queried)
+        // What the SAME click would resolve to if the origin had stayed host-derived:
+        // named explicitly so the failure mode has a number next to it, not a shrug.
+        let stale = CGPoint(x: local.x + hostAXOrigin.x, y: local.y + hostAXOrigin.y)
+        print("      button AX \(fmt(buttonFrame)) -> panel-local \(String(format: "(%.0f, %.0f)", local.x, local.y)) " +
+              "-> queries \(String(format: "(%.0f, %.0f)", queried.x, queried.y)) hit=\(hit?.id ?? "nil"); " +
+              "a host-derived origin would query \(String(format: "(%.0f, %.0f)", stale.x, stale.y)) " +
+              "-> \(source.hitTest(stale)?.id ?? "nil")")
+        check9(hit?.id == "Clamp.Button",
+               "a click on the menu-bar-tucked host still resolves to the element under it (got \(hit?.id ?? "nil"))")
+
+        clampController?.unmount()
+        clampHost?.window.orderOut(nil)
+        finish()
+    }
+
     func finish() {
         print("\n  issue-2 (per-control hit-test through the expanded overlay): \(passIssue2 ? "PASS" : "FAIL")")
         print("  issue-1 (retention / copy / export / pill persistence):       \(pass1 ? "PASS" : "FAIL")")
@@ -1685,8 +2108,9 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 6 (positional specificity by cursor position): \(passSpec ? "PASS" : "FAIL")")
         print("  Phase 7 (marquee frame selection: drawn rect -> element): \(passMarquee ? "PASS" : "FAIL")")
         print("  Phase 8 (selection navigation: round trips, history, component, frame anchor): \(passNav ? "PASS" : "FAIL")")
+        print("  Phase 9 (pill + hit-test + scroll on a host hanging off the visible screen): \(passClamp ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {
