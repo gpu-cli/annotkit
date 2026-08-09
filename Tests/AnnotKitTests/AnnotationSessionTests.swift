@@ -4,12 +4,20 @@ import XCTest
 @testable import AnnotKit
 
 /// A canned ElementSource so the session can be tested without a window.
+///
+/// Counts hit-tests, because "no highlight appeared" is a weaker assertion than the
+/// behaviour actually wanted: a suppressed highlight that still ran the query would
+/// pass it while burning one cross-process AX round trip per pointer-motion event.
 @MainActor
 private final class StubSource: ElementSource {
     let element: Element
+    private(set) var hitTests = 0
     init(_ element: Element) { self.element = element }
     func snapshot() -> [WindowSnapshot] { [] }
-    func hitTest(_ point: CGPoint) -> Element? { element }
+    func hitTest(_ point: CGPoint) -> Element? {
+        hitTests += 1
+        return element
+    }
     func selector(for element: Element) -> String { "#\(element.id)" }
     func screenshot(of element: Element?) async throws -> CapturedImage {
         CapturedImage(pngData: Data(), pixelWidth: 1, pixelHeight: 1)
@@ -588,6 +596,175 @@ final class AnnotationSessionTests: XCTestCase {
 
         session.start()
         XCTAssertEqual(session.tool, .frame, "re-entering annotate mode keeps the chosen tool")
+    }
+
+    /// Frame mode selects from a swept rectangle, so a hover highlight there
+    /// advertises a point-selection no press in that mode can make — the reported
+    /// symptom was a whole card lit up with its name tag before anything was drawn.
+    /// The hit-test count is the load-bearing half: suppressing the highlight while
+    /// still running the query would leave one cross-process AX round trip per
+    /// pointer-motion event.
+    func testHoverIsInertInFrameMode() {
+        let source = StubSource(makeElement())
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.setTool(.frame)
+
+        session.hover(atAXPoint: .zero)
+        XCTAssertNil(session.hovered, "frame mode must not resolve a hover highlight")
+        XCTAssertEqual(source.hitTests, 0, "and must not even ask the source — the AX query is the cost")
+
+        session.setTool(.point)
+        session.hover(atAXPoint: .zero)
+        XCTAssertEqual(session.hovered?.id, "SaveButton", "point mode hovers exactly as before")
+        XCTAssertEqual(source.hitTests, 1)
+    }
+
+    /// A highlight resolved in point mode must not SURVIVE the switch to frame mode:
+    /// it would sit there — lit element, name tag, no relation to the next gesture —
+    /// until the pointer happened to leave the catcher. Everything else about the
+    /// tool's "touch nothing" contract still holds, because the user may be
+    /// mid-note when they reach for the other tool.
+    func testSetToolClearsTheHoverHighlightAndNothingElse() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        session.addNote(comment: "already captured")
+        session.hover(atAXPoint: .zero)
+        session.select(atAXPoint: .zero)
+        XCTAssertEqual(session.hovered?.id, "SaveButton")
+
+        session.setTool(.frame)
+        XCTAssertNil(session.hovered, "the stale point-mode highlight must go with the tool")
+        XCTAssertEqual(session.tool, .frame)
+        XCTAssertEqual(session.selected?.id, "SaveButton", "an open composer survives a tool change")
+        XCTAssertEqual(session.pending.count, 1, "and so do the retained notes")
+    }
+
+    // MARK: - Frame anchoring
+
+    /// The other half of the report: the drawn frame was thrown away VISUALLY the
+    /// moment it resolved, because every anchor derived from `selected.frame`. The
+    /// frame is the anchor while it is still the truth of the selection — and the
+    /// note payload is untouched by any of it.
+    func testMarqueeAnchorsTheOverlayToTheDrawnFrame() {
+        let leaf = makeLadderElement("Leaf", frame: CGRect(x: 100, y: 100, width: 60, height: 40))
+        let card = makeLadderElement("Card", frame: CGRect(x: 80, y: 60, width: 200, height: 150))
+        let session = AnnotationSession(
+            source: MarqueeSource(ladder: [leaf, card]), sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
+        session.select(inAXRect: drawn)
+
+        XCTAssertEqual(session.selectionAnchorFrame, drawn, "the overlay anchors to the frame the user drew")
+        XCTAssertNotEqual(session.selectionAnchorFrame, session.selected?.frame,
+                          "and NOT to the element it resolved to — the whole bug")
+
+        let note = session.addNote(comment: "framed")
+        XCTAssertEqual(note?.selector, "#Leaf", "the binding is unchanged: still the resolved element")
+        XCTAssertEqual(note?.component, "Leaf")
+        XCTAssertEqual(note?.regionRect, CGRect(x: 10, y: 20, width: 40, height: 20),
+                       "and the payload is unchanged: the frame relative to the bound element")
+        XCTAssertNil(session.selectionAnchorFrame, "capture clears the anchor with the selection")
+    }
+
+    /// A click carries no drawn frame, so it must never claim one — otherwise the
+    /// composer would point at a rectangle from an earlier gesture.
+    func testPointSelectionHasNoAnchorFrame() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        XCTAssertNil(session.selectionAnchorFrame)
+    }
+
+    /// The region fallback needs NO anchor flag, and this pins that: its synthetic
+    /// element's own `frame` IS the drawn rect, so `selected.frame` already anchors
+    /// everything to the frame. A later refactor that "fixed" this branch by
+    /// setting the flag too would give one rectangle two sources of truth.
+    func testRegionFallbackFrameAnchorsThroughItsSyntheticElement() {
+        let anchor = makeElement()
+        let session = AnnotationSession(
+            source: EmptyWithAnchorSource(anchor: anchor), sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        let drawn = CGRect(x: 22, y: 14, width: 30, height: 12)
+        session.select(inAXRect: drawn)
+
+        XCTAssertNil(session.selectionAnchorFrame, "no flag here by design")
+        XCTAssertEqual(session.selected?.frame, drawn, "because the selection's own frame is already the drawn rect")
+    }
+
+    /// Pressing Parent/Child is the user explicitly asking WHICH element, so the
+    /// answer becomes visible: the anchor drops to the chosen element. The drawn
+    /// frame itself stays — it is still what the note records, and the overlay draws
+    /// it dimmed underneath.
+    func testNavigationDropsTheFrameAnchorButKeepsTheDrawnFrame() {
+        let leaf = makeLadderElement("Leaf", frame: CGRect(x: 100, y: 100, width: 60, height: 40))
+        let card = makeLadderElement("Card", frame: CGRect(x: 80, y: 60, width: 200, height: 150))
+        let session = AnnotationSession(
+            source: MarqueeSource(ladder: [leaf, card]), sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
+        session.select(inAXRect: drawn)
+        XCTAssertEqual(session.selectionAnchorFrame, drawn)
+
+        XCTAssertEqual(session.selectParent()?.id, "Card")
+        XCTAssertNil(session.selectionAnchorFrame, "the chosen element becomes the anchor")
+        XCTAssertEqual(session.selectedMarqueeRect, drawn, "but the note still records the drawn frame")
+
+        XCTAssertEqual(session.selectChild()?.id, "Leaf", "coming back down is still a CHOSEN element")
+        XCTAssertNil(session.selectionAnchorFrame, "so the anchor stays on the element, not the frame")
+        XCTAssertEqual(session.selectedMarqueeRect, drawn)
+
+        // The note is unaffected by any of the anchoring: still the bound element's
+        // selector, still the frame measured against it.
+        let note = session.addNote(comment: "framed then navigated")
+        XCTAssertEqual(note?.selector, "#Leaf")
+        XCTAssertEqual(note?.regionRect, CGRect(x: 10, y: 20, width: 40, height: 20))
+    }
+
+    /// The `7993a67` regression, anchor edition: frame -> navigate -> new click. The
+    /// navigation clears the flag and the click clears the frame, so if either site
+    /// were missed the next note would place its composer and pin against a
+    /// rectangle drawn for the previous one.
+    func testFrameThenNavigateThenClickLeavesNoStaleAnchor() {
+        let leaf = makeLadderElement("Leaf", frame: CGRect(x: 100, y: 100, width: 60, height: 40))
+        let card = makeLadderElement("Card", frame: CGRect(x: 80, y: 60, width: 200, height: 150))
+        let source = MarqueeSource(ladder: [leaf, card])
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(inAXRect: CGRect(x: 110, y: 120, width: 40, height: 20))
+        session.selectParent()
+
+        source.hit = makeElement()
+        source.ladder = []
+        session.select(atAXPoint: .zero)
+        XCTAssertEqual(session.selected?.id, "SaveButton", "the click re-selects a real element")
+        XCTAssertNil(session.selectionAnchorFrame, "no anchor may survive into the next selection")
+        XCTAssertNil(session.selectedMarqueeRect)
+        XCTAssertNil(session.addNote(comment: "click after frame and navigate")?.regionRect,
+                     "and the next note carries no trace of the drawn frame")
+    }
+
+    /// The anchor is per-SELECTION, so every path that ends a selection must drop it
+    /// — cancel and stop go through the `selected` didSet, which is the one clear
+    /// site no `select` call can cover.
+    func testCancellingAndStoppingClearTheFrameAnchor() {
+        let leaf = makeLadderElement("Leaf", frame: CGRect(x: 100, y: 100, width: 60, height: 40))
+        let session = AnnotationSession(
+            source: MarqueeSource(ladder: [leaf]), sink: NotesFileSink(path: "/dev/null")
+        )
+        session.start()
+        let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
+        session.select(inAXRect: drawn)
+        session.cancelSelection()
+        XCTAssertNil(session.selectionAnchorFrame, "cancelling the composer drops the anchor")
+
+        session.select(inAXRect: drawn)
+        session.stop()
+        XCTAssertNil(session.selectionAnchorFrame, "and so does leaving annotate mode")
     }
 
     func testClearHoverDropsHighlightButKeepsSelection() {

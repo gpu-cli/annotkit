@@ -44,15 +44,16 @@ public final class AnnotationSession: ObservableObject {
     @Published public private(set) var pending: [AnnotationNote] = []
     @Published public private(set) var hovered: Element?
     @Published public private(set) var selected: Element? {
-        // The region offset, the drawn marquee frame, and the navigation path only
-        // make sense while their selection is alive; clearing the selection
-        // (capture, cancel, stop, pin editing) must never leave a stale offset,
-        // frame, or path for the NEXT note.
+        // The region offset, the drawn marquee frame, the frame-anchoring flag and
+        // the navigation path only make sense while their selection is alive;
+        // clearing the selection (capture, cancel, stop, pin editing) must never
+        // leave a stale offset, frame, anchor or path for the NEXT note.
         didSet {
             if selected == nil {
                 selectedRegionOffset = nil
                 selectedMarqueeRect = nil
                 marqueeRegionOrigin = nil
+                anchorsToDrawnFrame = false
                 selectionPath = []
                 pathIndex = 0
                 cachedChildren = []
@@ -76,6 +77,34 @@ public final class AnnotationSession: ObservableObject {
     /// reference (it would relativize to 0,0 and locate nothing). nil for element
     /// selections, which measure from the selected element's origin.
     private var marqueeRegionOrigin: CGPoint?
+
+    /// Whether the overlay should anchor to the frame the user DREW rather than to
+    /// the element that frame resolved to. Set ONLY where a drag resolves to a real
+    /// element — the one branch where the drawn rectangle would otherwise VANISH on
+    /// release, the highlight snapping to a box the user never swept. The region
+    /// fallback deliberately has no flag: its synthetic element's `frame` IS the
+    /// drawn rect, so anchoring to `selected.frame` there already anchors to the
+    /// frame, and a second mechanism would be two sources of truth for one rect.
+    ///
+    /// Like ``selectedMarqueeRect``, deliberately NOT `@Published`: it is only ever
+    /// mutated alongside an assignment to `selected`, which IS published, so every
+    /// change is delivered to the UI by that emission. A future mutation that does
+    /// NOT coincide with a `selected` assignment would change the anchor without
+    /// redrawing — the composer would stay glued to the wrong rectangle.
+    private var anchorsToDrawnFrame = false
+
+    /// The rect the overlay should anchor to: the frame the user DREW, while it is
+    /// still the truth of the selection; nil once the binding is an element the user
+    /// chose (a click, or a navigated frame selection), in which case the UI anchors
+    /// to `selected.frame` as it always has.
+    ///
+    /// ABSOLUTE AX screen coordinates — the same space as ``Element/frame`` — so
+    /// every consumer applies the identical `- axOrigin` transform it already
+    /// applies to the selected element. Deliberately not a new coordinate space:
+    /// the in-progress band is window-local and the two would be trivially
+    /// confusable, which on a secondary display means a frame drawn in the right
+    /// place and rendered off by the window's screen origin.
+    public var selectionAnchorFrame: CGRect? { anchorsToDrawnFrame ? selectedMarqueeRect : nil }
 
     /// The BIDIRECTIONAL navigation path for the current selection, and the index
     /// of the bound rung. Ordering is a CONVENTION the whole file depends on:
@@ -151,13 +180,23 @@ public final class AnnotationSession: ObservableObject {
 
     public func start() { mode = .annotating }
 
-    /// Switch which gesture the catcher interprets. Deliberately touches NOTHING
-    /// else: an open composer, the current selection and the retained notes all
-    /// survive, because changing how you will pick the NEXT target says nothing
-    /// about the note you are in the middle of writing. Discarding a half-typed
-    /// comment because the user reached for the other tool would be the kind of
-    /// data loss nobody reports — they just stop using the picker.
-    public func setTool(_ tool: SelectionTool) { self.tool = tool }
+    /// Switch which gesture the catcher interprets. Deliberately touches nothing
+    /// beyond the hover highlight: an open composer, the current selection and the
+    /// retained notes all survive, because changing how you will pick the NEXT
+    /// target says nothing about the note you are in the middle of writing.
+    /// Discarding a half-typed comment because the user reached for the other tool
+    /// would be the kind of data loss nobody reports — they just stop using the
+    /// picker.
+    ///
+    /// `hovered` is the ONE exception, and it is not housekeeping: hover is
+    /// point-mode-only, so a highlight resolved a moment before the switch would
+    /// otherwise SURVIVE into frame mode and sit there — a lit-up element with its
+    /// name tag, advertising a click-selection frame mode will never make — until
+    /// the pointer happened to leave the catcher. That is the reported symptom.
+    public func setTool(_ tool: SelectionTool) {
+        self.tool = tool
+        hovered = nil
+    }
 
     public func stop() {
         mode = .idle
@@ -171,8 +210,17 @@ public final class AnnotationSession: ObservableObject {
 
     /// Update the hover highlight for a screen point (AX top-left coordinates).
     /// Throttled to ~60fps so rapid hover events do not flood the point query.
+    ///
+    /// POINT MODE ONLY. Frame mode makes its selection from a swept rectangle, so a
+    /// hover highlight there promises a point-selection that no press in that mode
+    /// can produce — the dogfooding report was a whole dashboard card lit up with
+    /// its name tag while the user was in frame mode and had drawn nothing. Gated
+    /// HERE rather than in the view (which has its own guard for the narrower
+    /// during-the-drag case) so no UI path can reintroduce it, and so it is
+    /// testable without a window. It is also a real cost, not just a visual one:
+    /// this skips one cross-process AX hit-test per pointer-motion event.
     public func hover(atAXPoint point: CGPoint) {
-        guard mode == .annotating else { return }
+        guard mode == .annotating, tool == .point else { return }
         let now = Date()
         guard now.timeIntervalSince(lastHover) >= hoverInterval else { return }
         lastHover = now
@@ -198,15 +246,18 @@ public final class AnnotationSession: ObservableObject {
         // Any catcher tap dismisses an open pin editor: a tap on empty space is a
         // click-away close, and a tap on an element hands the stage to the composer.
         editingNoteID = nil
-        // Every selection starts offset-free, frame-free and path-free: a
-        // region -> element or marquee -> click re-selection (the catcher stays
+        // Every selection starts offset-free, frame-free, anchor-free and path-free:
+        // a region -> element or marquee -> click re-selection (the catcher stays
         // active behind an open composer) must not leak the previous region's
         // offset, the previous drag's drawn frame, or a stale navigation path onto
         // the next note — the didSet only clears them when `selected` becomes nil,
-        // not on replacement.
+        // not on replacement. `anchorsToDrawnFrame` rides with the frame for the
+        // same reason: a click that landed after a drag would otherwise place its
+        // composer and pin against the rectangle drawn for the PREVIOUS note.
         selectedRegionOffset = nil
         selectedMarqueeRect = nil
         marqueeRegionOrigin = nil
+        anchorsToDrawnFrame = false
         resetNavigation(hint: point)
         selected = source.hitTest(point)
         // Seed the navigation path for a real element selection. The ladder's first
@@ -277,6 +328,7 @@ public final class AnnotationSession: ObservableObject {
         selectedRegionOffset = nil
         selectedMarqueeRect = nil
         marqueeRegionOrigin = nil
+        anchorsToDrawnFrame = false
         // The hint is set below, once the rect is normalized — a backwards drag's
         // raw `midX`/`midY` are still correct, but deriving it from the standardized
         // rect keeps one definition of "the centre of what was drawn".
@@ -311,6 +363,11 @@ public final class AnnotationSession: ObservableObject {
                 selectionHint = CGPoint(x: normalized.midX, y: normalized.midY)
                 refreshChildCache()
                 selectedMarqueeRect = normalized
+                // The frame is the truth of THIS selection until the user says
+                // otherwise: they drew a box, so the box is what the overlay
+                // anchors to. Set only here — the region branch below needs no
+                // flag, because its synthetic element's frame already IS this rect.
+                anchorsToDrawnFrame = true
                 return selected
             }
         }
@@ -407,6 +464,15 @@ public final class AnnotationSession: ObservableObject {
         // rect from the wrong box, and that is exactly the class of bug `7993a67`
         // was.
         marqueeRegionOrigin = nil
+        // Pressing Parent or Child is the user EXPLICITLY asking which element the
+        // note is filed against, so the answer stops being implied and becomes the
+        // anchor: dropping this flag re-points the highlight, composer and pin at
+        // the chosen element (the drawn frame stays on screen, dimmed, because it
+        // is still what the note records). Clearing here rather than in the two
+        // callers is deliberate — every navigation in both directions funnels
+        // through this method, so the two can never drift into clearing different
+        // state, which is exactly how a stale-anchor bug gets in.
+        anchorsToDrawnFrame = false
         // `selectedMarqueeRect` is deliberately KEPT: it is absolute, so it is
         // still the frame the user drew whichever rung is now bound, and `addNote`
         // re-relativizes it against that rung.

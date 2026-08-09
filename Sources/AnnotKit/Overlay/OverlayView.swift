@@ -56,47 +56,7 @@ struct OverlayView: View {
         ZStack(alignment: .topLeading) {
             catcher
 
-            // The band REPLACES the element highlight while a frame is being drawn
-            // (same ZStack slot: above the catcher, below the chrome). Showing both
-            // would put a solid "this is what you get" highlight under a rectangle
-            // that has not resolved to anything yet.
-            if let marqueeRect {
-                // COORDINATES: `marqueeRect` is already window-local, so it is
-                // offset DIRECTLY — no `axOrigin` subtraction, unlike the element
-                // highlight one branch down, which arrives in AX screen space.
-                // Subtracting here "for symmetry" would slide the band off by the
-                // window's screen origin, invisible on the primary display at the
-                // global origin and badly wrong on every secondary display.
-                RoundedRectangle(cornerRadius: 3)
-                    .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
-                    .background(Color.accentColor.opacity(0.08))
-                    .frame(width: marqueeRect.width, height: marqueeRect.height)
-                    .offset(x: marqueeRect.minX, y: marqueeRect.minY)
-                    .allowsHitTesting(false)
-            } else if let element = session.selected ?? session.hovered {
-                let originX = element.frame.minX - axOrigin.x
-                let originY = element.frame.minY - axOrigin.y
-                RoundedRectangle(cornerRadius: 3)
-                    .stroke(Color.accentColor, lineWidth: 2)
-                    .background(Color.accentColor.opacity(0.12))
-                    .frame(width: element.frame.width, height: element.frame.height)
-                    .offset(x: originX, y: originY)
-                    .allowsHitTesting(false)
-                // Name tag: shows WHICH element a click binds to, so an element and
-                // its enclosing card (which look alike as bare rectangles) are
-                // distinguishable at a glance. Sits just above the highlight, or
-                // just inside its top when the element hugs the window's top edge.
-                Text(highlightName(element))
-                    .font(.caption2.weight(.medium))
-                    .lineLimit(1)
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(Color.accentColor))
-                    .fixedSize()
-                    .offset(x: originX, y: originY - 20 < 0 ? originY + 2 : originY - 20)
-                    .allowsHitTesting(false)
-            }
+            highlightLayer
 
             // Numbered comment pins (annotate-mode-only chrome). Layered ABOVE
             // the catcher and BELOW the composer/toolbar, so each pin consumes its
@@ -125,6 +85,92 @@ struct OverlayView: View {
         .onChange(of: session.editingNoteID) { _, id in
             if let id, let note = session.pending.first(where: { $0.id == id }) {
                 editDraft = note.comment
+            }
+        }
+    }
+
+    /// What is drawn ON the app, between the catcher and the chrome. Four states,
+    /// and keeping them in ONE mutually-exclusive ladder is the point: each earlier
+    /// case is a stronger claim about what the next press/release binds to, and any
+    /// two of them on screen at once would show the user two different answers.
+    ///
+    /// 1. **Drawing** — the dashed band, frame-mode-only, window-local.
+    /// 2. **Committed frame** — the rect the user just swept, drawn SOLID (so
+    ///    "still drawing" and "done" are distinguishable at a glance) and with NO
+    ///    name tag: the note's bind target is named in the composer header instead,
+    ///    because a tag here would put a second, differently-shaped claim next to
+    ///    the rectangle the user actually drew. See ``composerHeader``.
+    /// 3. **Navigated** — the user pressed Parent/Child, so they have explicitly
+    ///    asked WHICH element: the element is highlighted and named, and the drawn
+    ///    frame stays beneath it, DIMMED, because it is still what the note records
+    ///    (`regionRect`) even though it no longer decides the binding.
+    /// 4. **Point selection / hover** — the original element highlight.
+    @ViewBuilder
+    private var highlightLayer: some View {
+        // The band REPLACES everything else while a frame is being drawn. Showing a
+        // solid "this is what you get" highlight under a rectangle that has not
+        // resolved to anything yet would promise a binding the release may not make.
+        if let marqueeRect {
+            // COORDINATES: `marqueeRect` is already window-local, so it is offset
+            // DIRECTLY — no `axOrigin` subtraction, unlike every other case here,
+            // which arrives in AX screen space. Subtracting here "for symmetry"
+            // would slide the band off by the window's screen origin, invisible on
+            // the primary display at the global origin and badly wrong on every
+            // secondary display.
+            RoundedRectangle(cornerRadius: 3)
+                .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 2, dash: [6, 4]))
+                .background(Color.accentColor.opacity(0.08))
+                .frame(width: marqueeRect.width, height: marqueeRect.height)
+                .offset(x: marqueeRect.minX, y: marqueeRect.minY)
+                .allowsHitTesting(false)
+        } else if let frame = session.selectionAnchorFrame {
+            // The committed frame. It deliberately does NOT also draw the resolved
+            // element: the user drew a box and asked to see that box, and the whole
+            // reported bug was the highlight snapping to a card they never swept.
+            RoundedRectangle(cornerRadius: 3)
+                .stroke(Color.accentColor, lineWidth: 2)
+                .background(Color.accentColor.opacity(0.12))
+                .frame(width: frame.width, height: frame.height)
+                .offset(x: frame.minX - axOrigin.x, y: frame.minY - axOrigin.y)
+                .allowsHitTesting(false)
+        } else {
+            // The drawn frame AFTER navigation moved the binding off it. Drawn
+            // first so it sits BENEATH the element highlight, and much weaker than
+            // case 2, so "this is what the note records" cannot be misread as "this
+            // is what the note binds to". Skipped when it coincides with the
+            // element's own frame — a region-fallback selection, whose synthetic
+            // element IS the drawn rect, would otherwise stack two strokes on one
+            // edge and read as a rendering glitch.
+            if let drawn = session.selectedMarqueeRect, drawn != session.selected?.frame {
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(Color.accentColor.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
+                    .frame(width: drawn.width, height: drawn.height)
+                    .offset(x: drawn.minX - axOrigin.x, y: drawn.minY - axOrigin.y)
+                    .allowsHitTesting(false)
+            }
+            if let element = session.selected ?? session.hovered {
+                let originX = element.frame.minX - axOrigin.x
+                let originY = element.frame.minY - axOrigin.y
+                RoundedRectangle(cornerRadius: 3)
+                    .stroke(Color.accentColor, lineWidth: 2)
+                    .background(Color.accentColor.opacity(0.12))
+                    .frame(width: element.frame.width, height: element.frame.height)
+                    .offset(x: originX, y: originY)
+                    .allowsHitTesting(false)
+                // Name tag: shows WHICH element a click binds to, so an element and
+                // its enclosing card (which look alike as bare rectangles) are
+                // distinguishable at a glance. Sits just above the highlight, or
+                // just inside its top when the element hugs the window's top edge.
+                Text(highlightName(element))
+                    .font(.caption2.weight(.medium))
+                    .lineLimit(1)
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Capsule().fill(Color.accentColor))
+                    .fixedSize()
+                    .offset(x: originX, y: originY - 20 < 0 ? originY + 2 : originY - 20)
+                    .allowsHitTesting(false)
             }
         }
     }
@@ -232,7 +278,7 @@ struct OverlayView: View {
     /// element, with a Cancel / Add note footer. Enter submits, Escape cancels.
     private var composer: some View {
         AnnotationCard(
-            header: session.selectionLabel ?? "Element",
+            header: composerHeader,
             text: $comment,
             placement: composerPlacement,
             // Re-focus when the selection moves element→element (the shared card
@@ -292,6 +338,19 @@ struct OverlayView: View {
                     .disabled(comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
+    }
+
+    /// The composer's header. For a committed FRAME selection this is the only
+    /// place on screen that names the element the note is filed against — the
+    /// canvas deliberately shows the drawn rectangle and no name tag — so it must
+    /// not read as a label for the rectangle itself. The `Frame →` prefix says the
+    /// name is what the frame RESOLVED to, which is the one thing a user cannot
+    /// otherwise verify before pressing Add note, and it disappears the moment
+    /// Parent/Child re-anchors to a named element on the canvas, so the name is
+    /// never qualified in two places at once.
+    private var composerHeader: String {
+        let label = session.selectionLabel ?? "Element"
+        return session.selectionAnchorFrame != nil ? "Frame → \(label)" : label
     }
 
     /// The EDIT card: the SAME shared ``AnnotationCard`` chrome as the composer,
@@ -377,14 +436,19 @@ struct OverlayView: View {
     }
 
     /// Capture the pending note. Snapshots the pin anchor BEFORE `addNote` clears
-    /// the selection (element AX top-left minus axOrigin — the same window-local
-    /// transform the highlight uses — so the pin lands on the element's top-left
-    /// corner), then resets the field. Enter submits; Shift+Enter inserts a
+    /// the selection (AX top-left minus axOrigin — the same window-local transform
+    /// the highlight uses — so the pin lands on the top-left corner of whatever was
+    /// highlighted), then resets the field. Enter submits; Shift+Enter inserts a
     /// newline (handled in the field's `onKeyPress`).
+    ///
+    /// The anchor follows the SAME rect the highlight and composer used: pinning a
+    /// framed note to the resolved element instead would drop the numbered pin on a
+    /// corner the user never swept — possibly far outside the frame, for a frame
+    /// that resolved to a large enclosing card.
     private func addNote() {
         guard !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let anchor = session.selected.map {
-            CGPoint(x: $0.frame.minX - axOrigin.x, y: $0.frame.minY - axOrigin.y)
+        let anchor = (session.selectionAnchorFrame ?? session.selected?.frame).map {
+            CGPoint(x: $0.minX - axOrigin.x, y: $0.minY - axOrigin.y)
         }
         session.addNote(comment: comment, anchor: anchor)
         comment = ""
@@ -400,8 +464,15 @@ struct OverlayView: View {
     /// and its caret. See ``ComposerPlacement``. On the primary display at the
     /// global origin `axOrigin == .zero`, so the previously-working case (card
     /// directly below the element) is unchanged.
+    ///
+    /// Anchored to the DRAWN frame while that is the truth of the selection, so the
+    /// card points at the rectangle the user swept rather than at the element it
+    /// resolved to (which may be much larger, and elsewhere). ``ComposerPlacement``
+    /// already clamps both axes and flips the card when it would spill, so a frame
+    /// larger than any element — even one spanning the whole window — still places
+    /// sanely; feeding it the frame is the entire change.
     private var composerPlacement: ComposerPlacement {
-        guard let f = session.selected?.frame else {
+        guard let f = session.selectionAnchorFrame ?? session.selected?.frame else {
             return ComposerPlacement(origin: CGPoint(x: 24, y: 24), caretPointsUp: true, caretDX: 0)
         }
         return ComposerPlacement.resolve(
