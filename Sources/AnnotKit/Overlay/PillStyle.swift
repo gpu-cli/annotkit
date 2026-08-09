@@ -65,16 +65,19 @@ enum IconPart {
 }
 
 /// The Lucide glyphs the toolbar pill uses, authored on the 24x24 viewBox. The
-/// `d` strings are copied from lucide.dev so the rendered shape matches the
-/// sibling Agentation nav bar; the rest use primitives (`copy`'s rounded rect and
-/// the straight strokes of `pencil`/`download`/`close`) so no elliptical-arc
-/// parsing is needed.
+/// `d` strings are copied verbatim from lucide.dev so the rendered shape matches
+/// the sibling Agentation nav bar — including their elliptical arcs, which the
+/// parser now converts to real cubics. A few glyphs (`copy`'s rounded rect,
+/// `download`'s tray) stay hand-built from primitives because the primitive form
+/// is simpler to read, not because the parser cannot handle their `d`.
 struct LucideIcon {
     let parts: [IconPart]
 
-    /// Lucide `pencil` — the idle pill's ENTER-annotate-mode glyph. Uses the real
-    /// Lucide `d` strings; the parser approximates the small corner arcs (`a`) as
-    /// a line to the arc endpoint, which reads identically at 16pt.
+    /// Lucide `pencil` — the idle pill's ENTER-annotate-mode glyph. The real
+    /// Lucide `d` strings, arcs included. Its eraser end is an `a` with r=1 across
+    /// a 5.6-unit chord, so it only closes into a round butt once the parser
+    /// applies the F.6.6.2 radius scale-up; the nib and shoulder arcs are ordinary
+    /// small rounds.
     static let pencil = LucideIcon(parts: [
         .path("M21.174 6.812a1 1 0 0 0-3.986-3.987L3.842 16.174a2 2 0 0 0-.5.83l-1.321 4.352a.5.5 0 0 0 .623.622l4.353-1.32a2 2 0 0 0 .83-.497z"),
         .path("m15 5 4 4"),
@@ -82,9 +85,11 @@ struct LucideIcon {
 
     static let check = LucideIcon(parts: [.path("M20 6 9 17l-5-5")])
 
-    /// Lucide `download` — export to a file. Drawn with straight strokes only
-    /// (the real glyph's rounded tray uses SVG arc commands the primitive parser
-    /// does not implement): an open-top tray plus a down arrow into it.
+    /// Lucide `download` — export to a file. A deliberate simplification of the
+    /// real glyph: an open-top tray plus a down arrow, with square tray corners
+    /// instead of Lucide's arc-rounded ones. The corners are square by choice (the
+    /// parser handles arcs now); swapping in the upstream `d` is a glyph change,
+    /// not a parser one.
     static let download = LucideIcon(parts: [
         .line(CGPoint(x: 4, y: 15), CGPoint(x: 4, y: 20)),
         .line(CGPoint(x: 4, y: 20), CGPoint(x: 20, y: 20)),
@@ -113,9 +118,8 @@ struct LucideIcon {
     ])
 
     /// Lucide `mouse-pointer-2` — the POINT tool: select by clicking. The real
-    /// Lucide `d` string; its two tiny corner arcs (`a`) are approximated by the
-    /// parser as a line to the arc endpoint, which is invisible at 16pt on a shape
-    /// this angular.
+    /// Lucide `d` string; its four corner arcs (`a`) render as true curves, which
+    /// is what keeps the cursor's tail and notch from reading as hard mitres.
     static let mousePointer = LucideIcon(parts: [
         .path("M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z"),
     ])
@@ -176,7 +180,7 @@ struct LucideShape: Shape {
         return path
     }
 
-    // MARK: SVG `d`-string parser (M/L/H/V/C/Q/Z, absolute + relative)
+    // MARK: SVG `d`-string parser (M/L/H/V/C/Q/A/Z, absolute + relative)
 
     private enum Token { case command(Character); case number(CGFloat) }
 
@@ -237,16 +241,21 @@ struct LucideShape: Shape {
                 current = end
                 path.addQuadCurve(to: scaled(end), control: scaled(ctrl))
             case "A", "a":
-                // Elliptical arc. The parser has no arc-to-bezier, so it draws a
-                // straight segment to the arc ENDPOINT — the only arcs in use are
-                // Lucide's pencil corner rounds and its flat eraser diagonal,
-                // which read the same at 16pt. Consume all 7 params (rx ry rot
-                // large sweep x y).
-                guard nextNumber() != nil, nextNumber() != nil, nextNumber() != nil,
-                      nextNumber() != nil, nextNumber() != nil,
+                // Elliptical arc (rx ry x-rotation large-arc sweep x y), converted
+                // to cubics by ``appendArc``. This used to draw a straight line to
+                // the endpoint, which was survivable only while every arc in the
+                // set was a 1-2 unit corner round; a glyph whose whole identity is
+                // a loop (Lucide `undo-2`, 5.5-radius semicircles) collapses to a
+                // vertical line under that shortcut, so the flattening is gone.
+                guard let rx = nextNumber(), let ry = nextNumber(), let rotation = nextNumber(),
+                      let largeArc = nextNumber(), let sweep = nextNumber(),
                       let ax = nextNumber(), let ay = nextNumber() else { return }
-                current = command == "a" ? CGPoint(x: current.x + ax, y: current.y + ay) : CGPoint(x: ax, y: ay)
-                path.addLine(to: scaled(current))
+                let end = command == "a" ? CGPoint(x: current.x + ax, y: current.y + ay) : CGPoint(x: ax, y: ay)
+                appendArc(
+                    from: current, to: end, rx: rx, ry: ry, rotationDegrees: rotation,
+                    largeArc: largeArc != 0, sweep: sweep != 0, to: &path, scale: scale
+                )
+                current = end
             case "Z", "z":
                 path.closeSubpath()
                 current = subStart
@@ -254,6 +263,129 @@ struct LucideShape: Shape {
                 return
             }
             if index == progress { return } // no token consumed -> malformed; bail rather than spin
+        }
+    }
+
+    /// SVG 1.1 Appendix F.6.5 endpoint -> centre parameterisation, emitted as
+    /// cubic Béziers. Everything here is in 24-grid units until the final
+    /// `scaled` on each control point, so the ellipse maths never has to know the
+    /// render size.
+    private static func appendArc(
+        from start: CGPoint,
+        to end: CGPoint,
+        rx rxIn: CGFloat,
+        ry ryIn: CGFloat,
+        rotationDegrees: CGFloat,
+        largeArc: Bool,
+        sweep: Bool,
+        to path: inout Path,
+        scale: CGFloat
+    ) {
+        func scaled(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x * scale, y: p.y * scale) }
+
+        // F.6.2 out-of-range handling. Coincident endpoints mean "omit the
+        // segment entirely" — emitting a zero-length line instead would round-cap
+        // into a stray dot. A zero radius is a plain lineto. Both branches also
+        // keep the divisions below from producing NaN control points, which would
+        // silently blank the whole glyph.
+        if start == end { return }
+        var rx = abs(rxIn), ry = abs(ryIn)
+        guard rx > 0, ry > 0 else {
+            path.addLine(to: scaled(end))
+            return
+        }
+
+        let phi = rotationDegrees.truncatingRemainder(dividingBy: 360) * .pi / 180
+        let cosPhi = cos(phi), sinPhi = sin(phi)
+
+        // F.6.5.1 — the chord half-vector expressed in the ellipse's own frame.
+        let dx = (start.x - end.x) / 2, dy = (start.y - end.y) / 2
+        let x1 = cosPhi * dx + sinPhi * dy
+        let y1 = -sinPhi * dx + cosPhi * dy
+
+        // F.6.6.2 — radii too small to span the endpoints are scaled UP until they
+        // just reach, rather than rejected: falling back to a line here is what
+        // makes an authored glyph fall short of its own endpoint and break the
+        // subpath. Lucide relies on this (`pencil` asks for r=1 across a 5.6-unit
+        // chord), so this branch is hot, not defensive.
+        let lambda = (x1 * x1) / (rx * rx) + (y1 * y1) / (ry * ry)
+        if lambda > 1 {
+            let correction = sqrt(lambda)
+            rx *= correction
+            ry *= correction
+        }
+
+        // F.6.5.2/3 — centre, first in the rotated frame then back to user space.
+        let rx2 = rx * rx, ry2 = ry * ry
+        let denominator = rx2 * y1 * y1 + ry2 * x1 * x1
+        let numerator = rx2 * ry2 - denominator
+        var factor = denominator > 0 ? sqrt(max(0, numerator) / denominator) : 0
+        if largeArc == sweep { factor = -factor }
+        let cxp = factor * rx * y1 / ry
+        let cyp = -factor * ry * x1 / rx
+        let cx = cosPhi * cxp - sinPhi * cyp + (start.x + end.x) / 2
+        let cy = sinPhi * cxp + cosPhi * cyp + (start.y + end.y) / 2
+
+        // F.6.5.5/6 — start angle and swept angle, then the flag fix-up that turns
+        // the raw [-pi, pi] result into the direction `sweep` actually asked for.
+        func angle(_ ux: CGFloat, _ uy: CGFloat, _ vx: CGFloat, _ vy: CGFloat) -> CGFloat {
+            let lengths = sqrt((ux * ux + uy * uy) * (vx * vx + vy * vy))
+            guard lengths > 0 else { return 0 }
+            let value = acos(min(1, max(-1, (ux * vx + uy * vy) / lengths)))
+            return (ux * vy - uy * vx) < 0 ? -value : value
+        }
+        let ux = (x1 - cxp) / rx, uy = (y1 - cyp) / ry
+        let vx = (-x1 - cxp) / rx, vy = (-y1 - cyp) / ry
+        let theta1 = angle(1, 0, ux, uy)
+        var delta = angle(ux, uy, vx, vy)
+        if !sweep, delta > 0 {
+            delta -= 2 * .pi
+        } else if sweep, delta < 0 {
+            delta += 2 * .pi
+        }
+
+        // A single cubic cannot hold more than a quarter turn without visible
+        // error, so split the sweep into <=90 degree pieces. `k` is the standard
+        // control magnitude (4/3)*tan(theta/4), exact at the segment endpoints and
+        // tangents.
+        let segments = max(1, Int(ceil(abs(delta) / (.pi / 2) - 1e-9)))
+        let step = delta / CGFloat(segments)
+        let k = 4.0 / 3.0 * tan(step / 4)
+
+        // Points and tangents are evaluated on the unrotated ellipse and then run
+        // through the rotation individually — rotating a bounding box, or applying
+        // phi only to the endpoints, skews the control points and gives an ellipse
+        // that is the wrong shape rather than merely the wrong orientation.
+        func point(_ theta: CGFloat) -> CGPoint {
+            let c = cos(theta), s = sin(theta)
+            return CGPoint(
+                x: cx + rx * c * cosPhi - ry * s * sinPhi,
+                y: cy + rx * c * sinPhi + ry * s * cosPhi
+            )
+        }
+        func derivative(_ theta: CGFloat) -> CGPoint {
+            let c = cos(theta), s = sin(theta)
+            return CGPoint(
+                x: -rx * s * cosPhi - ry * c * sinPhi,
+                y: -rx * s * sinPhi + ry * c * cosPhi
+            )
+        }
+
+        var theta = theta1
+        for segment in 0..<segments {
+            let next = theta + step
+            let from = point(theta)
+            // Snap the last segment onto the authored endpoint: accumulated
+            // rounding (worst after an F.6.6.2 scale-up) would otherwise leave a
+            // sub-unit gap before the next command's `current`.
+            let to = segment == segments - 1 ? end : point(next)
+            let d1 = derivative(theta), d2 = derivative(next)
+            path.addCurve(
+                to: scaled(to),
+                control1: scaled(CGPoint(x: from.x + k * d1.x, y: from.y + k * d1.y)),
+                control2: scaled(CGPoint(x: to.x - k * d2.x, y: to.y - k * d2.y))
+            )
+            theta = next
         }
     }
 
