@@ -259,6 +259,14 @@ public final class OverlayController: NSObject {
         // grows a runloop turn or two later without posting a move/resize; poll until
         // the host frame settles so the panel and axOrigin reflect the FINAL frame.
         scheduleSettleResync()
+        // Re-arm Escape if we are attaching INTO an already-annotating session.
+        // `unmount()` removes the monitor, and the session's mode outlives the
+        // controller's panel — so a host that unmounts and re-mounts a live
+        // overlay (window recycling, a host that tears down on hide) would come
+        // back with annotate mode on and Escape silently dead, the one state with
+        // no other keyboard way out. `installEscapeMonitor()` is idempotent, so
+        // the ordinary mount-then-start path is unaffected.
+        if session.mode == .annotating { installEscapeMonitor() }
     }
 
     private func makeRootView() -> OverlayView {

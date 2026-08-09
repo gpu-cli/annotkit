@@ -66,6 +66,26 @@ final class EscapeMonitorLifecycleTests: XCTestCase {
         XCTAssertFalse(monitorIsInstalled(controller), "an unmounted overlay must own no monitor")
     }
 
+    /// Re-mounting into a session that is ALREADY annotating must re-arm Escape.
+    ///
+    /// `unmount()` removes the monitor, but the SESSION's mode outlives the
+    /// controller's panel — so a host that unmounts and re-mounts a live overlay
+    /// (window recycling, a host tearing the overlay down on hide) comes back with
+    /// annotate mode on. Without re-arming, Escape is silently dead in exactly the
+    /// state that has no other keyboard way out, and nothing on screen hints why.
+    func testReMountingWhileStillAnnotatingReArmsTheMonitor() {
+        let controller = makeController()
+        controller.start()
+        controller.unmount()
+        XCTAssertFalse(monitorIsInstalled(controller))
+        XCTAssertEqual(controller.session.mode, .annotating, "unmount does not leave the mode — that is the trap")
+
+        controller.mount(on: NSWindow(contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
+                                      styleMask: [.titled], backing: .buffered, defer: true))
+        XCTAssertTrue(monitorIsInstalled(controller), "a re-mounted annotating overlay must hear Escape again")
+        controller.unmount()
+    }
+
     func testRepeatedStartsInstallExactlyOneMonitor() {
         // `installEscapeMonitor` is guarded, so a second `start()` cannot strand the
         // first token — which would be unremovable, since only the latest is kept.
