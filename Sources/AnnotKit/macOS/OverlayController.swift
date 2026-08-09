@@ -12,7 +12,9 @@ import SwiftUI
 ///
 /// The panel is sized to just the toolbar corner of the host window when idle (so
 /// the rest of the app stays usable) and to the host window's full frame while
-/// annotating (so the SwiftUI catcher receives hover and clicks over the app).
+/// annotating (so the SwiftUI catcher receives hover and clicks over the app) —
+/// both narrowed to the display's `visibleFrame` by ``OverlayPlacement``, because a
+/// host taller than the screen would otherwise draw its toolbar under the Dock.
 /// Because it is pinned to one window, all coordinates collapse to a single fixed
 /// AX origin (`axOrigin`), which also makes placement correct on any display —
 /// no `NSScreen.main` (active-screen) assumption. Child windows follow the
@@ -26,11 +28,12 @@ public final class OverlayController: NSObject {
     private var hostingView: NSHostingView<OverlayView>?
     private weak var host: NSWindow?
 
-    /// AX top-left origin of the host window, threaded into `OverlayView` so click,
-    /// highlight, and composer share one transform. Recomputed on every geometry
-    /// change.
+    /// AX top-left origin of the overlay PANEL — the surface `OverlayView` draws into,
+    /// which is the host window narrowed to the visible screen — threaded into the view
+    /// so click, highlight, and composer share one transform. Recomputed on every
+    /// geometry change.
     private var axOrigin: CGPoint = .zero
-    /// Host-window-local size, for clamping the composer on-screen.
+    /// Panel-local size, for clamping the composer inside the visible region.
     private var surfaceSize: CGSize = .zero
 
     /// Host frame captured at the last geometry sync. A SwiftUI/content-sized host
@@ -291,7 +294,10 @@ public final class OverlayController: NSObject {
         // A child follows the parent's position automatically but does not
         // resize with it, and neither the child nor AppKit recomputes our AX
         // origin — so re-sync on every geometry change. One handler covers move
-        // (origin stale), resize (frame + origin stale), and screen changes.
+        // (origin stale), resize (frame + origin stale), and screen changes. The
+        // screen-parameters observer earns its keep twice over now that placement is
+        // clamped: a Dock that appears, or a display that changes resolution, moves
+        // `visibleFrame` without touching the host's frame, and the pill has to follow.
         center.addObserver(self, selector: #selector(hostGeometryChanged(_:)),
                            name: NSWindow.didMoveNotification, object: host)
         center.addObserver(self, selector: #selector(hostGeometryChanged(_:)),
@@ -350,36 +356,96 @@ public final class OverlayController: NSObject {
     /// and surface size, then push both into the SwiftUI view.
     private func syncFrameAndOrigin() {
         guard let panel, let host else { return }
-        panel.setFrame(frame(for: session.mode, on: host), display: true)
+        let panelFrame = frame(for: session.mode, on: host)
+        panel.setFrame(panelFrame, display: true)
         // Primary display = the origin/menu-bar screen, NOT NSScreen.main (the
         // active screen), which was the single-display bug.
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        axOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: host.frame, primaryHeight: primaryHeight)
-        surfaceSize = host.frame.size
+        // Derived from the PANEL's frame, never the host's. `OverlayView`'s contract is
+        // that these two describe the SURFACE it draws into — the catcher ADDS
+        // `axOrigin` to turn a panel-local click into an AX screen point, the highlight
+        // and composer SUBTRACT it — so once placement is clamped to the visible
+        // region, a host-derived origin would offset every click, highlight and card by
+        // exactly the clipped amount.
+        //
+        // Clamping the BOTTOM (the reported bug) leaves `axOrigin` alone, since it
+        // hangs off the frame's TOP edge, and only shrinks `surfaceSize` — which is
+        // itself the right answer, because the composer clamp should keep cards inside
+        // the VISIBLE region rather than inside a window that runs off the display.
+        // Clamping the TOP (a host tucked under the menu bar) genuinely does move the
+        // origin, and that is the case a host-derived origin breaks silently.
+        axOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: panelFrame, primaryHeight: primaryHeight)
+        surfaceSize = panelFrame.size
         lastSyncedHostFrame = host.frame
         hostingView?.rootView = makeRootView()
     }
 
     private func frame(for mode: AnnotationSession.Mode, on host: NSWindow) -> NSRect {
+        OverlayPlacement.panelFrame(
+            for: mode,
+            hostFrame: host.frame,
+            // `host.screen` is the display the window is mostly on, so the clamp
+            // follows the host across displays. A window AppKit reports no screen for
+            // (entirely off-display, or mid-teardown) falls back to the primary rather
+            // than skipping the clamp, so the pill still lands somewhere reachable.
+            visibleFrame: (host.screen ?? NSScreen.screens.first)?.visibleFrame
+        )
+    }
+}
+
+/// Where the overlay panel goes, as pure geometry — no window, no display, so the
+/// rules below are unit-testable instead of only observable on a real screen.
+enum OverlayPlacement {
+    /// The idle panel's size: fits the widest pill state (toggle + count badge + copy
+    /// + export + clear, ~180pt) plus its 20pt inset and the drop shadow, and the 44pt
+    /// pill plus the same inset.
+    static let idleSize = CGSize(width: 240, height: 104)
+
+    /// The part of the host the user can actually see and click: its frame narrowed to
+    /// the screen's `visibleFrame`.
+    ///
+    /// `visibleFrame` and not `frame`, because the Dock and menu bar cover the
+    /// display's edges and a pill under the Dock is exactly as unreachable as one off
+    /// the display.
+    ///
+    /// This is the whole of the "on scrollable screens the menu in the bottom right
+    /// disappears" bug: BOTH modes anchor the toolbar to the host's BOTTOM edge, and
+    /// AppKit constrains a window's TOP under the menu bar but never lifts its bottom —
+    /// so a host taller than the display (the shape a content-sized/scrollable window
+    /// grows into, the same growth ``OverlayController/scheduleSettleResync()`` exists
+    /// to catch) hangs its bottom edge below `visibleFrame`, and an unclamped anchor
+    /// draws the pill under the Dock or off the display entirely.
+    ///
+    /// An EMPTY intersection means the host is off-display altogether (another Space, a
+    /// window parked off-screen). Keep the unclamped frame there rather than collapse
+    /// the panel to nothing: a zero-sized panel would have to be rebuilt to come back,
+    /// whereas an off-screen one simply reappears with its window.
+    static func region(hostFrame: CGRect, visibleFrame: CGRect?) -> CGRect {
+        guard let visibleFrame else { return hostFrame }
+        let region = hostFrame.intersection(visibleFrame)
+        return region.isEmpty ? hostFrame : region
+    }
+
+    static func panelFrame(for mode: AnnotationSession.Mode, hostFrame: CGRect, visibleFrame: CGRect?) -> CGRect {
+        let region = region(hostFrame: hostFrame, visibleFrame: visibleFrame)
         switch mode {
         case .annotating:
-            // The host window's full outer frame (includes the title bar so the
-            // window-local y aligns with AX y).
-            return host.frame
+            // The host's outer frame minus whatever hangs off the display (the title
+            // bar is included, so the window-local y still aligns with AX y). Clipping
+            // the catcher costs nothing: the part that was cut cannot be hovered or
+            // clicked anyway.
+            return region
         case .idle:
-            // A small panel sized to the pill's real bounds, pinned to the host
-            // window's bottom-right corner, so the idle overlay covers only the
-            // toolbar and never swallows clicks meant for the host. Width fits the
-            // widest pill state (toggle + count badge + copy + export + clear,
-            // ~180pt) plus its 20pt inset and the drop shadow; height fits the 44pt
-            // pill plus the same inset. Anchored to the
-            // window so it rides along on move and is recomputed on resize.
-            let size = NSSize(width: 240, height: 104)
-            return NSRect(
-                x: host.frame.maxX - size.width,
-                y: host.frame.minY,
-                width: size.width,
-                height: size.height
+            // Anchored to the visible region's bottom-right corner at FULL size, not
+            // intersected down to it: shrinking this panel would clip the pill it
+            // exists to carry. The pill is drawn against the panel's BOTTOM edge, so
+            // pinning that edge inside the region is what keeps it reachable — only the
+            // panel's empty upper part can spill past a region shorter than 104pt.
+            return CGRect(
+                x: region.maxX - idleSize.width,
+                y: region.minY,
+                width: idleSize.width,
+                height: idleSize.height
             )
         }
     }
@@ -392,5 +458,40 @@ public final class OverlayController: NSObject {
 /// into the composer focus the field. Used as a child window per host window.
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
+
+    /// Hand an unconsumed scroll down to the host window.
+    ///
+    /// Measured, not assumed: while annotating this panel covers the host's whole frame
+    /// with `ignoresMouseEvents = false`, and an event no view handles walks THIS
+    /// window's responder chain — never the window beneath it — where `NSWindow`'s
+    /// do-nothing default ate it. So the host could not be scrolled AT ALL in annotate
+    /// mode, which is fatal on exactly the tall scrollable screens this placement fix is
+    /// about: nothing below the fold can be annotated if it cannot be brought into view.
+    ///
+    /// Only events that reached the WINDOW are forwarded, and that is the correct filter
+    /// by construction rather than by a mode check: anything in the overlay that
+    /// legitimately scrolls (a long note in the composer) consumes the wheel in the view
+    /// tree, so it never arrives here.
+    override func scrollWheel(with event: NSEvent) {
+        guard let host = parent else { return }
+        // Re-aim through screen space rather than passing `locationInWindow` along: it
+        // is PANEL-local, and the panel is no longer the host's frame once placement is
+        // clamped to the visible region, so handing it over unconverted would scroll
+        // whatever sits at the wrong point (the wrong scroller, in a window with two).
+        let hostPoint = host.convertPoint(fromScreen: convertPoint(toScreen: event.locationInWindow))
+        // Falls back to the content view when the point is over no host view at all
+        // (the title-bar strip, or a host smaller than the panel): a wheel that hit
+        // AnnotKit must never simply vanish. `NSView`'s default `scrollWheel` walks the
+        // event UP to the enclosing scroller from wherever it lands, so aiming at the
+        // deepest view under the pointer is enough — no scroll-view search here.
+        //
+        // The event itself is passed along unchanged, so the target reads a
+        // `locationInWindow` that is still PANEL-local (an `NSEvent`'s location cannot
+        // be rewritten). Scroll handling uses the DELTAS, and the location's one real
+        // job — choosing the target — is done above, so this costs nothing short of a
+        // host view that positions something off the wheel's own coordinates.
+
+        (host.contentView?.hitTest(hostPoint) ?? host.contentView)?.scrollWheel(with: event)
+    }
 }
 #endif
