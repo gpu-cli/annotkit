@@ -427,6 +427,32 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertEqual(session.selectedMarqueeRect, CGRect(x: 110, y: 120, width: 40, height: 20))
     }
 
+    /// A degenerate drag must be a TRUE no-op, not a partial one.
+    ///
+    /// A perfectly axis-aligned drag (dy == 0) clears the gesture layer's travel
+    /// threshold, so it really does arrive here with zero height — this is normal
+    /// use, not a synthetic edge case. Rejecting it AFTER the per-selection clears
+    /// would silently strip an open frame selection's anchor, re-anchoring a
+    /// composer the user was still typing into, and would do it without assigning
+    /// `selected`, so the @Published change that drives the re-render never fires
+    /// and the overlay keeps rendering the old geometry.
+    func testDegenerateDragLeavesAnOpenFrameSelectionUntouched() {
+        let card = makeLadderElement("Card", frame: CGRect(x: 100, y: 100, width: 60, height: 40))
+        let source = MarqueeSource(ladder: [card])
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
+        session.select(inAXRect: drawn)
+        XCTAssertEqual(session.selectionAnchorFrame, drawn, "the frame is the anchor before the stray drag")
+
+        // A long, perfectly horizontal drag: passes the travel threshold, zero height.
+        XCTAssertNil(session.select(inAXRect: CGRect(x: 200, y: 300, width: 80, height: 0)))
+
+        XCTAssertEqual(session.selected?.id, "Card", "the open selection survives")
+        XCTAssertEqual(session.selectionAnchorFrame, drawn, "and so does its frame anchor")
+        XCTAssertEqual(session.selectedMarqueeRect, drawn, "the note's record of the drag is intact")
+    }
+
     func testMarqueeThenClickDropsTheStaleFrame() {
         // The 7993a67 hazard, marquee edition: the catcher stays live behind an
         // open composer, so drag-then-click WITHOUT capturing is a supported flow.

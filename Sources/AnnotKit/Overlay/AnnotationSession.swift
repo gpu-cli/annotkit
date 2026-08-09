@@ -318,6 +318,31 @@ public final class AnnotationSession: ObservableObject {
     @discardableResult
     public func select(inAXRect rect: CGRect) -> Element? {
         guard mode == .annotating else { return nil }
+
+        // Normalize and reject a degenerate rect BEFORE touching any state, so a
+        // drag that framed nothing is a TRUE no-op.
+        //
+        // A zero-width or zero-height rect is a click that never moved, not a
+        // marquee. Returning nil is a DELIBERATE divergence from "fall back to the
+        // region path when resolution yields nothing": that fallback is for a drag
+        // that framed nothing annotatable, whereas this is not a drag at all.
+        // Falling through would anchor a zero-area frame to whatever sits near the
+        // press and plant a note the user never asked for — worse than nothing,
+        // because it looks deliberate. This also bails BEFORE consulting the
+        // source, so a degenerate rect never reaches `MarqueeTargetRule.resolve`
+        // or `regionAnchor(at:)`.
+        //
+        // Bailing FIRST is load-bearing, not tidiness. A perfectly axis-aligned
+        // drag (dy == 0) clears the gesture layer's travel threshold and arrives
+        // here with zero height, so this branch IS reachable in normal use. Clear
+        // per-selection state before the guard and such a drag would silently strip
+        // an open frame selection's anchor — re-anchoring a composer the user was
+        // still typing into, and doing it WITHOUT assigning `selected`, so the
+        // @Published change that drives the re-render never fires and the overlay
+        // is left rendering stale geometry.
+        let normalized = rect.standardized
+        guard normalized.width > 0, normalized.height > 0 else { return nil }
+
         // A drag on the catcher dismisses an open pin editor for the same reason a
         // tap does: the composer is about to take the stage.
         editingNoteID = nil
@@ -333,23 +358,6 @@ public final class AnnotationSession: ObservableObject {
         // raw `midX`/`midY` are still correct, but deriving it from the standardized
         // rect keeps one definition of "the centre of what was drawn".
         resetNavigation(hint: nil)
-
-        // Normalize once: a right-to-left or bottom-to-top drag arrives with
-        // negative extents.
-        //
-        // A zero-width or zero-height rect is a click that never moved, not a
-        // marquee. Returning nil here is a DELIBERATE divergence from "the caller
-        // falls back to the region path when resolution yields nothing": that
-        // fallback is for a drag that framed nothing annotatable, whereas this is
-        // not a drag at all. Falling through would anchor a zero-area frame to
-        // whatever happens to sit near the press and plant a note the user never
-        // asked for — worse than nothing, because it looks deliberate. The gesture
-        // recognizer routes this case to ``select(atAXPoint:)`` instead (see the
-        // caller contract above). Note this also bails BEFORE consulting the
-        // source, so a degenerate rect never reaches `MarqueeTargetRule.resolve`
-        // or `regionAnchor(at:)`.
-        let normalized = rect.standardized
-        guard normalized.width > 0, normalized.height > 0 else { return nil }
 
         if let marqueeSource = source as? MarqueeTargetSource {
             let ladder = marqueeSource.marqueeLadder(in: normalized)
