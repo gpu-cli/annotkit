@@ -45,6 +45,9 @@ public final class OverlayController: NSObject {
     /// or two later without posting `didMove`/`didResize`; comparing against this
     /// lets the post-attach settle poll tell when the frame has stabilized.
     private var lastSyncedHostFrame: NSRect = .null
+    /// The clamped frame the panel is SUPPOSED to occupy, re-asserted after AppKit's
+    /// parent-follow repositioning. `.null` until the first sync.
+    private var desiredPanelFrame: NSRect = .null
     /// Bumped on every attach/unmount so an in-flight settle poll for a previous
     /// host stops instead of re-syncing against a stale (or detached) window.
     private var settleGeneration = 0
@@ -361,7 +364,22 @@ public final class OverlayController: NSObject {
     private func syncFrameAndOrigin() {
         guard let panel, let host else { return }
         let panelFrame = frame(for: session.mode, on: host)
+        desiredPanelFrame = panelFrame
         panel.setFrame(panelFrame, display: true)
+        // AppKit repositions a CHILD window to follow its parent, and it does so AFTER
+        // the `didMove` notification we are reacting to — so the clamped frame we just
+        // applied is silently dragged back to the host's own corner a runloop turn
+        // later. On a host whose bottom hangs below the display that puts the pill
+        // off-screen: the toolbar "disappears", exactly as reported, with placement
+        // that computed the right answer and a panel that no longer sits there.
+        //
+        // Measured, not assumed — with forensics on:
+        //   computed=(1272, 60, 240, 104) afterSet=(1272, 60, 240, 104)
+        //   next-turn panel=(1272, -200, 240, 104)  clobbered=true
+        //
+        // Re-assert once AppKit has finished. `enforcePanelFrame()` is a no-op when it
+        // left us alone, so the common case costs one runloop hop and nothing else.
+        DispatchQueue.main.async { [weak self] in self?.enforcePanelFrame() }
         // Primary display = the origin/menu-bar screen, NOT NSScreen.main (the
         // active screen), which was the single-display bug.
         let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
@@ -394,6 +412,21 @@ public final class OverlayController: NSObject {
         surfaceSize = panelFrame.size
         rootViewPushes += 1
         hostingView?.rootView = makeRootView()
+    }
+
+    /// Put the panel back where placement said it belongs, if AppKit moved it.
+    ///
+    /// Child windows are repositioned by AppKit to preserve their offset from the
+    /// parent, which undoes the visible-frame clamp on every host move. Comparing
+    /// before setting keeps this free when nothing fought us, and keeps it from
+    /// looping: a `setFrame` to the frame the window already has posts no move.
+    private func enforcePanelFrame() {
+        guard let panel, desiredPanelFrame != .null, panel.frame != desiredPanelFrame else { return }
+        if KeyablePanel.forensics {
+            FileHandle.standardError.write(Data(
+                "[sync] re-asserting clamped frame: \(panel.frame) -> \(desiredPanelFrame)\n".utf8))
+        }
+        panel.setFrame(desiredPanelFrame, display: true)
     }
 
     private func frame(for mode: AnnotationSession.Mode, on host: NSWindow) -> NSRect {
@@ -475,6 +508,40 @@ enum OverlayPlacement {
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 
+    /// Forensics for "the pill vanished": every path AppKit can take to hide a
+    /// window funnels through `orderWindow`/`setIsVisible`/`close`, so logging the
+    /// call stack at each one names the culprit instead of leaving a symptom.
+    /// Opt-in via `ANNOTKIT_PANEL_FORENSICS=1`; costs one env lookup otherwise.
+    static let forensics = ProcessInfo.processInfo.environment["ANNOTKIT_PANEL_FORENSICS"] == "1"
+
+    private func forensic(_ what: String) {
+        guard Self.forensics else { return }
+        FileHandle.standardError.write(Data("""
+        [panel-forensics] \(what) visible=\(isVisible) frame=\(frame) parent=\(parent.map { "\($0.title)" } ?? "nil")
+        \(Thread.callStackSymbols.prefix(14).joined(separator: "\n"))\n\n
+        """.utf8))
+    }
+
+    override func order(_ place: NSWindow.OrderingMode, relativeTo otherWin: Int) {
+        if place == .out { forensic("order(.out)") }
+        super.order(place, relativeTo: otherWin)
+    }
+
+    override func orderOut(_ sender: Any?) {
+        forensic("orderOut(sender: \(sender.map { String(describing: type(of: $0)) } ?? "nil"))")
+        super.orderOut(sender)
+    }
+
+    override func setIsVisible(_ flag: Bool) {
+        if !flag { forensic("setIsVisible(false)") }
+        super.setIsVisible(flag)
+    }
+
+    override func close() {
+        forensic("close()")
+        super.close()
+    }
+
     /// Hand an unconsumed scroll down to the host window.
     ///
     /// Measured, not assumed: while annotating this panel covers the host's whole frame
@@ -495,19 +562,47 @@ final class KeyablePanel: NSPanel {
         // clamped to the visible region, so handing it over unconverted would scroll
         // whatever sits at the wrong point (the wrong scroller, in a window with two).
         let hostPoint = host.convertPoint(fromScreen: convertPoint(toScreen: event.locationInWindow))
-        // Falls back to the content view when the point is over no host view at all
-        // (the title-bar strip, or a host smaller than the panel): a wheel that hit
-        // AnnotKit must never simply vanish. `NSView`'s default `scrollWheel` walks the
-        // event UP to the enclosing scroller from wherever it lands, so aiming at the
-        // deepest view under the pointer is enough — no scroll-view search here.
-        //
-        // The event itself is passed along unchanged, so the target reads a
-        // `locationInWindow` that is still PANEL-local (an `NSEvent`'s location cannot
-        // be rewritten). Scroll handling uses the DELTAS, and the location's one real
-        // job — choosing the target — is done above, so this costs nothing short of a
-        // host view that positions something off the wheel's own coordinates.
+        // Hit-test from the window's ROOT view (the content view's superview, AppKit's
+        // border/theme frame), not from the content view: `hitTest(_:)` takes a point
+        // in the receiver's SUPERVIEW space, and the border view is flipped — so
+        // handing window-base coordinates to `contentView.hitTest` mirrors the y and
+        // misses everything, silently. The root view's "superview space" is defined
+        // as window base, which is exactly what `convertPoint(fromScreen:)` yields.
+        let root = host.contentView?.superview ?? host.contentView
+        guard let target = root?.hitTest(hostPoint) ?? host.contentView else { return }
 
-        (host.contentView?.hitTest(hostPoint) ?? host.contentView)?.scrollWheel(with: event)
+        // Scroll the host's scroller DIRECTLY by the event's deltas. The event object
+        // itself must NEVER cross into the host's view tree: an earlier version did
+        // `targetView.scrollWheel(with: event)`, and for a TRACKPAD stream — phase
+        // `began`/`changed`/`ended` plus momentum, which is every real-world scroll —
+        // NSScrollView's responsive scrolling responds to `began` by engaging an
+        // event-tracking loop against `event.window`. That window is THIS PANEL, not
+        // the scroll view's own, and the cross-window tracking never terminates:
+        // it wedged the panel's event delivery and display, so the overlay silently
+        // stopped rendering AND stopped hit-testing while its window sat there —
+        // observed as "the toolbar vanishes after I scroll, then hover on and off it",
+        // with a plain mouse wheel (no phases) never triggering it. Reproduced
+        // against a live host and pinned by the probe's scroll phase.
+        //
+        // Driving the clip view by deltas keeps everything inside the HOST's own
+        // machinery, no event identity involved. Momentum events still arrive here
+        // carrying deltas, so inertia is preserved; only the edge rubber-band is
+        // lost, because `constrainBoundsRect` clamps at the document bounds.
+        var view: NSView? = target
+        while let current = view, !(current is NSScrollView) { view = current.superview }
+        guard let scrollView = view as? NSScrollView else { return }
+
+        let clip = scrollView.contentView
+        // Non-precise deltas (an external mouse wheel) are in LINES; convert to
+        // points the same way NSScrollView itself does.
+        let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : scrollView.verticalLineScroll
+        var origin = clip.bounds.origin
+        origin.x -= event.scrollingDeltaX * scale
+        // A flipped clip (the AppKit default for scroll content) grows y downward, so
+        // natural-scroll deltas subtract; an unflipped one is the mirror.
+        origin.y += (clip.isFlipped ? -1 : 1) * event.scrollingDeltaY * scale
+        clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
+        scrollView.reflectScrolledClipView(clip)
     }
 }
 #endif

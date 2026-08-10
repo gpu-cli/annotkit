@@ -285,35 +285,40 @@ final class UnconstrainedWindow: NSWindow {
     override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
 }
 
-/// Counts the wheel events that reach the HOST's view tree, and from WHERE.
+/// A real scroller whose clip offset is the 9c witness.
 ///
-/// The scroll question cannot be answered by watching an `NSScrollView`'s offset:
-/// measured, AppKit's scroll views ignore a synthesized `NSEvent` outright (a synthetic
-/// wheel moves nothing even when delivered straight to the scroll view). So 9c measures
-/// the ROUTING instead, which is the mechanism actually in question — does a wheel that
-/// lands on AnnotKit's panel reach the host at all, and does it reach the right view.
-final class ScrollSpyView: NSView {
-    let name: String
-    var scrollCount = 0
-    init(name: String, frame: NSRect) {
-        self.name = name
-        super.init(frame: frame)
-    }
-    required init?(coder: NSCoder) { fatalError("unused") }
-    override func scrollWheel(with event: NSEvent) { scrollCount += 1 }
+/// The panel now scrolls the host by driving the enclosing `NSScrollView`'s clip view
+/// DIRECTLY by the event's deltas — never by handing the event object into the host's
+/// view tree, because NSScrollView answers a phase `began` (every trackpad scroll) by
+/// engaging event tracking against `event.window`, and cross-window that tracking
+/// wedges the panel's event delivery and display. A welcome side effect for the probe:
+/// the clip offset moves for a SYNTHESIZED event too (the old event-delivery path
+/// ignored synthetic wheels), so 9c can assert actual scrolling, not mere routing.
+/// Flipped like every real host document (SwiftUI documents are flipped); an
+/// unflipped one starts at the content's end, where a downward scroll is a no-op.
+final class FlippedProbeDocument: NSView {
+    override var isFlipped: Bool { true }
+}
+
+@MainActor
+func makeScrollPane(frame: NSRect) -> NSScrollView {
+    let scroll = NSScrollView(frame: frame)
+    let document = FlippedProbeDocument(frame: NSRect(x: 0, y: 0, width: frame.width, height: frame.height * 6))
+    scroll.documentView = document
+    scroll.hasVerticalScroller = true
+    return scroll
 }
 
 @MainActor
 struct ClampedHost {
     let window: NSWindow
-    /// Lower and upper halves of the host content. Which one a forwarded wheel lands in
-    /// is the only witness available for the panel→host coordinate conversion: the
-    /// forwarded event object still carries its PANEL-local `locationInWindow` (an
-    /// `NSEvent`'s location cannot be rewritten), so the conversion shows up in the
-    /// choice of target view, not in what the target reads off the event. Harmless for
-    /// real scroll handling, which uses the deltas.
-    let lowerSpy: ScrollSpyView
-    let upperSpy: ScrollSpyView
+    /// Lower and upper halves of the host content, each an independent scroller.
+    /// Which one MOVES is the witness for the panel→host coordinate conversion: the
+    /// panel re-aims the wheel through screen space before picking a target, so aiming
+    /// at a point whose panel-local and host-local interpretations fall in different
+    /// halves shows whether the conversion was applied.
+    let lowerScroll: NSScrollView
+    let upperScroll: NSScrollView
     let button: NSButton
 }
 
@@ -331,8 +336,8 @@ func makeClampedHost(title: String, frame: NSRect, unconstrained: Bool, visibleB
 
     let size = window.contentView?.bounds.size ?? frame.size
     let content = NSView(frame: NSRect(origin: .zero, size: size))
-    let lower = ScrollSpyView(name: "lower", frame: NSRect(x: 0, y: 0, width: size.width, height: size.height / 2))
-    let upper = ScrollSpyView(name: "upper", frame: NSRect(x: 0, y: size.height / 2, width: size.width, height: size.height / 2))
+    let lower = makeScrollPane(frame: NSRect(x: 0, y: 0, width: size.width, height: size.height / 2))
+    let upper = makeScrollPane(frame: NSRect(x: 0, y: size.height / 2, width: size.width, height: size.height / 2))
     content.addSubview(lower)
     content.addSubview(upper)
 
@@ -346,7 +351,7 @@ func makeClampedHost(title: String, frame: NSRect, unconstrained: Bool, visibleB
     content.addSubview(button)
 
     window.contentView = content
-    return ClampedHost(window: window, lowerSpy: lower, upperSpy: upper, button: button)
+    return ClampedHost(window: window, lowerScroll: lower, upperScroll: upper, button: button)
 }
 
 /// The pill's own rect inside a panel at `frame`, mirroring `OverlayView.toolbar`: the
@@ -379,9 +384,15 @@ func overlayValue<T>(_ controller: OverlayController, _ label: String, as type: 
 /// writing the flipped panel-local point into the CG event reproduces exactly what a real
 /// wheel delivered to the panel carries. (Verified: the round trip is exact.)
 @MainActor
-func makeScrollEvent(panelLocal: CGPoint) -> NSEvent? {
+func makeScrollEvent(panelLocal: CGPoint, phase: Int64 = 0) -> NSEvent? {
     guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
                            wheel1: -120, wheel2: 0, wheel3: 0) else { return nil }
+    if phase != 0 {
+        // A trackpad stream: phase-tagged, continuous. This is the shape that engaged
+        // NSScrollView's cross-window event tracking under the old forwarding design.
+        cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+        cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+    }
     let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
     cg.location = CGPoint(x: panelLocal.x, y: primaryHeight - panelLocal.y)
     return NSEvent(cgEvent: cg)
@@ -565,11 +576,138 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        // Opt-in interactive reproduction of the vanishing-pill report: drives REAL
+        // window-server events (scroll, hover on the pill, hover off) against a tall
+        // SwiftUI ScrollView host, sampling the panel's visibility throughout. Kept
+        // out of the default run because it needs Accessibility trust to post events
+        // and takes over the pointer.
+        if ProcessInfo.processInfo.environment["ANNOTKIT_PROBE_HOVERSCROLL"] == "1" {
+            runHoverScrollRepro()
+            return
+        }
         print("=== AnnotKitOverlayProbe: EXPANDED-overlay AX diagnostic ===")
         h1 = makeSwiftUIHost(title: "AnnotKit Harness W1")
         // SwiftUI needs a beat to render before its AX tree materializes.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
             self?.phase1Baseline()
+        }
+    }
+
+    // ---- Interactive reproduction: scroll, hover on, hover off ------------
+
+    var reproHost: NSWindow?
+    var reproController: OverlayController?
+
+    func post(_ event: CGEvent?) { event?.post(tap: .cghidEventTap) }
+
+    func moveMouse(to cocoaPoint: CGPoint) {
+        // CGEvent uses top-left global coords; Cocoa is bottom-left.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let cg = CGPoint(x: cocoaPoint.x, y: primaryHeight - cocoaPoint.y)
+        post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: cg, mouseButton: .left))
+    }
+
+    func scroll(lines: Int32) {
+        post(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0))
+    }
+
+    func sample(_ label: String) {
+        guard let host = reproHost else { return }
+        let panel = host.childWindows?.first
+        let mode = reproController?.session.mode
+        print("[\(label)] panel: exists=\(panel != nil) visible=\(panel?.isVisible ?? false) " +
+              "frame=\(panel.map { fmt($0.frame) } ?? "-") parentSet=\(panel?.parent != nil) " +
+              "hostChildren=\(host.childWindows?.count ?? 0) mode=\(mode.map { "\($0)" } ?? "-") " +
+              "hostFrame=\(fmt(host.frame))")
+    }
+
+    func runHoverScrollRepro() {
+        print("=== HOVER/SCROLL REPRO: open menu -> scroll -> hover on pill -> hover off ===")
+        print("AXIsProcessTrusted=\(AXIsProcessTrusted()) (event posting needs trust; if false, events will not land)")
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        // A tall scrollable SwiftUI host, like the report's "scrollable screens".
+        // TALL=1 makes it taller than the display so the CLAMPED placement path runs —
+        // AppKit constrains the top under the menu bar but lets the bottom hang.
+        let tall = ProcessInfo.processInfo.environment["TALL"] == "1"
+        let window = UnconstrainedWindow(
+            contentRect: tall ? NSRect(x: 300, y: -500, width: 560, height: 1800)
+                              : NSRect(x: 300, y: 80, width: 560, height: 760),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false
+        )
+        window.title = "AnnotKit Scroll Host"
+        window.contentView = NSHostingView(rootView: ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(0 ..< 120, id: \.self) { i in
+                    Text("Row \(i) — scrollable content that makes a large AX tree")
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.gray.opacity(0.12))
+                        .accessibilityIdentifier("Repro.Row\(i)")
+                }
+            }.padding(16)
+        })
+        window.makeKeyAndOrderFront(nil)
+        reproHost = window
+
+        let controller = OverlayController(session: AnnotationSession(
+            source: MacElementSource(), sink: NotesFileSink(path: "/dev/null")
+        ))
+        reproController = controller
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+            controller.mount(on: window)
+            controller.start() // "I open the menu"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                sample("after start")
+                guard let panel = window.childWindows?.first else {
+                    print("NO PANEL — cannot continue"); exit(2)
+                }
+                // The pill sits 20pt in from the panel's bottom-right; aim at its center.
+                let pill = CGPoint(x: panel.frame.maxX - 20 - 90, y: panel.frame.minY + 20 + 22)
+                let content = CGPoint(x: window.frame.midX, y: window.frame.midY)
+                // EXIT decides where "off the menu" goes: back onto the catcher
+                // (inside), or OUT of the window — the pill hugs the corner, so a
+                // real pointer plausibly leaves the window entirely.
+                let exitMode = ProcessInfo.processInfo.environment["EXIT"] ?? "inside"
+                let offPill: CGPoint
+                switch exitMode {
+                case "right": offPill = CGPoint(x: window.frame.maxX + 60, y: pill.y)
+                case "below": offPill = CGPoint(x: pill.x, y: max(2, panel.frame.minY - 40))
+                default: offPill = CGPoint(x: pill.x, y: pill.y + 120)
+                }
+                print("exit mode = \(exitMode), offPill = \(offPill), tall = \(ProcessInfo.processInfo.environment["TALL"] ?? "0")")
+
+                var step = 0
+                let script: [(String, () -> Void)] = [
+                    ("move to content", { self.moveMouse(to: content) }),
+                    ("scroll x5", { for _ in 0 ..< 5 { self.scroll(lines: -3) } }),
+                    ("hover ON pill", { self.moveMouse(to: pill) }),
+                    ("hover OFF pill", { self.moveMouse(to: offPill) }),
+                    ("hover ON pill 2", { self.moveMouse(to: pill) }),
+                    ("hover OFF pill 2", { self.moveMouse(to: offPill) }),
+                ]
+                @MainActor func advance() {
+                    guard step < script.count else {
+                        sample("FINAL")
+                        let panelNow = window.childWindows?.first
+                        let gone = panelNow == nil || !(panelNow?.isVisible ?? false)
+                        print(gone ? "\n*** REPRODUCED: the panel is gone ***" : "\n*** NOT reproduced: panel still visible ***")
+                        exit(gone ? 3 : 0)
+                    }
+                    let (name, action) = script[step]
+                    step += 1
+                    action()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        Task { @MainActor in
+                            self.sample(name)
+                            advance()
+                        }
+                    }
+                }
+                advance()
+            }
         }
     }
 
@@ -1881,8 +2019,19 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
                "the idle panel keeps its full 240x104 size (a clipped panel would clip the pill)")
         // Hit-testability, the property the user actually lost: AppKit's own
         // "which window would a click here land on" answer must be OUR panel.
+        //
+        // Ask only about THIS PROCESS's windows. `windowNumber(at:)` answers globally,
+        // so any unrelated app that happens to cover the point — a full-screen
+        // terminal running the probe, most obviously — makes the assertion fail for a
+        // reason that has nothing to do with AnnotKit. Walking our own window list
+        // front-to-back keeps the check about the panel-vs-host layering it is
+        // actually testing, and keeps the probe from flaking on whatever is frontmost.
         let pillCenter = center(of: pillRect(inPanel: panel.frame))
-        let hitNumber = NSWindow.windowNumber(at: pillCenter, belowWindowWithWindowNumber: 0)
+        let ownNumbers = Set(NSApp.windows.map(\.windowNumber))
+        var hitNumber = NSWindow.windowNumber(at: pillCenter, belowWindowWithWindowNumber: 0)
+        while hitNumber != 0, !ownNumbers.contains(hitNumber) {
+            hitNumber = NSWindow.windowNumber(at: pillCenter, belowWindowWithWindowNumber: hitNumber)
+        }
         print("      windowNumber(at: pill center \(String(format: "(%.0f, %.0f)", pillCenter.x, pillCenter.y)))=\(hitNumber) " +
               "panel=\(panel.windowNumber) host=\(host.window.windowNumber)")
         check9(hitNumber == panel.windowNumber, "a click at the pill's center lands on the overlay panel (it is hit-testable)")
@@ -1985,32 +2134,31 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         check9(approxEqualPt(event.locationInWindow, panelLocal),
                "sanity: the synthesized event carries the panel-local location a real wheel would")
 
-        // Baseline: the spies are live and reachable when an event is handed to them
-        // directly, so a zero count later means "swallowed", not "broken fixture".
-        host.upperSpy.scrollWheel(with: event)
-        check9(host.upperSpy.scrollCount == 1, "sanity: the host's spy DOES record a wheel delivered straight to it")
-        let base = (lower: host.lowerSpy.scrollCount, upper: host.upperSpy.scrollCount)
+        // The panel drives the enclosing scroller's CLIP directly — the event object
+        // never enters the host's view tree (a phase `began` would otherwise engage
+        // NSScrollView's event tracking against the PANEL window and wedge it; that
+        // was the vanishing-toolbar bug). Offset movement is therefore observable
+        // even for a synthesized event, which the old event-delivery path ignored.
+        let upperBefore = host.upperScroll.contentView.bounds.origin.y
+        let lowerBefore = host.lowerScroll.contentView.bounds.origin.y
+        panel.scrollWheel(with: event)
+        let upperMoved = abs(host.upperScroll.contentView.bounds.origin.y - upperBefore)
+        let lowerMoved = abs(host.lowerScroll.contentView.bounds.origin.y - lowerBefore)
+        print("      after the wheel: upper clip moved \(String(format: "%.1f", upperMoved))pt, lower \(String(format: "%.1f", lowerMoved))pt")
+        check9(upperMoved > 0, "a wheel over the annotate catcher SCROLLS the host (it is not swallowed by the panel)")
+        check9(lowerMoved == 0, "and it scrolls the pane actually under the pointer (the panel→host conversion is applied)")
 
-        // Deliver the way AppKit does once it has picked the window: hit-test the
-        // panel's content and hand the event to the deepest view.
-        let target = panel.contentView?.hitTest(panelLocal)
-        var chain: [String] = []
-        var responder: NSResponder? = target
-        while let current = responder, chain.count < 8 {
-            chain.append("\(type(of: current))")
-            responder = current.nextResponder
+        // The trackpad case that used to KILL the overlay: a phase-tagged event. It
+        // must scroll like any other — and, mechanically, must never reach the host's
+        // own scrollWheel, which is what the direct-clip design guarantees.
+        if let phased = makeScrollEvent(panelLocal: panelLocal, phase: 1) {
+            let before = host.upperScroll.contentView.bounds.origin.y
+            panel.scrollWheel(with: phased)
+            check9(abs(host.upperScroll.contentView.bounds.origin.y - before) > 0,
+                   "a PHASE-tagged (trackpad) wheel scrolls too — the stream that wedged the old event-forwarding design")
+        } else {
+            check9(false, "a phase-tagged wheel event could be built")
         }
-        print("      panel hit-test -> \(target.map { "\(type(of: $0))" } ?? "nil"); responder chain: \(chain)")
-        check9(target != nil, "sanity: the wheel lands on the overlay's own content view (it is over the catcher)")
-        check9(chain.contains { $0.contains("KeyablePanel") },
-               "sanity: nothing in the overlay's view tree consumes the wheel — it reaches the panel WINDOW")
-
-        target?.scrollWheel(with: event)
-        let lower = host.lowerSpy.scrollCount - base.lower
-        let upper = host.upperSpy.scrollCount - base.upper
-        print("      after the wheel: lower spy +\(lower), upper spy +\(upper)")
-        check9(lower + upper == 1, "a wheel over the annotate catcher reaches the HOST (it is not swallowed by the panel)")
-        check9(upper == 1, "it reaches the view actually under the pointer (the panel→host conversion is applied)")
 
         clampController?.unmount()
         clampHost?.window.orderOut(nil)
