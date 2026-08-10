@@ -79,6 +79,38 @@ final class PanelFrameEnforcementTests: XCTestCase {
                                     "AppKit dragged the panel below the visible frame and it was not put back — the pill is off-screen")
     }
 
+    /// The pill must not move when the menu opens or closes.
+    ///
+    /// It lives in its own permanently mounted panel precisely so that opening the
+    /// menu — which creates a second, host-sized catcher panel — cannot shift it. The
+    /// old design drew the pill inside that resizing panel, so every open/close moved
+    /// the thing the user is aiming at.
+    func testTheToolbarDoesNotMoveWhenTheMenuOpensOrCloses() {
+        let visible = (NSScreen.screens.first?.visibleFrame) ?? NSRect(x: 0, y: 0, width: 1512, height: 900)
+        let host = NSWindow(contentRect: NSRect(x: visible.minX + 120, y: visible.minY + 120,
+                                                width: 700, height: 500),
+                            styleMask: [.titled, .resizable], backing: .buffered, defer: false)
+        host.orderFront(nil)
+        defer { host.orderOut(nil) }
+        let controller = makeController(on: host)
+        defer { controller.unmount() }
+
+        guard let toolbar = host.childWindows?.first else { return XCTFail("no toolbar panel") }
+        let closed = toolbar.frame
+        XCTAssertEqual(host.childWindows?.count, 1, "closed: only the toolbar is mounted")
+
+        controller.start()
+        XCTAssertEqual(toolbar.frame, closed, "the pill moved when the menu opened")
+        XCTAssertEqual(host.childWindows?.count, 2, "open: the catcher joins the toolbar")
+        // The toolbar must be ABOVE the catcher, or the full-frame catcher eats the
+        // click that closes the menu.
+        XCTAssertEqual(host.childWindows?.last, toolbar, "the toolbar must stay on top of the catcher")
+
+        controller.stop()
+        XCTAssertEqual(toolbar.frame, closed, "the pill moved when the menu closed")
+        XCTAssertEqual(host.childWindows?.count, 1, "closed again: the catcher is gone")
+    }
+
     /// The re-assert must be a no-op when nothing fought us: a controller that
     /// re-set the frame unconditionally would post a move notification for every
     /// move it handled, and chase its own tail.

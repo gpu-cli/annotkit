@@ -24,8 +24,20 @@ import SwiftUI
 @MainActor
 public final class OverlayController: NSObject {
     public let session: AnnotationSession
-    private var panel: KeyablePanel?
-    private var hostingView: NSHostingView<OverlayView>?
+    /// The TOOLBAR panel: permanently mounted, fixed size, pinned to the host's
+    /// bottom-right. It holds only the pill, and its frame changes for exactly one
+    /// reason — the host moved, resized, or changed screen. Opening and closing the
+    /// menu does not touch it, which is what makes the pill "always visible, always
+    /// in the same spot" a structural property rather than a coincidence.
+    private var toolbarPanel: KeyablePanel?
+    private var toolbarHosting: NSHostingView<ToolbarOverlayView>?
+    /// The CATCHER panel: exists ONLY while the menu is open. Covers the host so the
+    /// SwiftUI catcher can receive hover and clicks, and carries the highlight, the
+    /// marquee band, the pins and the cards. Ordered BELOW the toolbar panel so the
+    /// pill stays clickable, and torn down on close so nothing of it can outlive the
+    /// open state.
+    private var catcherPanel: KeyablePanel?
+    private var catcherHosting: NSHostingView<OverlayView>?
     private weak var host: NSWindow?
 
     /// AX top-left origin of the overlay PANEL — the surface `OverlayView` draws into,
@@ -45,9 +57,11 @@ public final class OverlayController: NSObject {
     /// or two later without posting `didMove`/`didResize`; comparing against this
     /// lets the post-attach settle poll tell when the frame has stabilized.
     private var lastSyncedHostFrame: NSRect = .null
-    /// The clamped frame the panel is SUPPOSED to occupy, re-asserted after AppKit's
-    /// parent-follow repositioning. `.null` until the first sync.
-    private var desiredPanelFrame: NSRect = .null
+    /// The clamped frames each panel is SUPPOSED to occupy, re-asserted after
+    /// AppKit's parent-follow repositioning. `.null` when there is nothing to hold
+    /// (no sync yet, or the catcher is closed).
+    private var desiredToolbarFrame: NSRect = .null
+    private var desiredCatcherFrame: NSRect = .null
     /// Bumped on every attach/unmount so an in-flight settle poll for a previous
     /// host stops instead of re-syncing against a stale (or detached) window.
     private var settleGeneration = 0
@@ -65,7 +79,7 @@ public final class OverlayController: NSObject {
     }
 
     public func mount() {
-        guard panel == nil else { return }
+        guard toolbarPanel == nil else { return }
         guard let host = hostWindow() else {
             // Embedded tools always get a window eventually; retry when one
             // becomes main rather than dropping the install on the floor.
@@ -86,7 +100,7 @@ public final class OverlayController: NSObject {
     /// (`NSApp.mainWindow ?? keyWindow ?? first visible non-panel`) can otherwise
     /// resolve to a floating panel when several windows are visible.
     public func mount(on host: NSWindow) {
-        guard panel == nil else { return }
+        guard toolbarPanel == nil else { return }
         attach(to: host)
     }
 
@@ -100,12 +114,13 @@ public final class OverlayController: NSObject {
         // Invalidate any in-flight settle poll so it cannot re-sync a detached host.
         settleGeneration += 1
         lastSyncedHostFrame = .null
-        if let panel {
-            host?.removeChildWindow(panel)
-            panel.orderOut(nil)
+        dismissCatcher()
+        if let toolbarPanel {
+            host?.removeChildWindow(toolbarPanel)
+            toolbarPanel.orderOut(nil)
         }
-        panel = nil
-        hostingView = nil
+        toolbarPanel = nil
+        toolbarHosting = nil
         host = nil
     }
 
@@ -122,6 +137,7 @@ public final class OverlayController: NSObject {
         NSApp.activate(ignoringOtherApps: true)
         host?.orderFront(nil)
         session.start()
+        if let host { presentCatcher(on: host) }
         syncFrameAndOrigin()
         installEscapeMonitor()
     }
@@ -132,6 +148,7 @@ public final class OverlayController: NSObject {
         // the session is half-torn-down.
         removeEscapeMonitor()
         session.stop()
+        dismissCatcher()
         syncFrameAndOrigin()
     }
 
@@ -230,7 +247,7 @@ public final class OverlayController: NSObject {
         self.host = host
 
         let panel = KeyablePanel(
-            contentRect: frame(for: .idle, on: host),
+            contentRect: OverlayPlacement.toolbarFrame(hostFrame: host.frame, visibleFrame: visibleFrame(for: host)),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -246,7 +263,7 @@ public final class OverlayController: NSObject {
         // resolves to the overlay's hosting view instead of the control beneath.
         panel.setAccessibilityIdentifier(AXIntrospection.overlayWindowIdentifier)
 
-        let hostingView = NSHostingView(rootView: makeRootView())
+        let hostingView = NSHostingView(rootView: makeToolbarView())
         // Keep the overlay out of the app's own AX tree so the point query sees
         // through it (the SwiftUI root is also `accessibilityHidden`).
         hostingView.setAccessibilityElement(false)
@@ -257,8 +274,10 @@ public final class OverlayController: NSObject {
         // orderFrontRegardless.
         host.addChildWindow(panel, ordered: .above)
 
-        self.panel = panel
-        self.hostingView = hostingView
+        self.toolbarPanel = panel
+        self.toolbarHosting = hostingView
+        // Re-open the catcher if we are attaching INTO an already-open menu.
+        if session.mode == .annotating { presentCatcher(on: host) }
 
         // We have a host now, so drop the retry observer and start tracking
         // geometry.
@@ -279,6 +298,75 @@ public final class OverlayController: NSObject {
         if session.mode == .annotating { installEscapeMonitor() }
     }
 
+    /// Build a transparent, non-activating child panel. Shared so the toolbar and the
+    /// catcher cannot drift in the properties that make an overlay behave —
+    /// transparency, shadowlessness, and the AX identifier the point query skips.
+    private func makePanel(frame: NSRect) -> KeyablePanel {
+        let panel = KeyablePanel(
+            contentRect: frame,
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        panel.isOpaque = false
+        panel.backgroundColor = .clear
+        panel.hasShadow = false
+        panel.ignoresMouseEvents = false
+        // Tag the panel WINDOW so `AXIntrospection` skips it in the point query and
+        // the snapshot: a full-frame panel is a live `AXWindow` the query would hit
+        // first, resolving every click to the overlay instead of the app beneath.
+        panel.setAccessibilityIdentifier(AXIntrospection.overlayWindowIdentifier)
+        return panel
+    }
+
+    /// Open the catcher over the host. Idempotent.
+    private func presentCatcher(on host: NSWindow) {
+        guard catcherPanel == nil else { return }
+        let panel = makePanel(frame: OverlayPlacement.catcherFrame(hostFrame: host.frame,
+                                                                  visibleFrame: visibleFrame(for: host)))
+        let hosting = NSHostingView(rootView: makeRootView())
+        hosting.setAccessibilityElement(false)
+        panel.contentView = hosting
+        host.addChildWindow(panel, ordered: .above)
+        catcherPanel = panel
+        catcherHosting = hosting
+        // The toolbar must stay ABOVE the catcher, or the full-frame catcher swallows
+        // every click meant for the pill — including the one that closes the menu.
+        //
+        // Re-adding an existing child does NOT re-stack it (measured: `childWindows`
+        // still ended with the catcher, and the catcher sat on top). Detaching first
+        // is what actually moves the toolbar to the end of the child order, and
+        // ordering it explicitly above the catcher pins the window-server z-order the
+        // clicks actually follow.
+        if let toolbarPanel {
+            host.removeChildWindow(toolbarPanel)
+            host.addChildWindow(toolbarPanel, ordered: .above)
+            toolbarPanel.order(.above, relativeTo: panel.windowNumber)
+        }
+    }
+
+    /// Close the catcher. Idempotent; leaves the toolbar untouched.
+    private func dismissCatcher() {
+        guard let panel = catcherPanel else { return }
+        host?.removeChildWindow(panel)
+        panel.orderOut(nil)
+        catcherPanel = nil
+        catcherHosting = nil
+    }
+
+    private func visibleFrame(for host: NSWindow) -> NSRect? {
+        (host.screen ?? NSScreen.screens.first)?.visibleFrame
+    }
+
+    private func makeToolbarView() -> ToolbarOverlayView {
+        ToolbarOverlayView(
+            session: session,
+            onToggle: { [weak self] in self?.toggle() },
+            onCopy: { [weak self] in self?.copy() },
+            onExport: { [weak self] in self?.export() }
+        )
+    }
+
     private func makeRootView() -> OverlayView {
         OverlayView(
             session: session,
@@ -290,7 +378,7 @@ public final class OverlayController: NSObject {
             // Make the non-activating child panel key so the composer/pin-editor
             // text fields accept keystrokes (a plain borderless panel that is not
             // key silently drops typing).
-            onFocusRequest: { [weak self] in self?.panel?.makeKey() }
+            onFocusRequest: { [weak self] in self?.catcherPanel?.makeKey() }
         )
     }
 
@@ -355,78 +443,79 @@ public final class OverlayController: NSObject {
     }
 
     @objc private func hostWindowAppeared(_ note: Notification) {
-        guard panel == nil, hostWindow() != nil else { return }
+        guard toolbarPanel == nil, hostWindow() != nil else { return }
         mount()
     }
 
-    /// Resize the child to the current mode's frame and recompute the AX origin
-    /// and surface size, then push both into the SwiftUI view.
+    /// Re-place BOTH panels for the current host geometry and push the catcher's
+    /// coordinates into its SwiftUI root.
+    ///
+    /// The toolbar's frame does not depend on the mode, so opening or closing the
+    /// menu leaves the pill exactly where it was — that is the whole point of giving
+    /// it its own window.
     private func syncFrameAndOrigin() {
-        guard let panel, let host else { return }
-        let panelFrame = frame(for: session.mode, on: host)
-        desiredPanelFrame = panelFrame
-        panel.setFrame(panelFrame, display: true)
-        // AppKit repositions a CHILD window to follow its parent, and it does so AFTER
-        // the `didMove` notification we are reacting to — so the clamped frame we just
-        // applied is silently dragged back to the host's own corner a runloop turn
-        // later. On a host whose bottom hangs below the display that puts the pill
-        // off-screen: the toolbar "disappears", exactly as reported, with placement
-        // that computed the right answer and a panel that no longer sits there.
-        //
-        // Measured, not assumed — with forensics on:
-        //   computed=(1272, 60, 240, 104) afterSet=(1272, 60, 240, 104)
-        //   next-turn panel=(1272, -200, 240, 104)  clobbered=true
-        //
-        // Re-assert once AppKit has finished. `enforcePanelFrame()` is a no-op when it
-        // left us alone, so the common case costs one runloop hop and nothing else.
-        DispatchQueue.main.async { [weak self] in self?.enforcePanelFrame() }
-        // Primary display = the origin/menu-bar screen, NOT NSScreen.main (the
-        // active screen), which was the single-display bug.
-        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
-        // Derived from the PANEL's frame, never the host's. `OverlayView`'s contract is
-        // that these two describe the SURFACE it draws into — the catcher ADDS
-        // `axOrigin` to turn a panel-local click into an AX screen point, the highlight
-        // and composer SUBTRACT it — so once placement is clamped to the visible
-        // region, a host-derived origin would offset every click, highlight and card by
-        // exactly the clipped amount.
-        //
-        // Clamping the BOTTOM (the reported bug) leaves `axOrigin` alone, since it
-        // hangs off the frame's TOP edge, and only shrinks `surfaceSize` — which is
-        // itself the right answer, because the composer clamp should keep cards inside
-        // the VISIBLE region rather than inside a window that runs off the display.
-        // Clamping the TOP (a host tucked under the menu bar) genuinely does move the
-        // origin, and that is the case a host-derived origin breaks silently.
-        let newAXOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: panelFrame, primaryHeight: primaryHeight)
+        guard let host else { return }
+        let visible = visibleFrame(for: host)
+
+        let toolbarFrame = OverlayPlacement.toolbarFrame(hostFrame: host.frame, visibleFrame: visible)
+        desiredToolbarFrame = toolbarFrame
+        toolbarPanel?.setFrame(toolbarFrame, display: true)
+
+        let catcherFrame = OverlayPlacement.catcherFrame(hostFrame: host.frame, visibleFrame: visible)
+        desiredCatcherFrame = catcherPanel == nil ? .null : catcherFrame
+        catcherPanel?.setFrame(catcherFrame, display: true)
+
         // Always record the host frame, even on the early-out below: the settle poll
         // decides "has the host stopped growing" by comparing against this, so leaving
         // it stale would keep the poll re-syncing a window that has already settled.
         lastSyncedHostFrame = host.frame
-        // Push a new SwiftUI root view ONLY when something it renders from actually
-        // changed. `syncFrameAndOrigin()` runs on every move/resize/screen-parameter
-        // notification, and a host that emits a burst of them (a relayout storm, a live
-        // resize drag) would otherwise replace the root view on each one — tearing down
-        // and rebuilding the pill mid-hover, which reads as the toolbar flickering or
-        // vanishing. Cheap guard, and it makes a redundant notification free.
-        guard newAXOrigin != axOrigin || panelFrame.size != surfaceSize else { return }
+
+        // AppKit repositions a CHILD window to follow its parent, and does so AFTER
+        // the `didMove` notification we are reacting to — so the clamped frames we
+        // just applied get dragged back a runloop turn later. Measured, with
+        // forensics on: computed=(1272,60,240,104) then next-turn=(1272,-200,...).
+        // Re-assert once AppKit has finished; it is a no-op when nothing fought us.
+        DispatchQueue.main.async { [weak self] in self?.enforcePanelFrames() }
+
+        // Primary display = the origin/menu-bar screen, NOT NSScreen.main (the active
+        // screen), which was the single-display bug.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        // Derived from the CATCHER's frame, never the host's: `OverlayView`'s contract
+        // is that these describe the surface it draws into — the catcher ADDS
+        // `axOrigin` to turn a panel-local click into an AX screen point, the
+        // highlight and composer SUBTRACT it — so a host-derived origin would offset
+        // every click, highlight and card by exactly the clipped amount.
+        let newAXOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: catcherFrame, primaryHeight: primaryHeight)
+
+        // Push a new SwiftUI root ONLY when something it renders from changed. A host
+        // emitting a burst of move/resize notifications would otherwise rebuild the
+        // catcher on each one; the pill is no longer in that view, so this can no
+        // longer flicker the toolbar, but the churn is still wasted work.
+        guard newAXOrigin != axOrigin || catcherFrame.size != surfaceSize else { return }
         axOrigin = newAXOrigin
-        surfaceSize = panelFrame.size
+        surfaceSize = catcherFrame.size
         rootViewPushes += 1
-        hostingView?.rootView = makeRootView()
+        catcherHosting?.rootView = makeRootView()
     }
 
-    /// Put the panel back where placement said it belongs, if AppKit moved it.
+    /// Put both panels back where placement said they belong, if AppKit moved them.
     ///
-    /// Child windows are repositioned by AppKit to preserve their offset from the
-    /// parent, which undoes the visible-frame clamp on every host move. Comparing
-    /// before setting keeps this free when nothing fought us, and keeps it from
-    /// looping: a `setFrame` to the frame the window already has posts no move.
-    private func enforcePanelFrame() {
-        guard let panel, desiredPanelFrame != .null, panel.frame != desiredPanelFrame else { return }
+    /// Child windows are repositioned to preserve their offset from the parent, which
+    /// undoes the visible-frame clamp on every host move. Comparing before setting
+    /// keeps this free when nothing fought us, and keeps it from looping: a `setFrame`
+    /// to the frame a window already has posts no move.
+    private func enforcePanelFrames() {
+        enforce(toolbarPanel, desiredToolbarFrame, "toolbar")
+        enforce(catcherPanel, desiredCatcherFrame, "catcher")
+    }
+
+    private func enforce(_ panel: KeyablePanel?, _ desired: NSRect, _ label: String) {
+        guard let panel, desired != .null, panel.frame != desired else { return }
         if KeyablePanel.forensics {
             FileHandle.standardError.write(Data(
-                "[sync] re-asserting clamped frame: \(panel.frame) -> \(desiredPanelFrame)\n".utf8))
+                "[sync] re-asserting \(label) frame: \(panel.frame) -> \(desired)\n".utf8))
         }
-        panel.setFrame(desiredPanelFrame, display: true)
+        panel.setFrame(desired, display: true)
     }
 
     private func frame(for mode: AnnotationSession.Mode, on host: NSWindow) -> NSRect {
@@ -473,6 +562,28 @@ enum OverlayPlacement {
         guard let visibleFrame else { return hostFrame }
         let region = hostFrame.intersection(visibleFrame)
         return region.isEmpty ? hostFrame : region
+    }
+
+    /// The TOOLBAR panel's frame: a fixed-size corner, pinned to the visible region's
+    /// bottom-right. Identical in both states — the menu opening must never move the
+    /// pill — and dependent only on where the host is, never on what mode it is in.
+    static func toolbarFrame(hostFrame: CGRect, visibleFrame: CGRect?) -> CGRect {
+        let region = region(hostFrame: hostFrame, visibleFrame: visibleFrame)
+        // Anchored at FULL size rather than intersected down to the region: shrinking
+        // this panel would clip the pill it exists to carry. Pinning its BOTTOM edge
+        // inside the region is what keeps the pill reachable; only the panel's empty
+        // upper part may spill past a region shorter than itself.
+        return CGRect(
+            x: region.maxX - idleSize.width,
+            y: region.minY,
+            width: idleSize.width,
+            height: idleSize.height
+        )
+    }
+
+    /// The CATCHER panel's frame: the host, narrowed to what is on screen.
+    static func catcherFrame(hostFrame: CGRect, visibleFrame: CGRect?) -> CGRect {
+        region(hostFrame: hostFrame, visibleFrame: visibleFrame)
     }
 
     static func panelFrame(for mode: AnnotationSession.Mode, hostFrame: CGRect, visibleFrame: CGRect?) -> CGRect {

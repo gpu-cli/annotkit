@@ -86,7 +86,6 @@ struct OverlayView: View {
                 editCard(note: note, anchor: anchor)
             }
 
-            toolbar
         }
         .ignoresSafeArea()
         .accessibilityHidden(true)
@@ -577,9 +576,29 @@ struct OverlayView: View {
         )
     }
 
-    /// Pins the compact pill to the host window's bottom-right corner (margin 20,
-    /// matching the idle child-window frame the controller sizes).
-    private var toolbar: some View {
+}
+
+/// The toolbar pill, in a window of its OWN.
+///
+/// The pill used to be drawn inside the catcher's ZStack, which meant its position
+/// was a function of the catcher panel's frame — and that frame changes size on
+/// every open/close, gets narrowed to the visible screen, and is dragged around by
+/// AppKit whenever the host window moves. Three ways for a control that must never
+/// move to move, and a fourth failure on top: anything that stalled the catcher
+/// (a wedged scroll, a rebuilt SwiftUI root) took the pill down with it.
+///
+/// Giving it a separate, permanently mounted panel makes the guarantee structural
+/// rather than incidental: the pill is always present, always at the host's
+/// bottom-right corner, and the catcher's geometry and lifetime cannot touch it.
+/// The menu is now genuinely just OPEN or CLOSED — the toolbar itself never moves
+/// between the two.
+struct ToolbarOverlayView: View {
+    @ObservedObject var session: AnnotationSession
+    let onToggle: () -> Void
+    let onCopy: () -> Void
+    let onExport: () -> Void
+
+    var body: some View {
         VStack {
             Spacer()
             HStack {
@@ -593,6 +612,8 @@ struct OverlayView: View {
                 .padding(20)
             }
         }
+        .ignoresSafeArea()
+        .accessibilityHidden(true)
     }
 }
 
@@ -741,7 +762,7 @@ private struct AnnotationCard<Footer: View>: View {
 /// The pill itself is rendered unconditionally and is NEVER gated on an entrance
 /// flag, so it stays visible across idle<->annotate; only its contents swap as
 /// annotate mode toggles.
-private struct ToolbarView: View {
+struct ToolbarView: View {
     @ObservedObject var session: AnnotationSession
     let onToggle: () -> Void
     let onCopy: () -> Void

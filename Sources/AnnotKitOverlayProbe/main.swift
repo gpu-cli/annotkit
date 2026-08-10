@@ -466,6 +466,26 @@ func makeSwiftUIHost(title: String) -> NSWindow {
 /// Depth-first search for the AX frame (AX top-left screen coords) of the element
 /// with `id` inside a public snapshot. Used to derive each control's true center
 /// as the AX point to fire the queries at.
+/// The overlay now mounts TWO child panels: a permanently present TOOLBAR panel that
+/// carries the pill (fixed size, pinned to the host's bottom-right, unchanged by the
+/// menu opening) and a CATCHER panel that exists only while the menu is open and
+/// covers the host. `childWindows.first` is therefore no longer "the overlay" — these
+/// pick the one each assertion actually means.
+@MainActor
+func overlayCatcher(of host: NSWindow) -> NSWindow? {
+    // The catcher is the host-sized one; the toolbar is the small fixed corner.
+    host.childWindows?.max { lhs, rhs in
+        (lhs.frame.width * lhs.frame.height) < (rhs.frame.width * rhs.frame.height)
+    }
+}
+
+@MainActor
+func overlayToolbar(of host: NSWindow) -> NSWindow? {
+    host.childWindows?.min { lhs, rhs in
+        (lhs.frame.width * lhs.frame.height) < (rhs.frame.width * rhs.frame.height)
+    }
+}
+
 @MainActor
 func frame(ofID id: String, in windows: [WindowSnapshot]) -> CGRect? {
     func walk(_ element: Element) -> CGRect? {
@@ -942,7 +962,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         check1(session.mode == .idle, "controller.stop() -> idle mode")
         check1(session.pending.count == 2, "retained notes survive leaving annotate mode (pending still 2)")
 
-        guard let panel = h2.window.childWindows?.first else {
+        guard let panel = overlayCatcher(of: h2.window) else {
             check1(false, "child overlay panel STILL PRESENT after stop() (pill persists)")
             verifyPinModel(session: session)
             return
@@ -1582,7 +1602,13 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
             AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
             let rawWindows = AX.windows(app)
-            let overlayPanel = rawWindows.first { AX.string($0, kAXIdentifierAttribute) == overlayWindowIdentifier }
+            // BOTH overlay panels carry the identifier — correctly, since the point
+            // query has to skip the toolbar as well as the catcher — so pick the one
+            // that actually spans the host: the catcher. Taking `.first` here grabbed
+            // the small fixed toolbar and made the span check below fail.
+            let overlayPanel = rawWindows
+                .filter { AX.string($0, kAXIdentifierAttribute) == overlayWindowIdentifier }
+                .max { AX.frame($0).width * AX.frame($0).height < AX.frame($1).width * AX.frame($1).height }
             check7(overlayPanel != nil, "the overlay panel IS a live AX window during the drag (a real shadowing risk)")
             if let overlayPanel {
                 let panelFrame = AX.frame(overlayPanel)
@@ -1999,7 +2025,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     // ---- 9a: the IDLE pill stays on the visible screen ----------------------
     func phase9aIdle() {
         print("\n  9a — IDLE pill on a host whose bottom is below the visible area:")
-        guard let host = clampHost, let panel = host.window.childWindows?.first else {
+        guard let host = clampHost, let panel = overlayCatcher(of: host.window) else {
             check9(false, "the overlay mounted a child panel on the clamped host")
             return phase9dTucked()
         }
@@ -2046,7 +2072,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     func phase9bAnnotate() {
         print("\n  9b — ANNOTATE pill + hit-test on the same clamped host:")
         guard let host = clampHost, let controller = clampController,
-              let panel = host.window.childWindows?.first else {
+              let panel = overlayCatcher(of: host.window) else {
             check9(false, "the overlay is still mounted in annotate mode")
             return phase9dTucked()
         }
@@ -2107,7 +2133,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     // the fold can be annotated — on precisely the screens the report is about.
     func phase9cScroll() {
         print("\n  9c — scroll WHILE ANNOTATING: does a wheel over the catcher reach the host?")
-        guard let host = clampHost, let panel = host.window.childWindows?.first else {
+        guard let host = clampHost, let panel = overlayCatcher(of: host.window) else {
             check9(false, "the overlay panel is present for the scroll measurement")
             return phase9dTucked()
         }
@@ -2197,7 +2223,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
 
     func phase9dChecks() {
         guard let host = clampHost, let controller = clampController,
-              let panel = host.window.childWindows?.first else {
+              let panel = overlayCatcher(of: host.window) else {
             check9(false, "the overlay mounted on the menu-bar-tucked host")
             return finish()
         }
@@ -2243,7 +2269,52 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
 
         clampController?.unmount()
         clampHost?.window.orderOut(nil)
-        finish()
+        phase10Escape()
+    }
+
+    // ---- Phase 10: Escape closes the menu -----------------------------------
+    // The one claim no unit test can make. A local key monitor is invoked by
+    // NSApplication's event DISPATCH, so it needs a real app with a running
+    // runloop — `NSApp.postEvent` puts a real key-down into that queue, which is
+    // as close to a keypress as a process can get to itself.
+    var passEscape = true
+    func check10(_ c: Bool, _ m: String) {
+        print("      " + (c ? "ok   " : "FAIL ") + m)
+        passEscape = passEscape && c
+    }
+
+    func escapeEvent() -> NSEvent? {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
+                         context: nil, characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}",
+                         isARepeat: false, keyCode: 53)
+    }
+
+    func phase10Escape() {
+        print("\n--- Phase 10: Escape closes the menu ---")
+        let host = makeHostWindow(title: "AnnotKit Escape W1")
+        let controller = OverlayController(session: AnnotationSession(
+            source: MacElementSource(), sink: NotesFileSink(path: "/dev/null")
+        ))
+        controller.mount(on: host.window)
+        controller.start()
+        check10(controller.session.mode == .annotating, "sanity: the menu is OPEN before the keypress")
+
+        guard let event = escapeEvent() else {
+            check10(false, "a real Escape key-down could be built")
+            controller.unmount(); host.window.orderOut(nil); return finish()
+        }
+        NSApp.postEvent(event, atStart: true)
+        // Dispatch happens on the runloop, not inline: let it turn.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            let mode = controller.session.mode
+            print("      after posting Escape: mode=\(mode)")
+            self.check10(mode == .idle, "Escape closed the menu (annotate mode exited)")
+            controller.unmount()
+            host.window.orderOut(nil)
+            self.finish()
+        }
     }
 
     func finish() {
@@ -2257,8 +2328,9 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 7 (marquee frame selection: drawn rect -> element): \(passMarquee ? "PASS" : "FAIL")")
         print("  Phase 8 (selection navigation: round trips, history, component, frame anchor): \(passNav ? "PASS" : "FAIL")")
         print("  Phase 9 (pill + hit-test + scroll on a host hanging off the visible screen): \(passClamp ? "PASS" : "FAIL")")
+        print("  Phase 10 (Escape closes the menu): \(passEscape ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp && passEscape ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {
