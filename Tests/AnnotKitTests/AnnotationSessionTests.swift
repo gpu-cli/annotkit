@@ -1058,4 +1058,232 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertTrue(contents.contains("## [id2]") && contents.contains("two"))
         XCTAssertEqual(contents.components(separatedBy: "# Agentation Notes").count, 2, "still a single header")
     }
+
+    // MARK: - Recallable marks: the note remembers the rect it was made on
+
+    /// An ELEMENT note has no drawn rect at all, and its anchor rect is the
+    /// element's own frame in window-local coordinates. A POINT could not say the
+    /// second half of that, which is the entire reason the field changed shape.
+    func testAnElementNoteStoresTheElementsRectMinusTheAXOrigin() {
+        let element = Element(
+            id: "SaveButton", role: "AXButton", type: "AXButton", label: "Save", value: "",
+            frame: CGRect(x: 340, y: 220, width: 120, height: 32), isVisible: true, isActionable: true,
+            path: [PathComponent(role: "AXButton", label: "Save", identifier: "SaveButton", indexAmongRole: 0)]
+        )
+        let session = AnnotationSession(source: StubSource(element), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(atAXPoint: .zero)
+        let note = session.addNote(comment: "element", axOrigin: CGPoint(x: 40, y: 20))
+        XCTAssertEqual(note?.anchorRect, CGRect(x: 300, y: 200, width: 120, height: 32),
+                       "the element's AX frame, shifted into the surface's own space")
+        XCTAssertNil(note?.drawnRect, "nothing was swept, so there is no drawn rect to recall")
+    }
+
+    /// An un-navigated FRAMED note: both rects are the swept rectangle. Their
+    /// agreement is what `RecalledMark` reads as "this is an area note", so it is a
+    /// property of the capture rather than a coincidence of the renderer.
+    func testAFramedNoteStoresTheSweptRectAsBothItsRects() {
+        let session = AnnotationSession(source: MarqueeSource(ladder: [makeLadderElement("Card")]),
+                                        sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(inAXRect: CGRect(x: 110, y: 120, width: 40, height: 20))
+        let note = session.addNote(comment: "framed", axOrigin: CGPoint(x: 10, y: 20))
+        XCTAssertEqual(note?.drawnRect, CGRect(x: 100, y: 100, width: 40, height: 20))
+        XCTAssertEqual(note?.anchorRect, note?.drawnRect,
+                       "a frame selection anchors to what it drew, so the two rects agree")
+    }
+
+    /// The case that makes deriving impossible. Parent/Child moves the binding onto
+    /// the element while the swept rect stays what it was, so `anchor + regionRect
+    /// .size` — the only derivation available from the old model — would produce a
+    /// right-sized box at the element's origin: plausible, and wrong.
+    func testANavigatedFramedNoteStoresTheElementAndTheSweptRectSeparately() {
+        let card = makeLadderElement("Card", frame: CGRect(x: 0, y: 0, width: 500, height: 400))
+        let section = makeLadderElement("Section", frame: CGRect(x: 0, y: 0, width: 900, height: 800))
+        let session = AnnotationSession(source: MarqueeSource(ladder: [card, section]),
+                                        sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
+        session.select(inAXRect: drawn)
+        XCTAssertEqual(session.selectParent()?.id, "Section", "sanity: there was a rung to navigate to")
+        let note = session.addNote(comment: "navigated")
+        XCTAssertEqual(note?.anchorRect, section.frame, "the note is filed against the element it now binds to")
+        XCTAssertEqual(note?.drawnRect, drawn, "and it still remembers the rectangle the user swept")
+        XCTAssertNotEqual(note?.anchorRect, note?.drawnRect,
+                          "the two disagree here — which is exactly what a recalled mark has to show")
+    }
+
+    // MARK: - Recallable marks: attention
+
+    /// The hover→note mapping, driven the way the catcher drives it. Also the guard
+    /// against a needless render: `@Published` emits on every assignment, so a
+    /// pointer sliding across empty space must not keep re-publishing nil.
+    func testAttendingAPinPublishesTheNoteAndOnlyOnChange() {
+        let session = makeSession(path: "/dev/null")
+        session.start()
+        capture(session, comment: "one")
+        guard let pin = session.pending.first?.anchorRect?.origin else {
+            return XCTFail("the captured note must carry a drawable pin")
+        }
+        var emissions = 0
+        let token = session.objectWillChange.sink { _ in emissions += 1 }
+        defer { token.cancel() }
+
+        session.attendPin(atWindowPoint: pin)
+        XCTAssertEqual(session.attendedNoteID, session.pending.first?.id)
+        XCTAssertEqual(session.attendedNote?.comment, "one")
+        let afterFirst = emissions
+        session.attendPin(atWindowPoint: pin)
+        session.attendPin(atWindowPoint: pin)
+        XCTAssertEqual(emissions, afterFirst, "re-answering the same question must not re-render the overlay")
+
+        session.attendPin(atWindowPoint: CGPoint(x: pin.x + 500, y: pin.y + 500))
+        XCTAssertNil(session.attendedNoteID, "moving off every pin drops the mark")
+    }
+
+    /// Attention is the union of two questions asked two ways, and the OPEN CARD
+    /// wins the tie: it names its note in words, so a mark for a different note
+    /// would put two answers on screen at once. The hover it overrules is also not
+    /// necessarily current — in point mode the pin is a live button above the
+    /// catcher, so a pointer that lands on a pin without crossing the surface first
+    /// leaves the catcher's last answer pointing somewhere else entirely.
+    func testAnOpenEditCardAttendsItsOwnNoteAndOutranksAStaleHover() {
+        let session = makeSession(path: "/dev/null")
+        session.start()
+        capture(session, comment: "one")
+        capture(session, comment: "two")
+        let first = session.pending[0]
+        let second = session.pending[1]
+
+        // Both notes sit on the same stub element, so their pins coincide and the
+        // geometric rule resolves to the one drawn on top — note two.
+        session.attendPin(atWindowPoint: second.anchorRect?.origin ?? .zero)
+        XCTAssertEqual(session.attendedNoteID, second.id, "with no card open, hover decides")
+
+        session.beginEditing(id: first.id)
+        XCTAssertEqual(session.attendedNoteID, first.id,
+                       "the open card's note is the one marked — the canvas must not contradict the card")
+        session.endEditing()
+        XCTAssertEqual(session.attendedNoteID, second.id, "closing the card hands the answer back to the pointer")
+    }
+
+    /// No separate bookkeeping: the mark is looked up in `pending` on every read, so
+    /// a note that is gone simply has none.
+    func testAMarkCannotBeRecalledForADeletedOrClearedNote() {
+        let session = makeSession(path: "/dev/null")
+        session.start()
+        capture(session, comment: "one")
+        let note = session.pending[0]
+        session.attendPin(atWindowPoint: note.anchorRect?.origin ?? .zero)
+        XCTAssertNotNil(session.attendedNote)
+
+        session.deleteNote(id: note.id)
+        XCTAssertNil(session.attendedNote, "a deleted note has no mark, with nothing to remember to clean up")
+
+        capture(session, comment: "two")
+        session.attendPin(atWindowPoint: session.pending[0].anchorRect?.origin ?? .zero)
+        XCTAssertNotNil(session.attendedNote)
+        session.clear()
+        XCTAssertNil(session.attendedNote, "and neither does a cleared set")
+    }
+
+    /// The user is DRAWING, not reviewing: a mark from a note the pointer swept past
+    /// on its way would sit under the band showing a second, irrelevant rectangle.
+    func testStartingAFrameDragAndLeavingTheModeBothDropTheMark() {
+        let session = makeSession(path: "/dev/null")
+        session.start()
+        capture(session, comment: "one")
+        let pin = session.pending[0].anchorRect?.origin ?? .zero
+
+        session.attendPin(atWindowPoint: pin)
+        session.beginFrameDrag()
+        XCTAssertNil(session.attendedNoteID, "a drag in flight has no room for a recalled mark")
+
+        session.endFrameDrag()
+        session.attendPin(atWindowPoint: pin)
+        XCTAssertNotNil(session.attendedNoteID, "and it comes straight back on the next hover")
+        session.stop()
+        XCTAssertNil(session.attendedNoteID, "closing the menu removes the pins, so nothing can be attended")
+
+        // A latched attention would otherwise recall a mark on the first frame of the
+        // next session, with the pointer nowhere near the pin.
+        session.start()
+        XCTAssertNil(session.attendedNoteID)
+    }
+
+    // MARK: - Recallable marks: the two tools stop fighting
+
+    /// The report was "if I manually select an element, I cannot also use the frame
+    /// tool". None of it is in the model, and this pins that so a future fix aimed at
+    /// the wrong layer is caught: switching the tool drops neither the retained
+    /// notes, nor the live selection, nor its drawn frame.
+    func testSwitchingToolsKeepsThePendingNotesAndTheLiveSelection() {
+        let source = MarqueeSource(ladder: [makeLadderElement("Card")], hit: makeElement())
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+
+        session.select(atAXPoint: .zero)
+        XCTAssertNotNil(session.addNote(comment: "an element note"))
+
+        // Frame mode, on top of a session that already has an element note in it.
+        session.setTool(.frame)
+        let drawn = CGRect(x: 110, y: 120, width: 40, height: 20)
+        XCTAssertEqual(session.select(inAXRect: drawn)?.id, "Card",
+                       "a frame drag resolves after an element note was captured — the tools are not exclusive")
+
+        // Switching WHILE a frame selection is open keeps everything about it.
+        session.setTool(.point)
+        XCTAssertEqual(session.selected?.id, "Card", "the live selection survives the switch")
+        XCTAssertEqual(session.selectionAnchorFrame, drawn, "and so does its frame anchor")
+        XCTAssertEqual(session.pending.count, 1, "and the captured note")
+
+        let area = session.addNote(comment: "an area note")
+        XCTAssertEqual(session.pending.count, 2, "an element note and an area note coexist in one session")
+        XCTAssertNil(session.pending[0].drawnRect, "the element note recalls an element")
+        XCTAssertEqual(area?.drawnRect, area?.anchorRect, "the area note recalls the box that was drawn")
+    }
+
+    // MARK: - Recallable marks: a mark lands on the content it was made on
+
+    /// The translation the overlay panel applies to a host scroller, applied to the
+    /// notes over it. Chrome outside the scroller must not move at all — a note that
+    /// did not scroll is not "close enough", it is a mark pointing at the wrong
+    /// thing, which is the one outcome worse than showing nothing.
+    func testScrollTranslatesOnlyTheNotesInsideTheScrollersViewport() {
+        // One AREA note over the scroller and one ELEMENT note far below it, placed
+        // by giving the source the geometry rather than by writing to the notes: the
+        // rects under test have to be the ones a real capture would produce.
+        let source = MarqueeSource(ladder: [makeLadderElement("Card", frame: CGRect(x: 90, y: 290, width: 80, height: 60))])
+        let session = AnnotationSession(source: source, sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        session.select(inAXRect: CGRect(x: 90, y: 290, width: 80, height: 60))
+        session.addNote(comment: "inside")
+        source.ladder = []
+        source.hit = makeLadderElement("Chrome", frame: CGRect(x: 100, y: 900, width: 60, height: 40))
+        session.select(atAXPoint: .zero)
+        session.addNote(comment: "outside")
+        XCTAssertEqual(session.pending.count, 2, "sanity: both notes were captured")
+
+        session.translateNotes(by: CGSize(width: 0, height: -120),
+                               within: CGRect(x: 0, y: 100, width: 600, height: 400))
+
+        XCTAssertEqual(session.pending[0].anchorRect, CGRect(x: 90, y: 170, width: 80, height: 60),
+                       "the note over the scroller travels with the content")
+        XCTAssertEqual(session.pending[0].drawnRect, CGRect(x: 90, y: 170, width: 80, height: 60),
+                       "its drawn rect travels with it — they belong to ONE note")
+        XCTAssertEqual(session.pending[1].anchorRect, CGRect(x: 100, y: 900, width: 60, height: 40),
+                       "a note outside the scroller is chrome, and chrome does not scroll")
+    }
+
+    /// A scroll clamped at the end of the document produces no translation, and must
+    /// therefore produce no movement — not a rounding-sized drift repeated on every
+    /// wheel event.
+    func testAZeroTranslationMovesNothing() {
+        let session = makeSession(path: "/dev/null")
+        session.start()
+        capture(session, comment: "one")
+        let before = session.pending[0].anchorRect
+        session.translateNotes(by: .zero, within: CGRect(x: -1000, y: -1000, width: 5000, height: 5000))
+        XCTAssertEqual(session.pending[0].anchorRect, before)
+    }
 }

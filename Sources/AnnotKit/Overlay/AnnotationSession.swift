@@ -152,6 +152,49 @@ public final class AnnotationSession: ObservableObject {
     /// closes the other — so exactly one card is ever on screen.
     @Published public private(set) var editingNoteID: String?
 
+    /// The id of the note whose PIN the pointer is currently resting on, resolved
+    /// geometrically by ``PinAttentionRule`` from the catcher's hover — never by the
+    /// pin itself, which is inert in frame mode and so receives no hover there.
+    ///
+    /// It lives on the SESSION rather than as `@State` in a view because
+    /// ``AnnotationPins`` and ``AnnotationMarks`` are sibling views: threading a
+    /// binding between them to avoid one published property is the more expensive
+    /// option. The emission rate is not the hover storm `8d3091b` fixed — this
+    /// changes only when the pointer enters or leaves a 20pt circle, and
+    /// ``attendPin(atWindowPoint:)`` refuses to re-publish an unchanged answer.
+    @Published public private(set) var hoveredNoteID: String?
+
+    /// The note being ATTENDED TO — open in the edit card, or hovered. Both are the
+    /// same question ("what was this note about?") asked two ways, and clicking pin
+    /// 3 to reread its comment deserves its mark on screen every bit as much as
+    /// hovering it does; a card that names a note while the canvas shows nothing is
+    /// the gap this whole feature exists to close.
+    ///
+    /// THE OPEN CARD WINS the tie, and it is worth being precise about why, because
+    /// the opposite order is the intuitive one (hover is the more recent gesture).
+    /// An open card NAMES its note on screen, in words, so a mark belonging to a
+    /// different note puts two answers up at once — the exact thing the highlight
+    /// ladder is built to avoid. And the hover it would be overruling is not always
+    /// current: in point mode the pin is a live button ABOVE the catcher, so a
+    /// pointer that arrives on a pin without crossing the surface first (a fast
+    /// flick, re-entering the window, a Space switch) leaves the catcher's last
+    /// answer pointing at whichever pin it saw before. Observed exactly that way —
+    /// the card said note 1 while the canvas drew note 3.
+    ///
+    /// Derived rather than stored, so there is no third piece of state to keep in
+    /// step; both of its inputs are `@Published`, so every change is delivered to
+    /// the UI by their emissions.
+    public var attendedNoteID: String? { editingNoteID ?? hoveredNoteID }
+
+    /// The attended note itself, or nil when nothing is attended or the attended
+    /// note has since been deleted or cleared. Looking it up in `pending` on every
+    /// read is what makes "a mark can never be recalled for a note that is gone" a
+    /// property of the data rather than a cleanup step someone has to remember.
+    public var attendedNote: AnnotationNote? {
+        guard let id = attendedNoteID else { return nil }
+        return pending.first { $0.id == id }
+    }
+
     /// True while the catcher is drawing a frame. UI-only state, and deliberately
     /// only the FLAG: the band's rect stays `@State` in the view because it is
     /// WINDOW-LOCAL while everything else here is AX screen space, and a rect that
@@ -233,6 +276,10 @@ public final class AnnotationSession: ObservableObject {
         selected = nil
         // Leaving annotate mode hides the pins, so any open pin editor must go too.
         editingNoteID = nil
+        // ...and with the pins gone there is no pin to be resting on. Without this
+        // the attention would latch across a close/reopen and the first frame of the
+        // next session would recall a mark the pointer is nowhere near.
+        clearPinAttention()
         // A drag in flight when the mode ends never receives its `onEnded`: the
         // catcher is gated on annotate mode, so it is REMOVED from the view tree and
         // SwiftUI drops the gesture silently. Without this, `isDrawingFrame` latches
@@ -263,14 +310,48 @@ public final class AnnotationSession: ObservableObject {
 
     /// Drop the hover highlight — the cursor left the annotatable surface, so
     /// nothing is hovered. `selected` (an open composer) is deliberately kept.
+    ///
+    /// It deliberately leaves ``hoveredNoteID`` alone. The catcher's hover also ends
+    /// when the pointer moves ONTO a pin (a live button in point mode sitting above
+    /// it), which is the one moment recall must NOT be cancelled — and no rule is
+    /// needed to tell the two apart, because a pointer leaving over empty space has
+    /// already been told there is no pin there by its own last motion event.
     public func clearHover() {
         hovered = nil
     }
 
+    /// Re-evaluate which note's pin the pointer is on, from a WINDOW-LOCAL point —
+    /// the space ``AnnotationNote/anchorRect`` is stored in, so no transform is
+    /// involved. Driven by the catcher's `onContinuousHover`, in BOTH tools.
+    ///
+    /// Unthrottled on purpose (see ``PinAttentionRule``): this is arithmetic over
+    /// `pending`, not a cross-process AX query. The equality guard is not the same
+    /// concern — `@Published` emits on every assignment, equal or not, so writing
+    /// the same answer on each of ~60 motion events per second would re-render the
+    /// overlay for no reason.
+    public func attendPin(atWindowPoint point: CGPoint) {
+        guard mode == .annotating else { return }
+        let id = PinAttentionRule.attendedNote(atWindowPoint: point, in: pending)
+        if id != hoveredNoteID { hoveredNoteID = id }
+    }
+
+    /// Stop attending any pin. Called where the pointer's answer stops being
+    /// meaningful rather than merely unavailable — starting a frame drag, or leaving
+    /// annotate mode.
+    public func clearPinAttention() {
+        if hoveredNoteID != nil { hoveredNoteID = nil }
+    }
+
     /// The catcher's band just became visible (the press cleared the travel
     /// threshold), so a frame drag is in flight.
+    ///
+    /// Drops any recalled mark: the user is now DRAWING, not reviewing, and a mark
+    /// from a note the pointer happened to sweep past on its way would sit under the
+    /// band showing a second, irrelevant rectangle. It re-establishes itself from
+    /// the next hover after the release, at no cost.
     public func beginFrameDrag() {
         isDrawingFrame = true
+        clearPinAttention()
     }
 
     /// The drag reached its natural end (the release). Deliberately does NOT bump the
@@ -583,12 +664,21 @@ public final class AnnotationSession: ObservableObject {
     }
 
     /// Turn the selected element plus a comment into a pending note.
+    ///
+    /// `axOrigin` is the host surface's AX top-left (the overlay panel's, on macOS;
+    /// `.zero` on iOS, whose view-tree frames are already view-local). It is the
+    /// caller's ONE geometric contribution, and it is here rather than in the view
+    /// because the note's two window-local rects are snapshotted from state this
+    /// method is about to destroy — the last line nils `selected`, which trips the
+    /// `didSet` that clears the drawn frame and the anchor flag. Computing them at
+    /// the call site meant the view had to remember to do it BEFORE calling; doing
+    /// it here makes the ordering structural.
     @discardableResult
     public func addNote(
         comment: String,
         selectedText: String? = nil,
         screenshot: CapturedImage? = nil,
-        anchor: CGPoint? = nil
+        axOrigin: CGPoint = .zero
     ) -> AnnotationNote? {
         guard let element = selected else { return nil }
         // Code-location hints. `unseeded` is true when the target carries no
@@ -632,6 +722,19 @@ public final class AnnotationSession: ObservableObject {
             return CGRect(x: (drawn.minX - base.x).rounded(), y: (drawn.minY - base.y).rounded(),
                           width: drawn.width.rounded(), height: drawn.height.rounded())
         }
+        // The note's own geometry, in WINDOW-LOCAL coordinates so the overlay can
+        // redraw it with no further transform — and so a host-window drag cannot
+        // move it, the overlay panel being a child window that travels with its
+        // parent. Two rects, not one derived from the other: see
+        // ``AnnotationNote/anchorRect``.
+        //
+        // `anchorRect` follows the SAME rule as the highlight, the composer and the
+        // pin (`selectionAnchorFrame ?? element.frame`), which is what makes a
+        // recalled mark land on the pixels the user was looking at when they pressed
+        // send. `drawnRect` is the swept rectangle, which for a framed note that was
+        // never navigated is the same rect — deliberately, since "the two agree" is
+        // exactly how ``RecalledMark`` recognizes an area note.
+        let windowLocal = { (rect: CGRect) in rect.offsetBy(dx: -axOrigin.x, dy: -axOrigin.y) }
         let note = AnnotationNote(
             id: makeID(),
             route: route(),
@@ -645,7 +748,8 @@ public final class AnnotationSession: ObservableObject {
             comment: comment,
             screenshot: screenshot,
             timestamp: timestamp(),
-            anchor: anchor,
+            anchorRect: windowLocal(selectionAnchorFrame ?? element.frame),
+            drawnRect: selectedMarqueeRect.map(windowLocal),
             regionOffset: selectedRegionOffset,
             regionRect: regionRect
         )
@@ -666,6 +770,42 @@ public final class AnnotationSession: ObservableObject {
     /// dropping a note reflows both for free — no explicit renumbering.
     public func deleteNote(id: String) {
         pending.removeAll { $0.id == id }
+    }
+
+    /// Slide the stored geometry of every note that sits inside `viewport` by
+    /// `translation` — pins and recalled marks together, since both derive from the
+    /// same two rects. All three arguments are WINDOW-LOCAL, y-down.
+    ///
+    /// Called by the macOS overlay panel when IT scrolls the host: while annotating,
+    /// the panel covers the whole window and drives the enclosing scroller's clip by
+    /// the wheel's deltas itself, so the exact translation applied to the content is
+    /// known at the moment it is applied. A stale pin was tolerable (the header of
+    /// ``AnnotationPins`` accepted it for a 20pt dot); a full-size rectangle drawn IN
+    /// ANSWER to a deliberate question is not, because over unrelated content it says
+    /// "this note is about THAT", confidently, and wrong.
+    ///
+    /// THE VIEWPORT TEST IS BY CENTRE, not by containment. A note framed slightly
+    /// proud of the scroller — the ordinary way a user draws around a card near the
+    /// edge — must still travel with the content it is about, while chrome outside
+    /// the scroller (a toolbar, a sidebar, a second pane) must not move at all. The
+    /// centre is the cheapest question that gets both right.
+    ///
+    /// LIMITS, stated rather than implied: this is a best-effort correction to the
+    /// dominant case, not live tracking. Scrolls the overlay does not originate —
+    /// keyboard paging, programmatic `scrollToVisible`, anything at all while the
+    /// menu is closed — are not observed, and no AX re-resolution is attempted.
+    public func translateNotes(by translation: CGSize, within viewport: CGRect) {
+        guard translation != .zero else { return }
+        for index in pending.indices {
+            guard let anchor = pending[index].anchorRect,
+                  viewport.contains(CGPoint(x: anchor.midX, y: anchor.midY)) else { continue }
+            pending[index].anchorRect = anchor.offsetBy(dx: translation.width, dy: translation.height)
+            // The drawn rect travels with its anchor unconditionally: the two belong
+            // to ONE note, and moving only one of them would leave a navigated note
+            // recalling an element and a frame that no longer relate to each other.
+            pending[index].drawnRect = pending[index].drawnRect?
+                .offsetBy(dx: translation.width, dy: translation.height)
+        }
     }
 
     /// Write the full retained set to the sink, WITHOUT clearing it. Notes

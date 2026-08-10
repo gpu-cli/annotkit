@@ -82,7 +82,31 @@ final class SinkTests: XCTestCase {
         let data = try JSONEncoder().encode([n])
         let decoded = try JSONDecoder().decode([AnnotationNote].self, from: data)
         XCTAssertEqual(decoded[0].regionRect, CGRect(x: 12, y: 40, width: 320, height: 48),
-                       "regionRect is PERSISTED, unlike `anchor`")
+                       "regionRect is PERSISTED, unlike the overlay's window-local rects")
+    }
+
+    /// The overlay's own geometry must never reach the agent. `anchorRect` and
+    /// `drawnRect` exist so a captured note can be REDRAWN on the surface it was
+    /// made on; the record an agent reads is located by `selector`/`regionRect` and
+    /// has no use for window coordinates that stop meaning anything the moment the
+    /// process exits. Asserted on the wire and through a round trip, because a
+    /// stored property added without a `CodingKeys` entry serializes silently.
+    func testTheWindowLocalRectsNeverReachTheSerializedRecord() throws {
+        var n = note()
+        n.anchorRect = CGRect(x: 340, y: 220, width: 120, height: 32)
+        n.drawnRect = CGRect(x: 300, y: 200, width: 200, height: 90)
+
+        let json = try AnnotationFormatter.json([n])
+        XCTAssertFalse(json.contains("anchorRect"), "the pin/mark anchor is UI-only")
+        XCTAssertFalse(json.contains("drawnRect"), "and so is the swept rect")
+        XCTAssertEqual(json, try AnnotationFormatter.json([note()]),
+                       "byte-for-byte identical to the same note without any marks geometry")
+        XCTAssertEqual(AnnotationFormatter.markdown([n]), AnnotationFormatter.markdown([note()]),
+                       "and the markdown export is untouched too")
+
+        let decoded = try JSONDecoder().decode([AnnotationNote].self, from: JSONEncoder().encode([n]))
+        XCTAssertNil(decoded[0].anchorRect, "a note read back from the store carries no marks geometry")
+        XCTAssertNil(decoded[0].drawnRect)
     }
 
     func testMarkdownIncludesComponentRoleAndUnseededHints() {

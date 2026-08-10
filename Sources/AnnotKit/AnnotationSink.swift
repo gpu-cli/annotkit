@@ -58,15 +58,40 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     /// ISO-8601 timestamp, injected by the caller (kept out of pure logic so the
     /// model stays deterministic and testable).
     public var timestamp: String
-    /// Window-local top-left where the numbered pin is drawn in annotate mode
-    /// (the element's AX frame origin minus the host window's `axOrigin` AT
-    /// CAPTURE). UI-only: intentionally NOT persisted — it is omitted from
-    /// ``CodingKeys`` so the on-disk JSON store and the MCP payload stay
-    /// byte-for-byte unchanged, and older files still decode (`anchor` -> nil).
-    public var anchor: CGPoint?
+    /// Window-local rect that was HIGHLIGHTED when the user pressed send — the
+    /// same `selectionAnchorFrame ?? selected.frame` rule the live highlight, the
+    /// composer and the numbered pin already follow, minus the host window's
+    /// `axOrigin` AT CAPTURE. The pin is drawn at its ORIGIN, so this names exactly
+    /// the pixel the old `anchor` POINT named, with a size attached.
+    ///
+    /// A RECT and not a point because a captured note has to be REDRAWABLE:
+    /// hovering its pin recalls the note's mark (``AnnotationMarks``), and a point
+    /// carries no size at all for an element note. Deriving the size instead —
+    /// `anchor` + ``regionRect``'s size — is wrong the moment the user pressed
+    /// Parent/Child, which re-anchors the note to the ELEMENT while the drawn size
+    /// stays the swept one: a right-sized box in the wrong place. Store both rects;
+    /// derive neither.
+    ///
+    /// UI-only, exactly as `anchor` was: omitted from ``CodingKeys`` so the on-disk
+    /// JSON store, the MCP payload and the markdown stay byte-for-byte unchanged,
+    /// and older files still decode (-> nil, which simply draws nothing).
+    public var anchorRect: CGRect?
+    /// Window-local rect the user actually SWEPT, non-nil ONLY for a marquee
+    /// selection — which is what makes "was this an area or an element?" a field
+    /// lookup rather than a fragile equality between two rects measured in
+    /// different spaces.
+    ///
+    /// It also carries the navigated case for free: pressing Parent/Child moves
+    /// ``anchorRect`` onto the element the note is filed against while this stays
+    /// the box the user drew, so a recalled mark can show both — the binding, and
+    /// the gesture it came from — which is the one case where they disagree.
+    ///
+    /// UI-only alongside ``anchorRect``; the PERSISTED, element-relative locator an
+    /// agent reads is ``regionRect``, and that is untouched.
+    public var drawnRect: CGRect?
     /// REGION note (decoration/gaps with no AX node): offset of the annotated
     /// POINT from the top-left of the anchor element named by `selector`.
-    /// PERSISTED, unlike `anchor` — it is the locator agents need ("22pt below
+    /// PERSISTED, unlike the two window-local rects — it is the locator agents need ("22pt below
     /// the top-left of #Dashboard.Today"). Optional, so element notes serialize
     /// unchanged and old files decode (nil).
     public var regionOffset: CGPoint?
@@ -79,11 +104,12 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     /// so click notes serialize unchanged and old files decode (nil).
     public var regionRect: CGRect?
 
-    /// Explicit keys that OMIT `anchor`: `JSONFileSink` and the MCP
-    /// `FileNotesStore` encode/decode `[AnnotationNote]` directly, so a naked
-    /// stored property would leak the pin position into the serialized record.
-    /// `anchor` decodes to nil when absent, so the store and old files round-trip
-    /// unchanged.
+    /// Explicit keys that OMIT ``anchorRect`` and ``drawnRect``: `JSONFileSink`
+    /// and the MCP `FileNotesStore` encode/decode `[AnnotationNote]` directly, so a
+    /// naked stored property would leak the overlay's window-local geometry into
+    /// the serialized record. Both decode to nil when absent, so the store and old
+    /// files round-trip unchanged — and the agent-facing payload is byte-for-byte
+    /// what it was before marks existed.
     private enum CodingKeys: String, CodingKey {
         case id, route, selector, elementPath, selectedText, comment, screenshot, timestamp
         case component, elementRole, elementText, unseeded
@@ -103,7 +129,8 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         comment: String,
         screenshot: CapturedImage? = nil,
         timestamp: String,
-        anchor: CGPoint? = nil,
+        anchorRect: CGRect? = nil,
+        drawnRect: CGRect? = nil,
         regionOffset: CGPoint? = nil,
         regionRect: CGRect? = nil
     ) {
@@ -119,7 +146,8 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         self.comment = comment
         self.screenshot = screenshot
         self.timestamp = timestamp
-        self.anchor = anchor
+        self.anchorRect = anchorRect
+        self.drawnRect = drawnRect
         self.regionOffset = regionOffset
         self.regionRect = regionRect
     }

@@ -213,6 +213,106 @@ it is unit-testable without a window, no future UI path can reintroduce it, and
 it removes a cross-process AX hit-test per pointer-motion event. It is a cost
 decision as much as a visual one.
 
+## Recallable selection marks (VRT-pm3k)
+
+A captured frame is **recalled, not painted**. Filing a note leaves the surface
+exactly as it looked before marks existed; the geometry comes back only while the
+user is attending that note — resting the pointer on its numbered pin, or having
+its edit card open. "Maintain the highlighted area" is therefore read as *keep it
+recoverable*, not *keep it drawn*.
+
+**Why not an always-on marks layer.** It was the first design and hover-recall
+beats it on three counts that all show up after the third or fourth note: no stack
+of overlapping rectangles, no competition with the live highlight over what the
+next press binds to, and no permanent field of stale geometry after a scroll. It
+also makes the layer affordable — because exactly one mark is ever on screen, it
+can wear the full committed-frame treatment (solid stroke plus the wash) instead
+of the thin dimmed strokes stacking would have forced, so a recalled note looks
+like the selection it was made from.
+
+**Why the note stores two RECTS and derives nothing.** `anchor` was a POINT, so an
+element note had no size at all and could not be redrawn. The only derivation
+available — `anchor` + `regionRect.size` — is wrong exactly where it matters:
+pressing Parent/Child clears the frame anchor, so the anchor becomes the ELEMENT's
+origin while the size is still the swept one, producing a right-sized box in the
+wrong place. `anchorRect` (what was highlighted at capture) and `drawnRect` (what
+was swept) are stored side by side, which also turns "area or element?" into a
+field lookup instead of an equality between rects measured in different spaces.
+Both are UI-only and stay out of `CodingKeys`: the JSON, the MCP payload and the
+markdown are byte-for-byte unchanged.
+
+**Why recall is GEOMETRIC rather than the pin's own hover.** Pins go inert in
+frame mode (below), and a view with `allowsHitTesting(false)` receives no hover —
+so the trigger cannot live on the pin. `PinAttentionRule` answers "which note's pin
+contains this point?" from the catcher's own hover, in both modes: one mechanism
+instead of two that can drift, and "hover reveals mark N" becomes a unit test
+rather than something a human checks with a mouse. Its radius is deliberately
+LARGER than the pin, and that is load-bearing rather than generous: in point mode
+the pin is a live button above the catcher, so the only points near a pin the
+catcher ever sees are the ones outside it. Attention is established on the way in
+and stands until another point answers differently, which is also why hover-exit
+needs no rule of its own.
+
+**Why an open edit card outranks the pointer.** Attended means *hovered or open in
+the card*, and when the two disagree the card wins — the opposite of the intuitive
+order. A card NAMES its note in words, so a mark belonging to a different note puts
+two answers on screen at once; and the hover it overrules is not always current,
+because in point mode the pin is a live button above the catcher, so a pointer that
+reaches a pin without crossing the surface first (a fast flick, re-entering the
+window) leaves the catcher's last answer pointing at the pin it saw before.
+Observed exactly that way during the visual check — the card read note 1 while the
+canvas drew note 3.
+
+**Why pins are inert in frame mode.** `AnnotationPin` is a `Button` mounted above
+the catcher, so a press starting on one never reaches the drag gesture — and every
+capture plants one exactly where the next frame is most likely to be drawn. That,
+plus hover-to-edit dropping a ~284x172 card under the pointer, is the reported "if
+I select an element I cannot also use the frame tool". In frame mode the user is
+drawing, not editing, so one condition removes both with no gesture negotiation.
+Measured both ways in the probe (11c): the same synthesized press opens the editor
+in point mode and does nothing in frame mode.
+
+**The composer covering its own element is ACCEPTED.** A card the user may be
+typing into must consume its own clicks; dismissing it or starting the drag from
+outside it are the ordinary mitigations. Unlike a pin, it has state to lose.
+
+### The toolbar panel claims its whole frame (measured, VRT-pm3k.7)
+
+The permanently-mounted toolbar panel is 240x104 with the pill in its bottom-right
+corner, and it consumes presses across the **whole** rect — so the host's
+bottom-right 240x104 is inert to clicks and to the start of a frame drag, in both
+modes.
+
+This was listed as candidate (d) on the assumption that per-pixel alpha
+pass-through would save it. It does not: measured against a panel whose content
+view was a bare `NSView` drawing nothing at all, with `isOpaque = false` and a
+clear background, the click was still swallowed. macOS does not route mouse events
+through the transparent parts of a window; `ignoresMouseEvents = true` is the only
+configuration that lets them through, and it would take the pill's own clicks with
+it. `AnnotKitOverlayProbe` phase 11a pins the behaviour with a real posted click,
+against a control click on the catcher so a null result means something.
+
+Not fixed here, deliberately: the remedy is to size the panel to the pill, which
+changes the design `be624b4` landed (a fixed-size panel whose frame moves for
+exactly one reason), and this epic's job was to settle the question. Tracked
+separately.
+
+### Recall survives a scroll, best-effort and no further (macOS)
+
+While annotating, the overlay owns every wheel event — `KeyablePanel.scrollWheel`
+drives the host scroller's clip itself — so the exact translation applied to the
+content is known at the moment it is applied, and the notes over that scroller are
+translated with it. The translation is measured as the DIFFERENCE in the document
+view's own position rather than computed from the deltas, so it is right for a
+flipped or unflipped document and for a scroll clamped at either end.
+
+The limits are stated rather than implied: scrolls the overlay does not originate
+— keyboard paging, programmatic `scrollToVisible`, anything at all while the menu
+is closed — are not observed, and no AX re-resolution is attempted. Notes are
+selected by their rect's CENTRE falling inside the scroller's viewport, so a frame
+drawn slightly proud of a card still travels with it while chrome outside the
+scroller stays put. macOS-only: `UIScrollView` is not intercepted on iOS.
+
 ## IP hygiene (carried into the F7 legal gate)
 
 - Do not copy original Agentation source (PolyForm Shield 1.0.0, non-compete). Only the `AGENTATION_NOTES.md` file format is reused, reimplemented clean-room.

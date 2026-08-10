@@ -301,12 +301,24 @@ final class FlippedProbeDocument: NSView {
 }
 
 @MainActor
-func makeScrollPane(frame: NSRect) -> NSScrollView {
+func makeScrollPane(frame: NSRect, markerID: String) -> (scroll: NSScrollView, marker: NSButton) {
     let scroll = NSScrollView(frame: frame)
     let document = FlippedProbeDocument(frame: NSRect(x: 0, y: 0, width: frame.width, height: frame.height * 6))
+    // A control INSIDE the scroller, near the top of its document. A note captured
+    // on it is a note about SCROLLED CONTENT, which is the only kind whose stored
+    // geometry can go stale — and therefore the only witness for "a recalled mark
+    // lands on the content it was made on" after the wheel moves it.
+    let marker = NSButton(title: markerID, target: nil, action: nil)
+    marker.setAccessibilityIdentifier(markerID)
+    // 400pt down the document, not 40: the phase scrolls this pane a few hundred
+    // points before the mark-tracking measurement runs, and a marker parked at the
+    // top would have left the viewport by then — the note could not even be
+    // captured, and the measurement would report a missing fixture as a failure.
+    marker.frame = NSRect(x: 40, y: 400, width: 220, height: 32)
+    document.addSubview(marker)
     scroll.documentView = document
     scroll.hasVerticalScroller = true
-    return scroll
+    return (scroll, marker)
 }
 
 @MainActor
@@ -320,6 +332,10 @@ struct ClampedHost {
     let lowerScroll: NSScrollView
     let upperScroll: NSScrollView
     let button: NSButton
+    /// The identified control living INSIDE the upper scroller's document — the
+    /// only fixture here that MOVES when the wheel turns, and therefore the one a
+    /// note has to keep pointing at.
+    let upperMarker: NSButton
 }
 
 /// Build a host and stock its content: two stacked scroll spies and one identified
@@ -336,10 +352,12 @@ func makeClampedHost(title: String, frame: NSRect, unconstrained: Bool, visibleB
 
     let size = window.contentView?.bounds.size ?? frame.size
     let content = NSView(frame: NSRect(origin: .zero, size: size))
-    let lower = makeScrollPane(frame: NSRect(x: 0, y: 0, width: size.width, height: size.height / 2))
-    let upper = makeScrollPane(frame: NSRect(x: 0, y: size.height / 2, width: size.width, height: size.height / 2))
-    content.addSubview(lower)
-    content.addSubview(upper)
+    let lower = makeScrollPane(frame: NSRect(x: 0, y: 0, width: size.width, height: size.height / 2),
+                               markerID: "Clamp.LowerMarker")
+    let upper = makeScrollPane(frame: NSRect(x: 0, y: size.height / 2, width: size.width, height: size.height / 2),
+                               markerID: "Clamp.UpperMarker")
+    content.addSubview(lower.scroll)
+    content.addSubview(upper.scroll)
 
     // The button's y is chosen in SCREEN space and converted back, so it sits in the
     // band that survives the clamp whichever edge is being clipped.
@@ -351,7 +369,8 @@ func makeClampedHost(title: String, frame: NSRect, unconstrained: Bool, visibleB
     content.addSubview(button)
 
     window.contentView = content
-    return ClampedHost(window: window, lowerScroll: lower, upperScroll: upper, button: button)
+    return ClampedHost(window: window, lowerScroll: lower.scroll, upperScroll: upper.scroll,
+                       button: button, upperMarker: upper.marker)
 }
 
 /// The pill's own rect inside a panel at `frame`, mirroring `OverlayView.toolbar`: the
@@ -605,12 +624,150 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             runHoverScrollRepro()
             return
         }
+        // Opt-in VISUAL check for recallable marks. Everything else in this file
+        // measures the model and the hit-testing; a mark is a drawing, and nothing
+        // else here can say whether it appears, where, or what it looks like. This
+        // captures the three kinds of note, hovers each pin with the REAL pointer,
+        // and writes a screenshot per state. Out of the default run because it takes
+        // over the pointer and needs screen-recording permission.
+        if ProcessInfo.processInfo.environment["ANNOTKIT_PROBE_MARKS"] == "1" {
+            runMarksVisual()
+            return
+        }
         print("=== AnnotKitOverlayProbe: EXPANDED-overlay AX diagnostic ===")
         h1 = makeSwiftUIHost(title: "AnnotKit Harness W1")
         // SwiftUI needs a beat to render before its AX tree materializes.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
             self?.phase1Baseline()
         }
+    }
+
+    // ---- Interactive VISUAL check: recallable marks -----------------------
+
+    var marksVisualHost: NSWindow?
+    var marksVisualController: OverlayController?
+
+    /// Drive the three kinds of recalled mark on a real screen and photograph each
+    /// one. Hovering is done in FRAME mode on purpose: the pins are inert there, so
+    /// no edit card opens over the drawing, and it demonstrates in one shot that
+    /// recall survives the pins going inert (which is the whole reason it is
+    /// geometric). The last state re-hovers in POINT mode, where the card and the
+    /// mark are meant to appear together.
+    func runMarksVisual() {
+        let outDir = ProcessInfo.processInfo.environment["ANNOTKIT_PROBE_OUT"] ?? NSTemporaryDirectory()
+        print("=== MARKS VISUAL: element / area / navigated-area marks, screenshots -> \(outDir) ===")
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        let visible = (NSScreen.main ?? NSScreen.screens[0]).visibleFrame
+        let window = NSWindow(contentRect: NSRect(x: visible.minX + 140, y: visible.maxY - 660,
+                                                  width: 620, height: 560),
+                              styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        window.title = "AnnotKit marks"
+        window.contentView = NSHostingView(rootView: ProbeSpecificityView())
+        window.makeKeyAndOrderFront(nil)
+        marksVisualHost = window
+
+        let session = AnnotationSession(source: MacElementSource(), sink: NotesFileSink(path: "/dev/null"))
+        let controller = OverlayController(session: session)
+        controller.mount(on: window)
+        controller.start()
+        marksVisualController = controller
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) { [weak self] in
+            guard let self, let panel = overlayCatcher(of: window) else { print("no catcher"); exit(2) }
+            let source = MacElementSource()
+            let roots = source.snapshot().map(\.root)
+            guard let button = self.findElement(id: "Spec.Button", in: roots),
+                  let section = self.findElement(id: "Spec.Section", in: roots),
+                  let cardText = self.findElement(id: "Spec.CardText", in: roots) else {
+                print("fixture not found in the AX tree"); exit(2)
+            }
+            let axOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: panel.frame,
+                                                      primaryHeight: NSScreen.screens.first?.frame.height ?? 0)
+
+            // 1. an ELEMENT note.
+            session.select(atAXPoint: center(of: button.frame))
+            session.addNote(comment: "element", axOrigin: axOrigin)
+            // 2. an AREA note. Swept around the SECTION, not the card: the
+            //    navigated note below binds to the card, and two notes anchored to
+            //    the same corner put their pins on top of each other — the mark
+            //    would then always resolve to whichever is drawn on top, and the
+            //    plain area case would never be seen.
+            session.select(inAXRect: section.frame.insetBy(dx: -6, dy: -6))
+            session.addNote(comment: "area", axOrigin: axOrigin)
+            // 3. an AREA note whose binding was then moved UP off the drawn box —
+            //    the one case where the note's binding and the user's gesture differ.
+            session.select(inAXRect: cardText.frame.insetBy(dx: -6, dy: -6))
+            session.selectParent()
+            session.addNote(comment: "navigated", axOrigin: axOrigin)
+            print("captured \(session.pending.count) notes: " +
+                  session.pending.map { "\($0.comment)\($0.drawnRect == nil ? "(element)" : "(area)")" }.joined(separator: ", "))
+
+            // Pin centres in SCREEN coordinates: the anchors are panel-local y-DOWN.
+            let pins = session.pending.compactMap { note -> (String, CGPoint)? in
+                guard let a = note.anchorRect?.origin else { return nil }
+                return (note.comment, CGPoint(x: panel.frame.minX + a.x, y: panel.frame.maxY - a.y))
+            }
+            var steps: [(String, () -> Void)] = [
+                ("0-captured-nothing-drawn", { session.setTool(.frame); self.warp(CGPoint(x: window.frame.midX, y: window.frame.minY + 20)) })
+            ]
+            for (index, pin) in pins.enumerated() {
+                steps.append(("\(index + 1)-hover-\(pin.0)", { session.setTool(.frame); self.warp(pin.1) }))
+            }
+            if let first = pins.first {
+                steps.append(("\(pins.count + 1)-point-mode-card-and-mark", { session.setTool(.point); self.warp(first.1) }))
+            }
+
+            var i = 0
+            @MainActor func advance() {
+                guard i < steps.count else {
+                    print("done — screenshots in \(outDir)")
+                    exit(0)
+                }
+                let (name, action) = steps[i]; i += 1
+                // Re-assert front before EVERY step: the run photographs whatever is
+                // actually on the glass, so an app that comes forward mid-run does
+                // not corrupt the result quietly — it corrupts it visibly, in a file
+                // that looks nothing like the fixture.
+                NSApp.activate(ignoringOtherApps: true)
+                window.orderFrontRegardless()
+                action()
+                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                    Task { @MainActor in
+                        self.shoot(window.frame, to: "\(outDir)/marks-\(name).png")
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                            Task { @MainActor in advance() }
+                        }
+                    }
+                }
+            }
+            advance()
+        }
+    }
+
+    /// Move the REAL pointer, with a mouse-moved event so the overlay's hover
+    /// actually fires (warping the cursor alone does not deliver one).
+    func warp(_ cocoaPoint: CGPoint) {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let cg = CGPoint(x: cocoaPoint.x, y: primaryHeight - cocoaPoint.y)
+        CGWarpMouseCursorPosition(cg)
+        CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: cg, mouseButton: .left)?
+            .post(tap: .cghidEventTap)
+    }
+
+    /// Photograph a Cocoa screen rect. `screencapture` takes a TOP-LEFT origin, so
+    /// the y is flipped against the primary display's height.
+    func shoot(_ cocoaRect: NSRect, to path: String) {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let region = "\(Int(cocoaRect.minX)),\(Int(primaryHeight - cocoaRect.maxY))," +
+                     "\(Int(cocoaRect.width)),\(Int(cocoaRect.height))"
+        let task = Process()
+        task.executableURL = URL(fileURLWithPath: "/usr/sbin/screencapture")
+        task.arguments = ["-x", "-R", region, path]
+        try? task.run()
+        task.waitUntilExit()
+        print("      shot \(path)")
     }
 
     // ---- Interactive reproduction: scroll, hover on, hover off ------------
@@ -894,22 +1051,18 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             panelState("BEFORE addNote", host: h2.window)
 
             // Capture TWO notes through the expanded overlay (addNote appends).
-            // Mirror OverlayView's REAL capture path: snapshot a WINDOW-LOCAL pin
-            // anchor (the selected element's AX top-left minus the host window's
-            // axOrigin) BEFORE addNote clears the selection, and hand it to addNote
-            // — the exact value Feature 1 stores on the note to place its numbered
-            // pin. Two DISTINCT controls yield two DISTINCT anchors, so we can prove
-            // each note owns its own anchor rather than sharing one.
+            // Mirror OverlayView's REAL capture path exactly: hand `addNote` the
+            // surface's axOrigin and let it snapshot the WINDOW-LOCAL rects itself
+            // (it is the only place that can read them before the capture clears the
+            // selection). Two DISTINCT controls yield two DISTINCT anchors, so we can
+            // prove each note owns its own geometry rather than sharing one.
             let axOrigin = ScreenSpace.windowAXOrigin(
                 cocoaFrame: h2.window.frame,
                 primaryHeight: NSScreen.screens.first?.frame.height ?? 0
             )
             @MainActor func captureNote(_ comment: String, at view: NSView) -> AnnotationNote? {
-                let element = session.select(atAXPoint: axCenter(of: view))
-                let anchor = element.map {
-                    CGPoint(x: $0.frame.minX - axOrigin.x, y: $0.frame.minY - axOrigin.y)
-                }
-                return session.addNote(comment: comment, anchor: anchor)
+                session.select(atAXPoint: axCenter(of: view))
+                return session.addNote(comment: comment, axOrigin: axOrigin)
             }
             let noteA = captureNote("issue-1 note A", at: h2.primary)
             let noteB = captureNote("issue-1 note B", at: h2.secondary)
@@ -989,11 +1142,13 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     }
 
     // ---- Feature 1: pin anchors are present + inside the host window -------
-    /// Assert both freshly-captured notes carry a non-nil window-local anchor that
-    /// lands inside the host window's bounds, and that the two anchors DIFFER (so a
-    /// pin is per-note, not a single shared position).
+    /// Assert both freshly-captured notes carry a non-nil window-local ANCHOR RECT
+    /// that lands inside the host window's bounds and matches the element they were
+    /// made on, that the two DIFFER (so a pin is per-note, not a single shared
+    /// position), and that an ELEMENT note carries NO drawn rect — which is the
+    /// field lookup the recalled mark uses to tell an element note from an area one.
     func verifyPinAnchors(noteA: AnnotationNote?, noteB: AnnotationNote?, host: NSWindow) {
-        print("\n  Feature 1 — numbered-pin anchors (window-local, snapshot at addNote):")
+        print("\n  Feature 1 — numbered-pin anchor RECTS (window-local, snapshot at addNote):")
         guard let noteA, let noteB else {
             checkPins(false, "both notes captured (addNote returned a note for each control)")
             return
@@ -1001,18 +1156,37 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         // Window-local space: origin at the host window's top-left, so a valid
         // anchor sits within (0,0)...(width,height). Grown 1pt for float slack.
         let bounds = CGRect(origin: .zero, size: host.frame.size).insetBy(dx: -1, dy: -1)
-        for (label, note) in [("note A (pin #1)", noteA), ("note B (pin #2)", noteB)] {
-            guard let anchor = note.anchor else {
-                checkPins(false, "\(label) carries a non-nil window-local anchor")
+        let source = MacElementSource()
+        for (label, note, view) in [("note A (pin #1)", noteA, h2.primary), ("note B (pin #2)", noteB, h2.secondary)] {
+            guard let rect = note.anchorRect else {
+                checkPins(false, "\(label) carries a non-nil window-local anchorRect")
                 continue
             }
-            print("      \(label) anchor=\(String(format: "(%.1f, %.1f)", anchor.x, anchor.y)) " +
-                  "host-local bounds=\(fmt(CGRect(origin: .zero, size: host.frame.size)))")
-            checkPins(true, "\(label) carries a non-nil window-local anchor")
-            checkPins(bounds.contains(anchor), "\(label) anchor is inside the host window bounds")
+            // The element's own size, read back out of the AX tree — the same space
+            // the note was captured from, so this is "the note remembers the rect it
+            // was made on" and not merely "a rect". Deliberately NOT the view's
+            // Cocoa bounds: an NSButton's AX frame includes its bezel, so comparing
+            // against `view.bounds` would be off by a couple of points for a reason
+            // that has nothing to do with what is being asserted.
+            let expected = source.hitTest(axCenter(of: view))?.frame.size ?? .zero
+            print("      \(label) anchorRect=\(fmt(rect)) drawnRect=\(note.drawnRect.map(fmt) ?? "nil") " +
+                  "element size=\(String(format: "%.0fx%.0f", expected.width, expected.height))")
+            checkPins(true, "\(label) carries a non-nil window-local anchorRect")
+            checkPins(bounds.contains(rect.origin), "\(label) anchorRect's origin (the pin) is inside the host window bounds")
+            checkPins(abs(rect.width - expected.width) < 1 && abs(rect.height - expected.height) < 1,
+                      "\(label) anchorRect is the SIZE of the element it was made on (a point could not say this)")
+            checkPins(note.drawnRect == nil, "\(label) is an ELEMENT note, so it carries NO drawnRect")
         }
-        if let a = noteA.anchor, let b = noteB.anchor {
-            checkPins(a != b, "the two notes carry DISTINCT anchors (per-note, not a shared position)")
+        if let a = noteA.anchorRect, let b = noteB.anchorRect {
+            checkPins(a != b, "the two notes carry DISTINCT anchor rects (per-note, not a shared position)")
+        }
+        // The whole point of keeping both fields out of `CodingKeys`: the record an
+        // agent reads must be byte-for-byte what it was before marks existed.
+        if let json = try? AnnotationFormatter.json([noteA]) {
+            checkPins(!json.contains("anchorRect") && !json.contains("drawnRect"),
+                      "neither rect appears in the SERIALIZED payload (UI-only, agent-facing record unchanged)")
+        } else {
+            checkPins(false, "the note could be serialized for the payload check")
         }
     }
 
@@ -1048,7 +1222,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         checkPins(session.pending.count == 1, "deleteNote removes the note (count re-flows 2 -> 1)")
         checkPins(!session.pending.contains { $0.id == first.id }, "the deleted note is gone from the retained set")
         checkPins(session.pending.first?.id == second.id, "the survivor is the OTHER note, now reflowed to index 0 (pin #1)")
-        checkPins(session.pending.first?.anchor == second.anchor, "the survivor keeps its OWN captured anchor after the reflow")
+        checkPins(session.pending.first?.anchorRect == second.anchorRect, "the survivor keeps its OWN captured anchor rect after the reflow")
 
         // Deleting the last note empties the set, so the count badge would hide.
         session.deleteNote(id: second.id)
@@ -1908,6 +2082,57 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
                "navigating drops the frame anchor, revealing the bound element (got \(session.selectionAnchorFrame.map(fmt) ?? "nil"))")
         check8(session.selectedMarqueeRect.map { approxEqual($0, drawn, tol: 0.5) } ?? false,
                "the drawn rect SURVIVES navigation (it is still what the note records)")
+
+        verifyCapturedRects(session: session, drawn: drawn, boundAfterNavigation: parent)
+    }
+
+    /// 8g — the RECALLED-MARK record (VRT-pm3k.5): a captured note remembers the
+    /// rect it was made on, in the two cases a POINT could never describe.
+    ///
+    /// The framed-then-navigated note is the whole reason the rects are stored
+    /// rather than derived. Pressing Parent moves the note's binding onto the
+    /// element while the drawn size stays the swept one, so `anchor + regionRect
+    /// .size` — the only derivation available — yields a right-sized box in the
+    /// wrong place. Here the two rects simply disagree, which is the answer.
+    func verifyCapturedRects(session: AnnotationSession, drawn: CGRect, boundAfterNavigation: Element?) {
+        print("\n  8g — a captured note remembers its RECT (anchorRect / drawnRect):")
+        let axOrigin = ScreenSpace.windowAXOrigin(
+            cocoaFrame: navHost?.frame ?? .zero,
+            primaryHeight: NSScreen.screens.first?.frame.height ?? 0
+        )
+        func windowLocal(_ rect: CGRect) -> CGRect { rect.offsetBy(dx: -axOrigin.x, dy: -axOrigin.y) }
+
+        // The selection is still the navigated one left by 8f.
+        guard let bound = boundAfterNavigation,
+              let navigated = session.addNote(comment: "framed then navigated", axOrigin: axOrigin) else {
+            check8(false, "a note could be captured on the framed-then-navigated selection")
+            session.cancelSelection()
+            return
+        }
+        print("      navigated note: anchorRect=\(navigated.anchorRect.map(fmt) ?? "nil") " +
+              "drawnRect=\(navigated.drawnRect.map(fmt) ?? "nil") bound element=\(fmt(bound.frame))")
+        check8(navigated.anchorRect.map { approxEqual($0, windowLocal(bound.frame), tol: 0.5) } ?? false,
+               "the navigated note's anchorRect is the ELEMENT it is filed against (window-local)")
+        check8(navigated.drawnRect.map { approxEqual($0, windowLocal(drawn), tol: 0.5) } ?? false,
+               "...and its drawnRect is still the rectangle the user SWEPT")
+        check8(navigated.anchorRect != navigated.drawnRect,
+               "the two rects DISAGREE here — the one case where the note's binding and the user's gesture differ")
+
+        // And the ordinary framed note: draw the same rect again, file it without
+        // navigating. Its two rects AGREE, which is exactly how a recalled mark
+        // recognizes an area note and draws the swept box with no name tag.
+        session.select(inAXRect: drawn)
+        guard let framed = session.addNote(comment: "framed", axOrigin: axOrigin) else {
+            check8(false, "a note could be captured on a plain framed selection")
+            session.cancelSelection()
+            return
+        }
+        print("      framed note:    anchorRect=\(framed.anchorRect.map(fmt) ?? "nil") " +
+              "drawnRect=\(framed.drawnRect.map(fmt) ?? "nil")")
+        check8(framed.anchorRect == framed.drawnRect && framed.drawnRect != nil,
+               "an un-navigated framed note's two rects AGREE (that IS the area-note test)")
+        check8(framed.drawnRect.map { approxEqual($0, windowLocal(drawn), tol: 0.5) } ?? false,
+               "...and they are the swept rectangle, window-local")
         session.cancelSelection()
     }
 
@@ -2186,9 +2411,67 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             check9(false, "a phase-tagged wheel event could be built")
         }
 
+        phase9cMarksFollowContent(host: host, panel: panel, panelLocal: panelLocal)
+
         clampController?.unmount()
         clampHost?.window.orderOut(nil)
         phase9dTucked()
+    }
+
+    /// The other half of owning the wheel: because the panel applies the scroll
+    /// itself, it knows the exact translation and can move the notes with it.
+    ///
+    /// Measured against the CONTENT, not against the deltas: the assertion is that
+    /// the note's stored rect and the control it was made on moved by the SAME
+    /// amount, which is the only form of the claim that means anything. Drawing a
+    /// recalled mark over unrelated content is the most misleading possible reply to
+    /// the one question the mark exists to answer, so wrong-and-confident is the
+    /// only outcome here worse than the status quo.
+    func phase9cMarksFollowContent(host: ClampedHost, panel: NSWindow, panelLocal: CGPoint) {
+        print("\n  9c(ii) — a captured note's geometry follows the content the panel scrolls:")
+        guard let session = clampSession else {
+            check9(false, "the clamped session is available to capture a note on scrolled content")
+            return
+        }
+        let axOrigin = ScreenSpace.windowAXOrigin(
+            cocoaFrame: panel.frame,
+            primaryHeight: NSScreen.screens.first?.frame.height ?? 0
+        )
+        let markerBefore = axCenter(of: host.upperMarker)
+        session.select(atAXPoint: markerBefore)
+        guard let note = session.addNote(comment: "note on scrolled content", axOrigin: axOrigin),
+              let anchorBefore = note.anchorRect else {
+            check9(false, "a note could be captured on the control INSIDE the scroller")
+            return
+        }
+        print("      captured on \(note.selector): anchorRect=\(fmt(anchorBefore)) " +
+              "marker AX centre=\(String(format: "(%.0f, %.0f)", markerBefore.x, markerBefore.y))")
+        check9(note.selector.contains("Clamp.UpperMarker"),
+               "sanity: the note really bound to the control inside the scroller (got \(note.selector))")
+
+        guard let event = makeScrollEvent(panelLocal: panelLocal) else {
+            check9(false, "a wheel event could be built for the mark-tracking measurement")
+            return
+        }
+        panel.scrollWheel(with: event)
+
+        let markerAfter = axCenter(of: host.upperMarker)
+        let contentDY = markerAfter.y - markerBefore.y
+        guard let anchorAfter = session.pending.first(where: { $0.id == note.id })?.anchorRect else {
+            check9(false, "the note is still in the retained set after the scroll")
+            return
+        }
+        let markDY = anchorAfter.minY - anchorBefore.minY
+        print("      after the wheel: content moved \(String(format: "%+.1f", contentDY))pt, " +
+              "the note's rect moved \(String(format: "%+.1f", markDY))pt (anchorRect=\(fmt(anchorAfter)))")
+        // Without this the whole measurement is vacuous: two things that did not
+        // move also "moved by the same amount".
+        check9(abs(contentDY) > 1, "sanity: the wheel really moved the annotated control (\(String(format: "%.1f", contentDY))pt)")
+        check9(abs(markDY - contentDY) < 1,
+               "the note's stored rect moved by EXACTLY the translation applied to the content — the mark stays on what it describes")
+        check9(abs(anchorAfter.minX - anchorBefore.minX) < 1 && anchorAfter.size == anchorBefore.size,
+               "a vertical scroll moves the rect vertically and only vertically (size and x untouched)")
+        session.deleteNote(id: note.id)
     }
 
     // ---- 9d: the OTHER clamp direction — a host tucked under the menu bar ----
@@ -2313,8 +2596,324 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             self.check10(mode == .idle, "Escape closed the menu (annotate mode exited)")
             controller.unmount()
             host.window.orderOut(nil)
-            self.finish()
+            self.phase11Marks()
         }
+    }
+
+    // ---- Phase 11: the two selections stop fighting, and a mark comes back --
+    // Three questions the epic could not settle by inspection:
+    //
+    //  (d) does the permanently-mounted 240x104 toolbar panel — `ignoresMouseEvents
+    //      = false`, ordered ABOVE the catcher, sitting in the exact corner a user
+    //      drags a frame into — swallow presses in its TRANSPARENT region? Per-pixel
+    //      alpha pass-through SHOULD save it, and that had never been asserted.
+    //  (a) do PINS swallow the press? Every capture plants one where the next frame
+    //      is most likely to be drawn, and the fix (inert in frame mode) is only
+    //      believable if the two modes are shown to differ.
+    //      Element and area notes coexisting, and each recalling its own kind of
+    //      mark, is the other half of the same report.
+    var passMarks = true
+    func check11(_ c: Bool, _ m: String) {
+        print("      " + (c ? "ok   " : "FAIL ") + m)
+        passMarks = passMarks && c
+    }
+
+    var marksController: OverlayController?
+    var marksHost: HostControls?
+
+    func phase11Marks() {
+        print("\n--- Phase 11: element + area notes coexist; a hover recalls ONE mark; pins are inert in frame mode ---")
+        // ON SCREEN, unlike the other model phases: 11a asks the WINDOW SERVER which
+        // window a click at a point would hit, and a window parked at (-12000,-12000)
+        // is not in any answer it can give.
+        let host = makeHostWindow(title: "AnnotKit Harness W11 (marks)")
+        let visible = visibleFrame
+        host.window.setFrameOrigin(NSPoint(x: visible.minX + 120, y: visible.minY + 200))
+        NSApp.activate(ignoringOtherApps: true)
+        host.window.makeKeyAndOrderFront(nil)
+        marksHost = host
+
+        let session = AnnotationSession(source: MacElementSource(), sink: NotesFileSink(path: "/dev/null"))
+        let controller = OverlayController(session: session)
+        controller.mount(on: host.window)
+        controller.start()
+        marksController = controller
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            guard let self else { return }
+            let notes = self.phase11bBothKindsCoexist(session: session, host: host)
+            // Everything below drives the REAL view tree, so each step has to be
+            // given a runloop turn to render into. A press sent in the same turn as
+            // the `setTool` that is supposed to change its outcome would land on the
+            // PREVIOUS layout and prove nothing — which is exactly how this phase
+            // first reported the fix as broken when it was the harness that was.
+            self.runSteps([
+                { self.phase11cPress(session: session, host: host.window, notes: notes, tool: .point) },
+                { self.phase11cPress(session: session, host: host.window, notes: notes, tool: .frame) },
+                // The control click FIRST: a real click on the catcher, far from the
+                // toolbar, must produce a selection. Without it, "the gap click
+                // produced nothing" is equally consistent with no click having been
+                // delivered at all.
+                { self.phase11aArmClick(session: session, host: host.window, throughToolbar: false) },
+                { self.phase11aReadClick(session: session) },
+                { self.phase11aArmClick(session: session, host: host.window, throughToolbar: true) },
+                { self.phase11aReadClick(session: session) },
+                {
+                    self.phase11dRecall(session: session, notes: notes)
+                    controller.unmount()
+                    host.window.orderOut(nil)
+                    self.finish()
+                }
+            ])
+        }
+    }
+
+    /// Run each step on its own runloop turn, with a beat in between for SwiftUI to
+    /// lay out and for posted events to be delivered.
+    func runSteps(_ steps: [() -> Void], delay: TimeInterval = 0.45) {
+        guard let first = steps.first else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            first()
+            self?.runSteps(Array(steps.dropFirst()), delay: delay)
+        }
+    }
+
+    /// Candidate (d), settled with a REAL CLICK.
+    ///
+    /// Every cheaper instrument was tried and each measures the wrong thing:
+    /// `NSWindow.windowNumber(at:)` is RECT-based (measured: a panel containing a
+    /// bare, empty `NSView` that draws nothing still answers "me"), and
+    /// `NSHostingView.hitTest` returns the hosting view for EVERY point in its
+    /// bounds, pill or gap. Neither can see the only thing that decides this — the
+    /// window server's per-pixel test on a non-opaque window, which happens before
+    /// AppKit is involved at all.
+    ///
+    /// So the probe asks the question the user asks: it posts a genuine click into
+    /// the toolbar panel's empty region and looks at whether the CATCHER acted on
+    /// it. Point mode, so a click that lands resolves to a selection — an
+    /// unambiguous, observable effect, and nil if the toolbar swallowed it.
+    ///
+    /// THE ANSWER IS NO, and this phase now PINS THAT rather than wishing for it.
+    /// Per-pixel alpha pass-through is a myth for mouse events: measured against a
+    /// panel whose content view was a bare `NSView` drawing nothing at all, with
+    /// `isOpaque = false` and a clear background, the click was still swallowed.
+    /// `ignoresMouseEvents = true` was the ONLY configuration that let it through,
+    /// and that would take the pill's own clicks with it. So the toolbar panel
+    /// claims its whole 240x104 rect, permanently, in both modes.
+    ///
+    /// Recorded as a known limitation (DECISIONS.md) rather than fixed here: the
+    /// remedy is to size the panel to the pill, which is a change to the design
+    /// `be624b4` deliberately landed, and this epic's job was to SETTLE the
+    /// question. IF THIS CHECK EVER FAILS, the limitation has been fixed — invert
+    /// it and delete the DECISIONS.md entry.
+    func phase11aArmClick(session: AnnotationSession, host: NSWindow, throughToolbar: Bool) {
+        if !throughToolbar { print("\n  11a — candidate (d): does a press in the toolbar panel's EMPTY region reach the catcher?") }
+        guard let toolbar = overlayToolbar(of: host), let catcher = overlayCatcher(of: host), toolbar !== catcher else {
+            check11(false, "both overlay panels are present (toolbar + catcher)")
+            return
+        }
+        let pill = pillRect(inPanel: toolbar.frame)
+        // The panel is 240x104; the pill is ~180x44 in its bottom-right corner. The
+        // difference is real estate the panel covers permanently and draws nothing
+        // in — and it is precisely the corner a user drags a frame into.
+        let inGap = CGPoint(x: toolbar.frame.minX + 8, y: toolbar.frame.maxY - 8)
+        // The control point: on the catcher, comfortably clear of the toolbar panel.
+        let clear = CGPoint(x: host.frame.minX + 60, y: host.frame.maxY - 80)
+        if !throughToolbar {
+            print("      toolbar=\(fmt(toolbar.frame)) pill=\(fmt(pill)) " +
+                  "gap=\(String(format: "(%.0f, %.0f)", inGap.x, inGap.y)) " +
+                  "control=\(String(format: "(%.0f, %.0f)", clear.x, clear.y)) trusted=\(AXIsProcessTrusted())")
+            check11(toolbar.frame.contains(inGap) && !pill.contains(inGap) && catcher.frame.contains(inGap),
+                    "sanity: the gap point is INSIDE the toolbar panel, outside the pill, and over the catcher")
+            check11(!toolbar.frame.contains(clear) && catcher.frame.contains(clear),
+                    "sanity: the control point is over the catcher and NOT over the toolbar panel")
+        }
+        guard AXIsProcessTrusted() else {
+            check11(false, "posting a real click needs Accessibility trust — candidate (d) CANNOT be settled in this run")
+            clickPoint = nil
+            return
+        }
+
+        session.setTool(.point)
+        session.cancelSelection()
+        session.endEditing()
+        clickPoint = throughToolbar ? inGap : clear
+        clickThroughToolbar = throughToolbar
+        // Put the pointer back afterwards: a probe that steals the cursor and keeps
+        // it is a probe people stop running.
+        let restoreTo = NSEvent.mouseLocation
+        clickOnScreen(clickPoint!)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            CGWarpMouseCursorPosition(CGPoint(x: restoreTo.x, y: (NSScreen.screens.first?.frame.height ?? 0) - restoreTo.y))
+        }
+    }
+
+    var clickPoint: CGPoint?
+    var clickThroughToolbar = false
+
+    func phase11aReadClick(session: AnnotationSession) {
+        guard let point = clickPoint else { return }
+        let landed = session.selected
+        print("      after the \(clickThroughToolbar ? "GAP" : "CONTROL") click at " +
+              "\(String(format: "(%.0f, %.0f)", point.x, point.y)): session.selected = \(self.label(landed))")
+        if clickThroughToolbar {
+            check11(landed == nil,
+                    "candidate (d) SETTLED, and NEGATIVELY: the toolbar panel CLAIMS its whole frame — a press in its empty region never reaches the catcher, so no frame can be started inside that 240x104 corner (known limitation; a FAILURE here means it was fixed)")
+        } else {
+            check11(landed != nil,
+                    "control: a real click on the catcher DOES produce a selection (so a null result at the gap means something)")
+        }
+        session.cancelSelection()
+    }
+
+    /// One real left click at a SCREEN point (Cocoa, y-up). CGEvent takes top-left
+    /// global coordinates, so the y is flipped on the way out.
+    func clickOnScreen(_ cocoaPoint: CGPoint) {
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let cg = CGPoint(x: cocoaPoint.x, y: primaryHeight - cocoaPoint.y)
+        for type in [CGEventType.leftMouseDown, .leftMouseUp] {
+            CGEvent(mouseEventSource: nil, mouseType: type, mouseCursorPosition: cg, mouseButton: .left)?
+                .post(tap: .cghidEventTap)
+        }
+    }
+
+    /// An element note and a framed note captured in the SAME session both survive,
+    /// each carrying its own kind of geometry — which is what "area selections are
+    /// maintained alongside the elements the user selects" actually asks for.
+    func phase11bBothKindsCoexist(session: AnnotationSession, host: HostControls) -> (element: AnnotationNote?, area: AnnotationNote?) {
+        print("\n  11b — an element note and an area note coexist, and switching tools drops neither:")
+        guard let catcher = overlayCatcher(of: host.window) else {
+            check11(false, "the catcher panel is present")
+            return (nil, nil)
+        }
+        let axOrigin = ScreenSpace.windowAXOrigin(
+            cocoaFrame: catcher.frame,
+            primaryHeight: NSScreen.screens.first?.frame.height ?? 0
+        )
+
+        session.setTool(.point)
+        session.select(atAXPoint: axCenter(of: host.primary))
+        let element = session.addNote(comment: "element note", axOrigin: axOrigin)
+
+        // THE REPORTED FLOW: having selected and filed an element, use the frame
+        // tool. Nothing in the model forbids it; the interference was all in the
+        // view's hit-testing, which 11c measures.
+        session.setTool(.frame)
+        let sweep = axRect(ofCocoa: host.field.window!.convertToScreen(host.field.convert(host.field.bounds, to: nil)))
+            .insetBy(dx: -10, dy: -10)
+        session.select(inAXRect: sweep)
+        check11(session.selected != nil, "a frame drag resolves AFTER an element note has been captured (got \(self.label(session.selected)))")
+        let area = session.addNote(comment: "area note", axOrigin: axOrigin)
+
+        check11(session.pending.count == 2, "both notes survive in one session (pending == 2, got \(session.pending.count))")
+        check11(element?.drawnRect == nil, "the element note carries NO drawnRect")
+        check11(area?.drawnRect != nil && area?.drawnRect == area?.anchorRect,
+                "the area note carries a drawnRect that IS its anchor (an un-navigated framed note)")
+
+        // Switching the tool must never destroy work in progress. Pinned here as
+        // well as in the unit tests because this is the phase where a regression
+        // would actually be noticed.
+        session.setTool(.point)
+        session.select(atAXPoint: axCenter(of: host.secondary))
+        let live = session.selected
+        session.setTool(.frame)
+        check11(session.selected?.id == live?.id, "switching the tool KEEPS the live selection (the composer is not torn down)")
+        check11(session.pending.count == 2, "switching the tool keeps the captured notes")
+        session.cancelSelection()
+        session.setTool(.point)
+        return (element, area)
+    }
+
+    /// (a), measured both ways: a press on an existing pin must open the note's
+    /// editor in POINT mode and do NOTHING in FRAME mode.
+    ///
+    /// The point-mode leg is the non-vacuity control for the frame-mode one. Without
+    /// it, "the editor did not open" is equally consistent with the press never
+    /// having arrived — which is not a hypothetical: the harness's first version sent
+    /// the press in the same runloop turn as the `setTool` call, so it landed on the
+    /// previous layout, and the control leg is what exposed that.
+    ///
+    /// Each call runs on its OWN turn (see `runSteps`) so the tool switch has been
+    /// rendered before the press is sent.
+    func phase11cPress(session: AnnotationSession, host: NSWindow, notes: (element: AnnotationNote?, area: AnnotationNote?), tool: AnnotationSession.SelectionTool) {
+        if tool == .point { print("\n  11c — candidate (a): does a press that starts on a PIN reach the catcher?") }
+        guard let catcher = overlayCatcher(of: host), let note = notes.element,
+              let anchor = note.anchorRect?.origin else {
+            check11(false, "a captured note with a drawable pin is on screen for the press")
+            return
+        }
+        // The mode under test was set at the END of the previous step so it had a
+        // whole runloop turn to be rendered. Assert it rather than assume it: a
+        // press sent in the wrong mode would prove the opposite of what it claims.
+        check11(session.tool == tool, "sanity: the overlay is in \(tool == .point ? "POINT" : "FRAME") mode before the press")
+        // The pin is CENTRED on the anchor, in window-local y-DOWN coordinates; a
+        // mouse event carries Cocoa y-UP window coordinates.
+        let pinPoint = CGPoint(x: anchor.x, y: catcher.frame.height - anchor.y)
+        session.endEditing()
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            guard let event = NSEvent.mouseEvent(
+                with: type, location: pinPoint, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: catcher.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0
+            ) else {
+                check11(false, "a mouse event could be built for the pin press")
+                return
+            }
+            catcher.sendEvent(event)
+        }
+        let opened = session.editingNoteID
+        print("      \(tool == .point ? "POINT" : "FRAME") mode: press at pin #1 " +
+              "(\(String(format: "(%.0f, %.0f)", pinPoint.x, pinPoint.y)) in the catcher panel) -> editingNoteID=\(opened ?? "nil")")
+        if tool == .point {
+            check11(opened == note.id,
+                    "control: in POINT mode the press lands on the pin and opens its editor (pins behave exactly as they did)")
+        } else {
+            check11(opened == nil,
+                    "in FRAME mode the pin is INERT — the press is not swallowed by the pin, so it can start a frame drag")
+        }
+        session.endEditing()
+        // Leave the NEXT step's tool set here rather than at the top of it, so the
+        // switch gets a full runloop turn to be rendered before that press is sent.
+        session.setTool(tool == .point ? .frame : .point)
+    }
+
+    /// Recall: the hover→note mapping, driven through the session exactly as the
+    /// catcher drives it, plus the two other ways a mark appears and disappears.
+    func phase11dRecall(session: AnnotationSession, notes: (element: AnnotationNote?, area: AnnotationNote?)) {
+        print("\n  11d — hovering a pin recalls THAT note's mark, and only ever one:")
+        guard let element = notes.element, let area = notes.area,
+              let elementPin = element.anchorRect?.origin, let areaPin = area.anchorRect?.origin else {
+            check11(false, "both notes carry a drawable pin to hover")
+            return
+        }
+        check11(session.attendedNoteID == nil, "nothing is attended before the pointer goes anywhere near a pin")
+
+        session.attendPin(atWindowPoint: elementPin)
+        check11(session.attendedNoteID == element.id, "hovering pin #1 attends the ELEMENT note")
+        session.attendPin(atWindowPoint: areaPin)
+        check11(session.attendedNoteID == area.id, "moving onto pin #2 attends the AREA note — the previous mark goes with it")
+        check11(session.pending.filter { $0.id == session.attendedNoteID }.count == 1,
+                "exactly ONE note is attended at a time")
+
+        // Far from every pin. Non-vacuous only if it really is far: the two anchors
+        // are the pins, so offsetting well past the attention radius from both is
+        // the whole test.
+        let empty = CGPoint(x: max(elementPin.x, areaPin.x) + 400, y: max(elementPin.y, areaPin.y) + 400)
+        session.attendPin(atWindowPoint: empty)
+        check11(session.attendedNoteID == nil, "moving off every pin drops the mark")
+
+        // The edit card is the other way of asking the same question.
+        session.beginEditing(id: area.id)
+        check11(session.attendedNoteID == area.id, "opening a note's edit card also attends it (a card that names a note must not face an empty canvas)")
+        session.endEditing()
+        check11(session.attendedNoteID == nil, "closing the card removes the mark")
+
+        // And a mark can never be recalled for a note that no longer exists.
+        session.attendPin(atWindowPoint: elementPin)
+        check11(session.attendedNote?.id == element.id, "sanity: pin #1 is attended again before the delete")
+        session.deleteNote(id: element.id)
+        check11(session.attendedNote == nil, "deleting the attended note drops its mark with no separate bookkeeping")
     }
 
     func finish() {
@@ -2329,8 +2928,9 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 8 (selection navigation: round trips, history, component, frame anchor): \(passNav ? "PASS" : "FAIL")")
         print("  Phase 9 (pill + hit-test + scroll on a host hanging off the visible screen): \(passClamp ? "PASS" : "FAIL")")
         print("  Phase 10 (Escape closes the menu): \(passEscape ? "PASS" : "FAIL")")
+        print("  Phase 11 (recallable marks: toolbar pass-through, pins inert in frame mode, hover recall): \(passMarks ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp && passEscape ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp && passEscape && passMarks ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {

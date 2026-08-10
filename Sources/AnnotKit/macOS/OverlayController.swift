@@ -29,6 +29,17 @@ public final class OverlayController: NSObject {
     /// reason — the host moved, resized, or changed screen. Opening and closing the
     /// menu does not touch it, which is what makes the pill "always visible, always
     /// in the same spot" a structural property rather than a coincidence.
+    ///
+    /// KNOWN LIMITATION, measured rather than assumed (`AnnotKitOverlayProbe` 11a,
+    /// DECISIONS.md → "The toolbar panel claims its whole frame"): this panel is
+    /// 240x104 while the pill occupies only its bottom-right corner, and it consumes
+    /// presses across the WHOLE rect. macOS does not pass mouse events through the
+    /// transparent parts of a window — a panel whose content view draws nothing at
+    /// all swallows a click just the same — and `ignoresMouseEvents = true`, the one
+    /// thing that would let them through, would take the pill's own clicks with it.
+    /// So the host's bottom-right 240x104 is inert to clicks and to the start of a
+    /// frame drag, in both modes. Shrinking the panel to the pill is the fix and it
+    /// is deliberately not made here.
     private var toolbarPanel: KeyablePanel?
     private var toolbarHosting: NSHostingView<ToolbarOverlayView>?
     /// The CATCHER panel: exists ONLY while the menu is open. Covers the host so the
@@ -327,6 +338,15 @@ public final class OverlayController: NSObject {
         let hosting = NSHostingView(rootView: makeRootView())
         hosting.setAccessibilityElement(false)
         panel.contentView = hosting
+        // While the menu is open THIS panel scrolls the host (it covers the whole
+        // window, so the wheel never reaches the host's own scroller), which makes it
+        // the one place that knows exactly how far the content moved. Feed that back
+        // into the notes so a pin — and the mark recalled from it — stays on the
+        // content it was made on. Wired on the CATCHER only: the toolbar panel is a
+        // 240x104 corner that no host scroller lives under.
+        panel.onHostScrolled = { [weak self] translation, viewport in
+            self?.session.translateNotes(by: translation, within: viewport)
+        }
         host.addChildWindow(panel, ordered: .above)
         catcherPanel = panel
         catcherHosting = hosting
@@ -619,6 +639,16 @@ enum OverlayPlacement {
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 
+    /// Called after this panel has driven a host scroller, with the translation it
+    /// applied to the content and that scroller's viewport — both in PANEL-LOCAL,
+    /// y-DOWN coordinates, which is the space captured notes store their rects in,
+    /// so the receiver applies them with no conversion of its own.
+    ///
+    /// A callback rather than a session reference because the panel's job is to
+    /// MEASURE, not to decide: it is the only object that knows how far the content
+    /// actually moved, and the only one that should not care what moves with it.
+    var onHostScrolled: ((CGSize, CGRect) -> Void)?
+
     /// Forensics for "the pill vanished": every path AppKit can take to hide a
     /// window funnels through `orderWindow`/`setIsVisible`/`close`, so logging the
     /// call stack at each one names the culprit instead of leaving a symptom.
@@ -704,6 +734,13 @@ final class KeyablePanel: NSPanel {
         guard let scrollView = view as? NSScrollView else { return }
 
         let clip = scrollView.contentView
+        // Where the content sits BEFORE the scroll, sampled from the document view
+        // itself rather than computed from the deltas. The deltas are what we ASK
+        // for; this is what the scroller GAVE us, which differs at the ends of the
+        // document (`constrainBoundsRect` clamps) and would otherwise slide the
+        // notes further than the content they are pinned to.
+        let documentBefore = scrollView.documentView?.convert(NSPoint.zero, to: nil)
+
         // Non-precise deltas (an external mouse wheel) are in LINES; convert to
         // points the same way NSScrollView itself does.
         let scale: CGFloat = event.hasPreciseScrollingDeltas ? 1 : scrollView.verticalLineScroll
@@ -714,6 +751,40 @@ final class KeyablePanel: NSPanel {
         origin.y += (clip.isFlipped ? -1 : 1) * event.scrollingDeltaY * scale
         clip.scroll(to: clip.constrainBoundsRect(NSRect(origin: origin, size: clip.bounds.size)).origin)
         scrollView.reflectScrolledClipView(clip)
+
+        reportScroll(of: scrollView, documentBefore: documentBefore, host: host)
+    }
+
+    /// Hand the translation this panel just applied to the host's content, plus the
+    /// viewport it applied it inside, to whoever is tracking geometry over the host
+    /// (the overlay's captured notes: their pins and their recalled marks).
+    ///
+    /// Measured by DIFFERENCE, through the view hierarchy, rather than derived from
+    /// the deltas: sampling the document view's own position before and after is
+    /// correct for a flipped or unflipped document, for a scroll clamped at either
+    /// end, and for any coordinate convention the host happens to use — three ways
+    /// arithmetic on the deltas would have to be right, and only be discovered wrong
+    /// as a mark drawn slightly off the thing it describes.
+    private func reportScroll(of scrollView: NSScrollView, documentBefore: NSPoint?, host: NSWindow) {
+        guard let onHostScrolled, let document = scrollView.documentView, let before = documentBefore else { return }
+        let after = document.convert(NSPoint.zero, to: nil)
+        // Window BASE coordinates are Cocoa (y-up) and panel-local space is y-down,
+        // so the vertical component flips; x does not.
+        let translation = CGSize(width: after.x - before.x, height: -(after.y - before.y))
+        guard translation != .zero else { return }
+
+        let clip = scrollView.contentView
+        let viewportOnScreen = host.convertToScreen(clip.convert(clip.bounds, to: nil))
+        onHostScrolled(translation, panelLocal(viewportOnScreen))
+    }
+
+    /// A screen rect in this panel's own y-DOWN, top-left-origin space — the space
+    /// `OverlayView` draws in and captured notes store their rects in.
+    private func panelLocal(_ screenRect: NSRect) -> CGRect {
+        CGRect(x: screenRect.minX - frame.minX,
+               y: frame.maxY - screenRect.maxY,
+               width: screenRect.width,
+               height: screenRect.height)
     }
 }
 #endif

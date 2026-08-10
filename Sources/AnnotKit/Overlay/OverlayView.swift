@@ -66,6 +66,15 @@ struct OverlayView: View {
         ZStack(alignment: .topLeading) {
             catcher
 
+            // The RECALLED mark for the one note being attended to, beneath both
+            // the live highlight and the pins. Lowest of the three because it is
+            // the weakest claim on screen: the live highlight answers what the NEXT
+            // press binds to, and a picture of a note already filed must never be
+            // able to obscure that. Annotate-mode-only, like the pins.
+            if session.mode == .annotating {
+                AnnotationMarks(session: session)
+            }
+
             highlightLayer
 
             // Numbered comment pins (annotate-mode-only chrome). Layered ABOVE
@@ -133,6 +142,13 @@ struct OverlayView: View {
     ///    frame stays beneath it, DIMMED, because it is still what the note records
     ///    (`regionRect`) even though it no longer decides the binding.
     /// 4. **Point selection / hover** — the original element highlight.
+    ///
+    /// A RECALLED MARK (``AnnotationMarks``) is not a fifth rung of this ladder and
+    /// is deliberately excluded from its exclusivity: the four above are all answers
+    /// to "what does the next press bind to", asked continuously by the pointer,
+    /// whereas a mark answers "what was note 3 about?" — asked deliberately, one
+    /// note at a time, and never on unless the user is asking. It renders BENEATH
+    /// this layer so the live answer stays the loudest thing on screen.
     @ViewBuilder
     private var highlightLayer: some View {
         // The band REPLACES everything else while a frame is being drawn. Showing a
@@ -235,8 +251,16 @@ struct OverlayView: View {
                         // resolving an element under the moving pointer would draw a
                         // competing highlight underneath the band (and burn an AX
                         // query per motion event) for a selection the release is
-                        // about to overwrite anyway.
+                        // about to overwrite anyway. The same reasoning covers pin
+                        // attention, which `beginFrameDrag` has already dropped.
                         guard marqueeRect == nil else { return }
+                        // Recall lives HERE, not on the pin, and in BOTH tools: the
+                        // catcher covers the whole surface and stays hit-testable in
+                        // frame mode, where the pins deliberately do not (see
+                        // ``PinAttentionRule``). The point is already window-local —
+                        // the space the notes' rects are stored in — so unlike the
+                        // AX hover below it needs no `axOrigin` at all.
+                        session.attendPin(atWindowPoint: point)
                         session.hover(atAXPoint: CGPoint(x: point.x + axOrigin.x, y: point.y + axOrigin.y))
                     case .ended:
                         // The cursor left the catcher (it covers the host's full
@@ -336,6 +360,17 @@ struct OverlayView: View {
     /// element, with a single icon row — tree navigation on the left, dismiss and
     /// commit on the right. Enter submits; Escape dismisses via the host's key
     /// monitor (``EscapeRule``), not from inside this view.
+    ///
+    /// KNOWN AND ACCEPTED: this card sits ADJACENT TO — and for a large element,
+    /// over — the thing it belongs to, so a frame drawn around that same element
+    /// starts under the card and the press goes to the card instead of the catcher.
+    /// That is not a bug to be fixed by making the card porous: it is a text field
+    /// the user may be typing into, and a card that let presses through would drop
+    /// clicks meant for its own buttons. The mitigations are the ordinary ones —
+    /// dismiss the card first (Escape, Cancel), or start the drag from outside it —
+    /// and this is written down here so it is not rediscovered as a defect. Contrast
+    /// the PINS, which are inert in frame mode (``AnnotationPins``): a pin has no
+    /// state to lose, so it can afford to get out of the way.
     ///
     /// The four controls used to be two rows of TEXT buttons (a Parent/Child
     /// navigation row above a Cancel/Add note footer), because four labelled
@@ -497,7 +532,9 @@ struct OverlayView: View {
     private var editingCardData: (AnnotationNote, CGPoint)? {
         guard let id = session.editingNoteID,
               let note = session.pending.first(where: { $0.id == id }),
-              let anchor = note.anchor else { return nil }
+              // The pin sits on the anchor rect's ORIGIN (see ``AnnotationPins``),
+              // so the card points at the same corner it always did.
+              let anchor = note.anchorRect?.origin else { return nil }
         return (note, anchor)
     }
 
@@ -528,22 +565,18 @@ struct OverlayView: View {
         )
     }
 
-    /// Capture the pending note. Snapshots the pin anchor BEFORE `addNote` clears
-    /// the selection (AX top-left minus axOrigin — the same window-local transform
-    /// the highlight uses — so the pin lands on the top-left corner of whatever was
-    /// highlighted), then resets the field. Enter submits; Shift+Enter inserts a
-    /// newline (handled in the field's `onKeyPress`).
+    /// Capture the pending note, then reset the field. Enter submits; Shift+Enter
+    /// inserts a newline (handled in the field's `onKeyPress`).
     ///
-    /// The anchor follows the SAME rect the highlight and composer used: pinning a
-    /// framed note to the resolved element instead would drop the numbered pin on a
-    /// corner the user never swept — possibly far outside the frame, for a frame
-    /// that resolved to a large enclosing card.
+    /// The view hands over `axOrigin` and nothing else: the note's window-local
+    /// ``AnnotationNote/anchorRect``/``AnnotationNote/drawnRect`` are snapshotted
+    /// inside ``AnnotationSession/addNote(comment:selectedText:screenshot:axOrigin:)``,
+    /// which is the only place that can guarantee they are read BEFORE the capture
+    /// clears the selection. This used to be a point computed here, and the
+    /// ordering hazard was a comment rather than a property of the code.
     private func addNote() {
         guard !comment.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        let anchor = (session.selectionAnchorFrame ?? session.selected?.frame).map {
-            CGPoint(x: $0.minX - axOrigin.x, y: $0.minY - axOrigin.y)
-        }
-        session.addNote(comment: comment, anchor: anchor)
+        session.addNote(comment: comment, axOrigin: axOrigin)
         comment = ""
     }
 
