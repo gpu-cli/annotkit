@@ -35,6 +35,10 @@ public final class OverlayController: NSObject {
     private var axOrigin: CGPoint = .zero
     /// Panel-local size, for clamping the composer inside the visible region.
     private var surfaceSize: CGSize = .zero
+    /// How many times a fresh SwiftUI root view has been pushed into the hosting view.
+    /// Rebuilding it mid-hover is what makes the pill flicker or vanish, so the probe
+    /// asserts a storm of redundant geometry notifications pushes none.
+    private(set) var rootViewPushes = 0
 
     /// Host frame captured at the last geometry sync. A SwiftUI/content-sized host
     /// can attach at its PRE-LAYOUT frame and grow to its final size a runloop turn
@@ -374,9 +378,21 @@ public final class OverlayController: NSObject {
         // the VISIBLE region rather than inside a window that runs off the display.
         // Clamping the TOP (a host tucked under the menu bar) genuinely does move the
         // origin, and that is the case a host-derived origin breaks silently.
-        axOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: panelFrame, primaryHeight: primaryHeight)
-        surfaceSize = panelFrame.size
+        let newAXOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: panelFrame, primaryHeight: primaryHeight)
+        // Always record the host frame, even on the early-out below: the settle poll
+        // decides "has the host stopped growing" by comparing against this, so leaving
+        // it stale would keep the poll re-syncing a window that has already settled.
         lastSyncedHostFrame = host.frame
+        // Push a new SwiftUI root view ONLY when something it renders from actually
+        // changed. `syncFrameAndOrigin()` runs on every move/resize/screen-parameter
+        // notification, and a host that emits a burst of them (a relayout storm, a live
+        // resize drag) would otherwise replace the root view on each one — tearing down
+        // and rebuilding the pill mid-hover, which reads as the toolbar flickering or
+        // vanishing. Cheap guard, and it makes a redundant notification free.
+        guard newAXOrigin != axOrigin || panelFrame.size != surfaceSize else { return }
+        axOrigin = newAXOrigin
+        surfaceSize = panelFrame.size
+        rootViewPushes += 1
         hostingView?.rootView = makeRootView()
     }
 

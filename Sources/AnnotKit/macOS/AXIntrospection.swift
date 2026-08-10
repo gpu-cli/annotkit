@@ -97,12 +97,39 @@ enum AXIntrospection {
 
     // MARK: - Application element
 
-    /// Our own application AX element, with `AXEnhancedUserInterface` set so
-    /// AppKit/SwiftUI materializes the full semantic tree for us. Self-query
-    /// needs no accessibility-trust prompt.
+    /// The process's application AX element, cached, with `AXEnhancedUserInterface`
+    /// set EXACTLY ONCE so AppKit/SwiftUI materializes the full semantic tree for us.
+    /// Self-query needs no accessibility-trust prompt.
+    ///
+    /// Setting that attribute once is load-bearing, not an optimization. It was
+    /// previously re-set on every call — and this is called from the HOVER hit-test,
+    /// which the catcher runs at up to 60Hz while the pointer moves. Writing
+    /// `AXEnhancedUserInterface` tells AppKit an assistive client just attached, and
+    /// AppKit responds by re-evaluating (and, on SwiftUI hosts, relaying out) its
+    /// windows; doing that 60 times a second drove a resize storm in the host, each
+    /// resize firing `didResize` -> `syncFrameAndOrigin()` -> a fresh SwiftUI root
+    /// view, which is what made the toolbar pill visibly vanish.
+    ///
+    /// The reported trigger pinpointed it: hovering ONTO the pill stops the storm
+    /// (the pill consumes hover, so the catcher sees `.ended` and queries nothing)
+    /// and moving OFF it restarts them. It showed up on scrollable screens because a
+    /// large scroll view is a large AX tree, so materializing it is far more likely
+    /// to cost a real layout pass.
+    ///
+    /// The element itself is stable for the life of the process, so caching it also
+    /// drops an `AXUIElementCreateApplication` per query.
+    private static var cachedAppElement: AXUIElement?
+    /// How many times `AXEnhancedUserInterface` has been written. Must never exceed 1;
+    /// the probe asserts it across a hover storm so the regression cannot come back
+    /// silently.
+    private(set) static var enhancedUserInterfaceWrites = 0
+
     private static func appElement() -> AXUIElement {
+        if let cachedAppElement { return cachedAppElement }
         let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
         AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        enhancedUserInterfaceWrites += 1
+        cachedAppElement = app
         return app
     }
 
