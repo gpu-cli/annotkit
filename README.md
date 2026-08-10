@@ -1,10 +1,11 @@
 # AnnotKit
 
 Native in-app annotation for AI coding agents. Click a UI element in your own
-macOS or iOS app, attach a note, and emit an agent-readable, code-locating
-annotation. The native analogue of the web Agentation tool.
+macOS or iOS app — or drag a frame around it — attach a note, and emit an
+agent-readable, code-locating annotation. The native analogue of the web
+Agentation tool.
 
-A click becomes a stable selector, an element path, a screenshot, and your
+The gesture becomes a stable selector, an element path, a screenshot, and your
 comment, so an AI coding agent can locate the exact view instead of guessing
 from a verbal description.
 
@@ -47,6 +48,12 @@ Annotation.install(sink: ClipboardSink(format: .json))
   non-identified target to its nearest seeded `accessibilityIdentifier`
   (`#Settings.Models >> @Save`), so it round-trips a resolver and points an agent
   at the right component's code. See `DECISIONS.md`.
+- **Drawing a frame** instead of clicking inverts that rule on purpose: a click
+  means "this exact spot" and descends, while a box drawn around a card means "I
+  mean this *whole* thing", so the **largest** element the frame surrounds wins
+  and the labels inside it do not. A frame drawn *inside* something binds to the
+  tightest element enclosing it, and the drawn rect rides along on the note.
+  Saves hunting for the one pixel that hit-tests to a composite component.
 - Notes are written in the `AGENTATION_NOTES.md` format that the
   `process-agentation-notes` skill consumes, or copied to the clipboard.
 

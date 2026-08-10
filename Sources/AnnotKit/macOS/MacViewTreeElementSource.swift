@@ -79,7 +79,7 @@ public final class MacViewTreeElementSource: ElementSource, ComponentLadderSourc
 
     public func hitTest(_ point: CGPoint) -> Element? {
         guard let chain = Self.resolvedChain(at: point) else { return nil }
-        let candidates = chain.map(Self.candidate(for:))
+        let candidates = chain.map { Self.candidate(for: $0) }
         guard let index = AnnotationTargetRule.targetIndex(in: candidates) else { return nil }
         return Self.element(for: chain[index])
     }
@@ -88,7 +88,7 @@ public final class MacViewTreeElementSource: ElementSource, ComponentLadderSourc
     /// views), matching the AX and iOS sources so all three widen identically.
     public func componentLadder(at point: CGPoint) -> [Element] {
         guard let chain = Self.resolvedChain(at: point) else { return [] }
-        let candidates = chain.map(Self.candidate(for:))
+        let candidates = chain.map { Self.candidate(for: $0) }
         return AnnotationTargetRule.wideningLadder(in: candidates).map { Self.element(for: chain[$0]) }
     }
 
@@ -216,13 +216,21 @@ public final class MacViewTreeElementSource: ElementSource, ComponentLadderSourc
 
     /// Read one view's target-relevant facts into a pure ``TargetCandidate``. The
     /// NSView tree has no displayed value text, so `value` is always empty.
-    private static func candidate(for view: NSView) -> TargetCandidate {
+    ///
+    /// `isContainerRoot` defaults to false because on the POINT path the chain is
+    /// an ancestor chain rooted at the hit's window content view, and flagging it
+    /// there would change which element a click resolves to. The marquee walk
+    /// passes true for the content view: a whole-tree walk offers it as a real
+    /// candidate, and without the flag a large drag would surround it and bind the
+    /// note to the app's entire content view instead of the card inside it.
+    private static func candidate(for view: NSView, isContainerRoot: Bool = false) -> TargetCandidate {
         TargetCandidate(
             role: String(describing: Swift.type(of: view)),
             identifier: view.accessibilityIdentifier(),
             label: view.accessibilityLabel() ?? "",
             value: "",
-            isActionable: view is NSControl
+            isActionable: view is NSControl,
+            isContainerRoot: isContainerRoot
         )
     }
 
@@ -235,6 +243,189 @@ public final class MacViewTreeElementSource: ElementSource, ComponentLadderSourc
 
     private static func primaryHeight() -> CGFloat {
         NSScreen.screens.first?.frame.height ?? 0
+    }
+}
+
+// MARK: - Child navigation (view -> the view inside it)
+
+extension MacViewTreeElementSource: ChildNavigationSource {
+    /// The meaningful subviews of `element`, most-likely-intended first, ordered by
+    /// the shared pure ``ChildNavigationRule`` so this source descends the same way
+    /// the AX and iOS sources do.
+    ///
+    /// Cost: no whole-tree walk. ``selector(for:)`` rebuilds every window's node
+    /// tree, which is fine once per capture but not here — this runs on every
+    /// selection change. The element's frame CENTRE instead gives a containment
+    /// descent from its window to the live `NSView`, after which only that view's
+    /// own subtree is visited, each branch stopping at its first meaningful node.
+    public func children(of element: Element, near hint: CGPoint?) -> [Element] {
+        let centre = CGPoint(x: element.frame.midX, y: element.frame.midY)
+        guard let root = Self.marqueeRoot(containing: centre),
+              let view = Self.descend(root, matching: element, containing: centre, depth: 0)
+        else { return [] }
+
+        var found: [NSView] = []
+        Self.collectNearestMeaningful(under: view, depth: 0, into: &found)
+        let candidates = found.map {
+            ChildCandidate(element: Self.candidate(for: $0), frame: Self.screenFrame(of: $0))
+        }
+        return ChildNavigationRule.order(candidates, near: hint).map { Self.element(for: found[$0]) }
+    }
+
+    /// The live `NSView` behind a public ``Element``, found by descending the
+    /// containing window along frames that contain the element's own centre —
+    /// bounded by tree DEPTH, not tree size. `hitTest` is deliberately not reused:
+    /// it honours `isHidden`/`hitTest` overrides and would refuse to re-find a
+    /// non-interactive view the user has already legitimately selected.
+    private static func descend(
+        _ view: NSView, matching element: Element, containing point: CGPoint, depth: Int
+    ) -> NSView? {
+        if matches(view, element) { return view }
+        guard depth < maxDepth else { return nil }
+        for subview in view.subviews where !subview.isHidden && subview.alphaValue > 0.01 {
+            let frame = screenFrame(of: subview)
+            guard frame.width > 0, frame.height > 0, frame.contains(point) else { continue }
+            if let found = descend(subview, matching: element, containing: point, depth: depth + 1) { return found }
+        }
+        return nil
+    }
+
+    /// Identity test for re-finding a captured ``Element``: identifier, view type,
+    /// and frame together. See the AX source's `matches` for why none of the three
+    /// is sufficient alone.
+    private static func matches(_ view: NSView, _ element: Element) -> Bool {
+        guard view.accessibilityIdentifier() == (element.path.last?.identifier ?? "") else { return false }
+        guard String(describing: Swift.type(of: view)) == element.role else { return false }
+        let frame = screenFrame(of: view)
+        // Half a point of slack — frames round-trip through a screen-space flip, and
+        // a strict `==` would make re-finding fail on a fractional layout.
+        return abs(frame.minX - element.frame.minX) < 0.5 && abs(frame.minY - element.frame.minY) < 0.5
+            && abs(frame.width - element.frame.width) < 0.5 && abs(frame.height - element.frame.height) < 0.5
+    }
+
+    /// The nearest MEANINGFUL descendants of `view`: each visible subview that is a
+    /// target in its own right, and for each that is not, the meaningful views
+    /// beneath it. Descending through unmeaningful wrappers is what keeps the Child
+    /// control alive under a SwiftUI/AppKit host, whose layout containers carry no
+    /// identifier or label of their own; each branch stops at its first meaningful
+    /// node, so this is not a subtree enumeration.
+    private static func collectNearestMeaningful(under view: NSView, depth: Int, into found: inout [NSView]) {
+        guard depth < maxDepth else { return }
+        for subview in view.subviews where !subview.isHidden && subview.alphaValue > 0.01 {
+            let frame = screenFrame(of: subview)
+            let isTarget = frame.width > 0 && frame.height > 0 && candidate(for: subview).isEligibleMeaningful
+            if isTarget {
+                found.append(subview)
+            } else {
+                collectNearestMeaningful(under: subview, depth: depth + 1, into: &found)
+            }
+        }
+    }
+}
+
+// MARK: - Marquee (drawn frame -> view)
+
+extension MacViewTreeElementSource: MarqueeTargetSource {
+    /// The ladder for a frame the user DREW, over the `NSView` tree: the view the
+    /// frame binds to per ``MarqueeTargetRule`` first, then its enclosing
+    /// identified views, broadest last — the same contract as
+    /// ``componentLadder(at:)``, so the session's widening works from a framed
+    /// selection unchanged.
+    ///
+    /// Cost: one full walk of the hit window's view tree per drag RELEASE. Never
+    /// during the drag and never on hover, which is what makes a whole-tree walk
+    /// affordable here where the hover path must stay on the ancestor chain.
+    public func marqueeLadder(in rect: CGRect) -> [Element] {
+        // Standardize first: a right-to-left / bottom-to-top drag arrives with
+        // negative extents, where the window lookup's `contains` degenerates.
+        let marquee = rect.standardized
+        guard let content = Self.marqueeRoot(containing: CGPoint(x: marquee.midX, y: marquee.midY)) else {
+            return []
+        }
+
+        // ONE recursive walk from the content view, so every candidate's depth is
+        // measured from the SAME root (content view = 0) — depth is the rule's
+        // tie-break between geometrically indistinguishable candidates, and mixing
+        // differently-rooted numbering would make it noise. The subtree is
+        // collected WHOLE, deliberately not pre-filtered to what intersects the
+        // frame: the rule's enclosing pass needs the views that CONTAIN the frame,
+        // which such a filter is exactly what discards.
+        var views: [NSView] = []
+        var candidates: [MarqueeCandidate] = []
+        Self.collectMarqueeCandidates(content, isRoot: true, depth: 0, views: &views, candidates: &candidates)
+
+        guard let resolution = MarqueeTargetRule.resolve(marquee: marquee, in: candidates) else { return [] }
+        let target = views[resolution.index]
+        return [Self.element(for: target)]
+            + Self.enclosingIdentifiedViews(of: target, upTo: content).map { Self.element(for: $0) }
+    }
+
+    /// The content view of the frontmost visible non-overlay window under `point`.
+    /// `NSApp.orderedWindows` is front-to-back, mirroring how the AX source reads
+    /// `kAXWindows`, so both sources pick the same window for the same drag. The
+    /// overlay panel is excluded by the identifier ``OverlayController`` stamps on
+    /// it — the drawn frame always lies over the expanded overlay, so without this
+    /// every marquee would walk our own hosting view.
+    private static func marqueeRoot(containing point: CGPoint) -> NSView? {
+        for window in NSApp.orderedWindows {
+            guard window.isVisible,
+                  window.accessibilityIdentifier() != AXIntrospection.overlayWindowIdentifier,
+                  let content = window.contentView,
+                  screenFrame(of: content).contains(point)
+            else { continue }
+            return content
+        }
+        return nil
+    }
+
+    /// Depth-first walk collecting a PARALLEL pair per view — the live `NSView`
+    /// and its pure ``MarqueeCandidate`` — so
+    /// ``MarqueeTargetRule/Resolution/index`` maps straight back to a view.
+    ///
+    /// Hidden and fully transparent subtrees are skipped: they keep real frames, so
+    /// a marquee would happily "surround" a hidden view the user cannot even see,
+    /// and being the largest such frame it would win pass 1 outright. The point
+    /// path gets this for free from `NSView.hitTest`, which a whole-tree walk does
+    /// not go through.
+    private static func collectMarqueeCandidates(
+        _ view: NSView,
+        isRoot: Bool,
+        depth: Int,
+        views: inout [NSView],
+        candidates: inout [MarqueeCandidate]
+    ) {
+        views.append(view)
+        candidates.append(
+            MarqueeCandidate(
+                element: candidate(for: view, isContainerRoot: isRoot),
+                frame: screenFrame(of: view),
+                depth: depth
+            )
+        )
+        guard depth < maxDepth else { return }
+        for subview in view.subviews where !subview.isHidden && subview.alphaValue > 0.01 {
+            collectMarqueeCandidates(
+                subview, isRoot: false, depth: depth + 1, views: &views, candidates: &candidates
+            )
+        }
+    }
+
+    /// The identified superviews of `target`, nearest first (so broadest last),
+    /// stopping BEFORE `root` — the content view is the container root and is never
+    /// a widening rung, for the same reason it is never a target. Pure ancestry,
+    /// matching this source's point ladder; the AX source's extra geometric scan
+    /// exists for SwiftUI `.background` surfaces, which are AX-only artifacts with
+    /// no counterpart in the `NSView` tree.
+    private static func enclosingIdentifiedViews(of target: NSView, upTo root: NSView) -> [NSView] {
+        var out: [NSView] = []
+        var current = target.superview
+        var depth = 0
+        while let view = current, view !== root, depth < maxDepth {
+            if !view.accessibilityIdentifier().isEmpty { out.append(view) }
+            current = view.superview
+            depth += 1
+        }
+        return out
     }
 }
 #endif

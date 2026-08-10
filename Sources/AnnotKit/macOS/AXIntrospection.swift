@@ -97,12 +97,39 @@ enum AXIntrospection {
 
     // MARK: - Application element
 
-    /// Our own application AX element, with `AXEnhancedUserInterface` set so
-    /// AppKit/SwiftUI materializes the full semantic tree for us. Self-query
-    /// needs no accessibility-trust prompt.
+    /// The process's application AX element, cached, with `AXEnhancedUserInterface`
+    /// set EXACTLY ONCE so AppKit/SwiftUI materializes the full semantic tree for us.
+    /// Self-query needs no accessibility-trust prompt.
+    ///
+    /// Setting that attribute once is load-bearing, not an optimization. It was
+    /// previously re-set on every call — and this is called from the HOVER hit-test,
+    /// which the catcher runs at up to 60Hz while the pointer moves. Writing
+    /// `AXEnhancedUserInterface` tells AppKit an assistive client just attached, and
+    /// AppKit responds by re-evaluating (and, on SwiftUI hosts, relaying out) its
+    /// windows; doing that 60 times a second drove a resize storm in the host, each
+    /// resize firing `didResize` -> `syncFrameAndOrigin()` -> a fresh SwiftUI root
+    /// view, which is what made the toolbar pill visibly vanish.
+    ///
+    /// The reported trigger pinpointed it: hovering ONTO the pill stops the storm
+    /// (the pill consumes hover, so the catcher sees `.ended` and queries nothing)
+    /// and moving OFF it restarts them. It showed up on scrollable screens because a
+    /// large scroll view is a large AX tree, so materializing it is far more likely
+    /// to cost a real layout pass.
+    ///
+    /// The element itself is stable for the life of the process, so caching it also
+    /// drops an `AXUIElementCreateApplication` per query.
+    private static var cachedAppElement: AXUIElement?
+    /// How many times `AXEnhancedUserInterface` has been written. Must never exceed 1;
+    /// the probe asserts it across a hover storm so the regression cannot come back
+    /// silently.
+    private(set) static var enhancedUserInterfaceWrites = 0
+
     private static func appElement() -> AXUIElement {
+        if let cachedAppElement { return cachedAppElement }
         let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
         AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+        enhancedUserInterfaceWrites += 1
+        cachedAppElement = app
         return app
     }
 
@@ -265,12 +292,45 @@ enum AXIntrospection {
         let candidates = chain.map { candidate(for: $0, windowFrame: windowFrame) }
         guard let targetIndex = AnnotationTargetRule.targetIndex(in: candidates) else { return [] }
         let target = chain[targetIndex]
-        let targetArea = area(of: target)
 
+        return [element(for: target, ancestorChain: chain)]
+            + enclosingComponents(of: target, containing: point, in: chain)
+                .map { element(for: $0, ancestorChain: ancestorChain(from: $0)) }
+    }
+
+    /// The identified components that geometrically ENCLOSE `target` at `point`,
+    /// smallest-first — the widening rungs above a bound target. Shared verbatim
+    /// by the point path (``componentLadder(for:)``) and the frame path
+    /// (``marqueeLadder(for:)``) so a click and a drag onto the same element can
+    /// never widen through different components; duplicating this scan is exactly
+    /// how the two paths would silently drift apart.
+    ///
+    /// The scan is GEOMETRIC (DECISIONS.md): a `.axCardSurface` card hangs its
+    /// identifier on a clear background leaf that is a SIBLING of the card's
+    /// content, so it never appears in an ancestor chain. Scanning each ancestor
+    /// PLUS its direct children reaches those surfaces without a full-tree walk.
+    /// Deduped by identifier (the same surface is reachable from several
+    /// ancestors), and the `>= targetArea` floor keeps a smaller identified
+    /// sibling that merely happens to cover the point out of the widening ladder.
+    ///
+    /// Container ROOTS are excluded, matching ``AnnotationTargetRule/wideningLadder(in:)``
+    /// stopping at the window. Load-bearing, not tidiness: the chain climbs to
+    /// `AXApplication`, whose direct children are the app's WINDOWS — including our
+    /// own overlay panel, which carries ``overlayWindowIdentifier`` and encloses
+    /// every point in the host. Without this the top rung of every ladder is
+    /// AnnotKit's own overlay, so widening would bind the user's note to our UI.
+    private static func enclosingComponents(
+        of target: AXUIElement,
+        containing point: CGPoint,
+        in rootFirstChain: [AXUIElement]
+    ) -> [AXUIElement] {
+        let targetArea = area(of: target)
         var containers: [(node: AXUIElement, area: CGFloat)] = []
         var seen = Set<String>()
-        for ancestor in chain {
+        for ancestor in rootFirstChain {
             for node in [ancestor] + elementArray(ancestor, kAXChildrenAttribute) {
+                let role = string(node, kAXRoleAttribute) ?? ""
+                guard role != "AXWindow", role != "AXApplication" else { continue }
                 let id = string(node, kAXIdentifierAttribute) ?? ""
                 guard !id.isEmpty, !seen.contains(id), !CFEqual(node, target) else { continue }
                 let frame = frameScreen(of: node)
@@ -282,9 +342,224 @@ enum AXIntrospection {
             }
         }
         containers.sort { $0.area < $1.area }
+        return containers.map(\.node)
+    }
 
+    // MARK: - Marquee (drawn frame -> element)
+
+    /// The component-widening ladder for a frame the user DREW: the element the
+    /// frame binds to per ``MarqueeTargetRule`` first, then each enclosing
+    /// identified component, broadest last. Same shape as
+    /// ``componentLadder(for:)``, because the session reuses its ladder machinery
+    /// verbatim — widening and the note's `component` field both assume
+    /// `ladder[0]` is the bound target. Empty when the frame resolves to nothing
+    /// (the session then captures a region note instead).
+    ///
+    /// Cost: this walks the whole window subtree ONCE, on drag RELEASE only —
+    /// never during the drag and never on hover. A full walk is affordable at that
+    /// rate; it would not be on the hover path, which is why the point path still
+    /// uses the ancestor-chain scan instead.
+    static func marqueeLadder(for rect: CGRect) -> [Element] {
+        // Standardize before anything geometric: a right-to-left / bottom-to-top
+        // drag arrives with negative extents, where `contains` degenerates and the
+        // window lookup below would silently find nothing.
+        let marquee = rect.standardized
+        let center = CGPoint(x: marquee.midX, y: marquee.midY)
+        let app = appElement()
+        // Same window pick as ``regionAnchor(for:)`` / ``hitBeneathOverlay(_:)``:
+        // `kAXWindows` is front-to-back, so the first non-overlay window containing
+        // the frame's center is the frontmost real target.
+        let windows = elementArray(app, kAXWindowsAttribute).filter { !isOverlayWindow($0) }
+        guard let window = windows.first(where: { frameScreen(of: $0).contains(center) }) else { return [] }
+        let windowFrame = frameScreen(of: window)
+
+        // ONE recursive walk, so every candidate's depth is measured from the SAME
+        // root (window = 0). Depth is the rule's tie-break between geometrically
+        // indistinguishable candidates; assembling the array from several
+        // differently-rooted traversals would turn that tie-break into noise.
+        //
+        // The subtree is collected WHOLE — deliberately not pre-filtered to what
+        // intersects the drawn frame. The rule's second pass needs the candidates
+        // whose frames CONTAIN the frame (the user drew inside something), and an
+        // intersects-the-marquee filter is precisely what discards them.
+        var nodes: [AXUIElement] = []
+        var candidates: [MarqueeCandidate] = []
+        collectMarqueeCandidates(
+            window, windowFrame: windowFrame, depth: 0, nodes: &nodes, candidates: &candidates
+        )
+
+        guard let resolution = MarqueeTargetRule.resolve(marquee: marquee, in: candidates) else { return [] }
+        let target = nodes[resolution.index]
+        let chain = ancestorChain(from: target)
+
+        // The widening rungs are anchored at the TARGET's frame center, not the
+        // drawn frame's: a sloppy marquee can spill outside the element it bound
+        // to, and a container that does not contain the target is not a component
+        // the user could widen to. This is also the value the point path passes.
+        let targetFrame = frameScreen(of: target)
+        let targetCenter = CGPoint(x: targetFrame.midX, y: targetFrame.midY)
         return [element(for: target, ancestorChain: chain)]
-            + containers.map { element(for: $0.node, ancestorChain: ancestorChain(from: $0.node)) }
+            + enclosingComponents(of: target, containing: targetCenter, in: chain)
+                .map { element(for: $0, ancestorChain: ancestorChain(from: $0)) }
+    }
+
+    /// Depth-first walk collecting a PARALLEL pair per node: the live
+    /// `AXUIElement` and its pure ``MarqueeCandidate``, so
+    /// ``MarqueeTargetRule/Resolution/index`` maps straight back to a live handle.
+    ///
+    /// The candidate is built with the same ``candidate(for:windowFrame:)`` the
+    /// point path uses, so chrome / container-root / window-ghost classification —
+    /// which is what the rule's eligibility filter reads — is identical for a click
+    /// and a drag by construction.
+    private static func collectMarqueeCandidates(
+        _ element: AXUIElement,
+        windowFrame: CGRect,
+        depth: Int,
+        nodes: inout [AXUIElement],
+        candidates: inout [MarqueeCandidate]
+    ) {
+        nodes.append(element)
+        candidates.append(
+            MarqueeCandidate(
+                element: candidate(for: element, windowFrame: windowFrame),
+                frame: frameScreen(of: element),
+                depth: depth
+            )
+        )
+        guard depth < maxDepth else { return }
+        for child in elementArray(element, kAXChildrenAttribute) {
+            // Starting from a non-overlay window should already put the overlay out
+            // of reach, but AppKit exposes an attached child PANEL through some
+            // parents' `kAXChildren`, so verify rather than assume: a marquee that
+            // swept the overlay's own hosting view would bind the note to our UI.
+            if isOverlayWindow(child) { continue }
+            // Chrome's whole subtree is skipped, not just the button: the traffic
+            // lights' inner glyph groups carry no chrome subrole of their own, so
+            // the rule's `isChrome` filter alone would let a marquee over the title
+            // bar bind to a glyph. The point path rejects chrome geometrically for
+            // the same reason.
+            if isChrome(child) { continue }
+            collectMarqueeCandidates(
+                child, windowFrame: windowFrame, depth: depth + 1, nodes: &nodes, candidates: &candidates
+            )
+        }
+    }
+
+    // MARK: - Child navigation (element -> the component inside it)
+
+    /// The meaningful children of `element`, most-likely-intended first — the
+    /// DOWNWARD counterpart of ``componentLadder(for:)``. Ordering is the shared
+    /// pure ``ChildNavigationRule``, so macOS and iOS descend identically.
+    ///
+    /// Cost: deliberately NOT a snapshot. `selector(for:)` walks the entire app via
+    /// ``snapshotNodes()``, which is affordable once per CAPTURE but not here —
+    /// this runs on every selection change, including each step of a rapid
+    /// Parent/Child exploration. Instead the bound element's frame CENTRE gives a
+    /// containment descent from its window (the same trick ``hitBeneathOverlay(_:)``
+    /// uses) to find the live handle, then only that element's own subtree is
+    /// visited, and each branch of it stops at the first meaningful node.
+    static func children(of target: Element, near hint: CGPoint?) -> [Element] {
+        let centre = CGPoint(x: target.frame.midX, y: target.frame.midY)
+        guard let node = locate(target, at: centre) else { return [] }
+        let windowFrame = ancestorChain(from: node)
+            .first { string($0, kAXRoleAttribute) == "AXWindow" }
+            .map(frameScreen(of:))
+
+        var found: [AXUIElement] = []
+        collectNearestMeaningful(under: node, windowFrame: windowFrame, depth: 0, into: &found)
+        let candidates = found.map {
+            ChildCandidate(element: candidate(for: $0, windowFrame: windowFrame), frame: frameScreen(of: $0))
+        }
+        return ChildNavigationRule.order(candidates, near: hint).map {
+            element(for: found[$0], ancestorChain: ancestorChain(from: found[$0]))
+        }
+    }
+
+    /// The live AX handle behind a public ``Element``, found by descending the
+    /// containing window along frames that contain the element's own centre.
+    /// Bounded by tree DEPTH rather than tree size, which is the whole point: an
+    /// identity map would have to be rebuilt from a full snapshot every time the
+    /// tree changed.
+    ///
+    /// Returns nil when the element has left the tree, or when a clipping ancestor
+    /// does not contain the element's centre. Both degrade the same benign way —
+    /// no children, so the composer's Child control stays disabled — rather than
+    /// offering a descent into something that is not the bound element.
+    private static func locate(_ element: Element, at centre: CGPoint) -> AXUIElement? {
+        let app = appElement()
+        let windows = elementArray(app, kAXWindowsAttribute).filter { !isOverlayWindow($0) }
+        guard let window = windows.first(where: { frameScreen(of: $0).contains(centre) }) else { return nil }
+        return descend(window, matching: element, containing: centre, depth: 0)
+    }
+
+    private static func descend(
+        _ node: AXUIElement,
+        matching element: Element,
+        containing point: CGPoint,
+        depth: Int
+    ) -> AXUIElement? {
+        if matches(node, element) { return node }
+        guard depth < maxDepth else { return nil }
+        for child in elementArray(node, kAXChildrenAttribute) {
+            if isOverlayWindow(child) || isChrome(child) { continue }
+            let frame = frameScreen(of: child)
+            guard frame.width > 0, frame.height > 0, frame.contains(point) else { continue }
+            if let found = descend(child, matching: element, containing: point, depth: depth + 1) { return found }
+        }
+        return nil
+    }
+
+    /// Identity test for re-finding a captured ``Element``. Identifier AND role AND
+    /// frame, because none alone is enough: identifiers are absent on the unseeded
+    /// elements this feature exists to navigate around, roles repeat everywhere,
+    /// and a coextensive background surface shares a frame with the content group
+    /// in front of it (the `.axCardSurface` pattern) — matching on frame alone would
+    /// silently list the wrong node's children.
+    private static func matches(_ node: AXUIElement, _ element: Element) -> Bool {
+        guard (string(node, kAXIdentifierAttribute) ?? "") == (element.path.last?.identifier ?? "") else {
+            return false
+        }
+        guard (string(node, kAXRoleAttribute) ?? "") == element.role else { return false }
+        let frame = frameScreen(of: node)
+        // Half a point of slack: AX geometry round-trips through CGFloat conversions
+        // and a strict `==` would make re-finding fail on a fractional layout.
+        return abs(frame.minX - element.frame.minX) < 0.5 && abs(frame.minY - element.frame.minY) < 0.5
+            && abs(frame.width - element.frame.width) < 0.5 && abs(frame.height - element.frame.height) < 0.5
+    }
+
+    /// The nearest MEANINGFUL descendants of `node`: each direct child that is a
+    /// target in its own right, and for each child that is not, the meaningful
+    /// nodes beneath it.
+    ///
+    /// Descending through unmeaningful wrappers is load-bearing, not thoroughness:
+    /// a SwiftUI `VStack` materializes as an unidentified, label-less `AXGroup`, so
+    /// a strict direct-children rule would find one ineligible group under most
+    /// cards, filter it out, and report every card as a leaf — the Child control
+    /// would be permanently disabled on exactly the UI it was built for. Each
+    /// branch stops at its first meaningful node, so this is not a subtree
+    /// enumeration.
+    private static func collectNearestMeaningful(
+        under node: AXUIElement,
+        windowFrame: CGRect?,
+        depth: Int,
+        into found: inout [AXUIElement]
+    ) {
+        guard depth < maxDepth else { return }
+        for child in elementArray(node, kAXChildrenAttribute) {
+            // Chrome and our own overlay are rejected here as well as by
+            // ``TargetCandidate/isEligibleMeaningful``: skipping the whole SUBTREE
+            // matters, because a traffic light's inner glyph groups carry no chrome
+            // subrole of their own and would otherwise be collected as children.
+            if isOverlayWindow(child) || isChrome(child) { continue }
+            let frame = frameScreen(of: child)
+            let isTarget = frame.width > 0 && frame.height > 0
+                && candidate(for: child, windowFrame: windowFrame).isEligibleMeaningful
+            if isTarget {
+                found.append(child)
+            } else {
+                collectNearestMeaningful(under: child, windowFrame: windowFrame, depth: depth + 1, into: &found)
+            }
+        }
     }
 
     /// Resolve `point` to a root-first ancestor chain of the deepest host element

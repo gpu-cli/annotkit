@@ -70,6 +70,14 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     /// the top-left of #Dashboard.Today"). Optional, so element notes serialize
     /// unchanged and old files decode (nil).
     public var regionOffset: CGPoint?
+    /// MARQUEE note: the frame the user DREW, with its origin relative to the
+    /// top-left of the element named by `selector` (its size is absolute). Like
+    /// `regionOffset` it is PERSISTED — it is the locator agents need when the
+    /// user framed a spot rather than clicked one ("a 320x48 band 40pt down inside
+    /// #Settings.Models"). Mutually exclusive with `regionOffset` by construction:
+    /// a note carries the point locator or the frame locator, never both. Optional,
+    /// so click notes serialize unchanged and old files decode (nil).
+    public var regionRect: CGRect?
 
     /// Explicit keys that OMIT `anchor`: `JSONFileSink` and the MCP
     /// `FileNotesStore` encode/decode `[AnnotationNote]` directly, so a naked
@@ -79,7 +87,7 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     private enum CodingKeys: String, CodingKey {
         case id, route, selector, elementPath, selectedText, comment, screenshot, timestamp
         case component, elementRole, elementText, unseeded
-        case regionOffset
+        case regionOffset, regionRect
     }
 
     public init(
@@ -96,7 +104,8 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         screenshot: CapturedImage? = nil,
         timestamp: String,
         anchor: CGPoint? = nil,
-        regionOffset: CGPoint? = nil
+        regionOffset: CGPoint? = nil,
+        regionRect: CGRect? = nil
     ) {
         self.id = id
         self.route = route
@@ -112,5 +121,6 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         self.timestamp = timestamp
         self.anchor = anchor
         self.regionOffset = regionOffset
+        self.regionRect = regionRect
     }
 }

@@ -40,7 +40,14 @@ public enum AnnotationFormatter {
         if note.unseeded == true {
             lines.append("**Unseeded**: the clicked element has no accessibilityIdentifier — locate it via the Component above, then narrow by the Element role/text; consider seeding it")
         }
-        if let region = note.regionOffset {
+        // `else if`, not a second `if`: the two locators are mutually exclusive by
+        // construction (a note is framed or it is a point, never both), and the
+        // chain is what documents that — two independent lines would let a future
+        // leak of one into the other print a self-contradicting block instead of
+        // failing loudly.
+        if let rect = note.regionRect {
+            lines.append("**Region**: framed \(Int(rect.width))x\(Int(rect.height)) at (x: \(Int(rect.minX)), y: \(Int(rect.minY))) from the top-left of \(note.selector)")
+        } else if let region = note.regionOffset {
             lines.append("**Region**: (x: \(Int(region.x)), y: \(Int(region.y))) from the top-left of \(note.selector)")
         }
         if let selected = note.selectedText, !selected.isEmpty {
@@ -74,6 +81,10 @@ public enum AnnotationFormatter {
         let timestamp: String
         let regionOffsetX: Int?
         let regionOffsetY: Int?
+        let regionRectX: Int?
+        let regionRectY: Int?
+        let regionRectWidth: Int?
+        let regionRectHeight: Int?
         let screenshotPixelWidth: Int?
         let screenshotPixelHeight: Int?
 
@@ -91,6 +102,10 @@ public enum AnnotationFormatter {
             timestamp = note.timestamp
             regionOffsetX = note.regionOffset.map { Int($0.x) }
             regionOffsetY = note.regionOffset.map { Int($0.y) }
+            regionRectX = note.regionRect.map { Int($0.minX) }
+            regionRectY = note.regionRect.map { Int($0.minY) }
+            regionRectWidth = note.regionRect.map { Int($0.width) }
+            regionRectHeight = note.regionRect.map { Int($0.height) }
             screenshotPixelWidth = note.screenshot?.pixelWidth
             screenshotPixelHeight = note.screenshot?.pixelHeight
         }

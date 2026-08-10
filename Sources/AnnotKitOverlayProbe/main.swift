@@ -273,6 +273,131 @@ func grownFrame(from base: CGRect) -> CGRect {
     CGRect(origin: base.origin, size: resizeLayout().grownSize)
 }
 
+// MARK: - Hosts that hang off the visible screen (Phase 9)
+
+/// A window that really goes where it is put, bypassing AppKit's
+/// keep-the-title-bar-below-the-menu-bar constraint. Needed ONLY by 9d: `setFrame`
+/// silently pins any window's top to `visibleFrame.maxY` (measured — a borderless one
+/// too), so a host tucked UNDER the menu bar, the one direction in which clamping moves
+/// the AX origin, cannot be built any other way. The window is genuinely there — real
+/// backing store at a real frame — so every assertion still reads real geometry.
+final class UnconstrainedWindow: NSWindow {
+    override func constrainFrameRect(_ frameRect: NSRect, to screen: NSScreen?) -> NSRect { frameRect }
+}
+
+/// A real scroller whose clip offset is the 9c witness.
+///
+/// The panel now scrolls the host by driving the enclosing `NSScrollView`'s clip view
+/// DIRECTLY by the event's deltas — never by handing the event object into the host's
+/// view tree, because NSScrollView answers a phase `began` (every trackpad scroll) by
+/// engaging event tracking against `event.window`, and cross-window that tracking
+/// wedges the panel's event delivery and display. A welcome side effect for the probe:
+/// the clip offset moves for a SYNTHESIZED event too (the old event-delivery path
+/// ignored synthetic wheels), so 9c can assert actual scrolling, not mere routing.
+/// Flipped like every real host document (SwiftUI documents are flipped); an
+/// unflipped one starts at the content's end, where a downward scroll is a no-op.
+final class FlippedProbeDocument: NSView {
+    override var isFlipped: Bool { true }
+}
+
+@MainActor
+func makeScrollPane(frame: NSRect) -> NSScrollView {
+    let scroll = NSScrollView(frame: frame)
+    let document = FlippedProbeDocument(frame: NSRect(x: 0, y: 0, width: frame.width, height: frame.height * 6))
+    scroll.documentView = document
+    scroll.hasVerticalScroller = true
+    return scroll
+}
+
+@MainActor
+struct ClampedHost {
+    let window: NSWindow
+    /// Lower and upper halves of the host content, each an independent scroller.
+    /// Which one MOVES is the witness for the panel→host coordinate conversion: the
+    /// panel re-aims the wheel through screen space before picking a target, so aiming
+    /// at a point whose panel-local and host-local interpretations fall in different
+    /// halves shows whether the conversion was applied.
+    let lowerScroll: NSScrollView
+    let upperScroll: NSScrollView
+    let button: NSButton
+}
+
+/// Build a host and stock its content: two stacked scroll spies and one identified
+/// button placed inside `visibleBand` (in screen coordinates) so 9b's click assertion is
+/// about a control the user can actually reach.
+@MainActor
+func makeClampedHost(title: String, frame: NSRect, unconstrained: Bool, visibleBand: NSRect) -> ClampedHost {
+    let window: NSWindow = unconstrained
+        ? UnconstrainedWindow(contentRect: frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+        : NSWindow(contentRect: frame, styleMask: [.titled, .closable], backing: .buffered, defer: false)
+    window.title = title
+    window.makeKeyAndOrderFront(nil)
+    window.setFrame(frame, display: true)
+
+    let size = window.contentView?.bounds.size ?? frame.size
+    let content = NSView(frame: NSRect(origin: .zero, size: size))
+    let lower = makeScrollPane(frame: NSRect(x: 0, y: 0, width: size.width, height: size.height / 2))
+    let upper = makeScrollPane(frame: NSRect(x: 0, y: size.height / 2, width: size.width, height: size.height / 2))
+    content.addSubview(lower)
+    content.addSubview(upper)
+
+    // The button's y is chosen in SCREEN space and converted back, so it sits in the
+    // band that survives the clamp whichever edge is being clipped.
+    let button = NSButton(title: "Clamped action", target: nil, action: nil)
+    button.setAccessibilityIdentifier("Clamp.Button")
+    let buttonScreenY = visibleBand.midY
+    let contentOriginScreenY = window.convertPoint(toScreen: .zero).y
+    button.frame = NSRect(x: 60, y: buttonScreenY - contentOriginScreenY, width: 200, height: 32)
+    content.addSubview(button)
+
+    window.contentView = content
+    return ClampedHost(window: window, lowerScroll: lower, upperScroll: upper, button: button)
+}
+
+/// The pill's own rect inside a panel at `frame`, mirroring `OverlayView.toolbar`: the
+/// bottom-right corner, 20pt padding, and the pill's real bounds (~180x44 at its widest,
+/// the same numbers the 240x104 idle panel is built from). Asserting on the PILL and not
+/// the panel is the whole point — the idle panel is deliberately taller than the pill,
+/// so "the panel overlaps the screen" would pass while the pill itself sat under the
+/// Dock.
+func pillRect(inPanel frame: CGRect) -> CGRect {
+    CGRect(x: frame.maxX - 20 - 180, y: frame.minY + 20, width: 180, height: 44)
+}
+
+/// Read the overlay's private `axOrigin` / `surfaceSize` by reflection — the same trade
+/// `EscapeMonitorLifecycleTests` makes for the Escape monitor. Clamping the panel severs
+/// the witness Phase 3 could rely on (the panel frame equalling the host frame), and
+/// widening the library's public API purely so a probe can look is a worse deal than
+/// this coupling. Returns nil if the property is renamed, and every caller FAILS on nil,
+/// so this can never silently assert nothing.
+@MainActor
+func overlayValue<T>(_ controller: OverlayController, _ label: String, as type: T.Type) -> T? {
+    for child in Mirror(reflecting: controller).children where child.label == label {
+        return child.value as? T
+    }
+    return nil
+}
+
+/// A wheel event whose `locationInWindow` is exactly `panelLocal` (Cocoa, y-up, relative
+/// to the panel). `NSEvent(cgEvent:)` yields `windowNumber == 0`, and AppKit reports such
+/// an event's `locationInWindow` as the CG location flipped into Cocoa screen space — so
+/// writing the flipped panel-local point into the CG event reproduces exactly what a real
+/// wheel delivered to the panel carries. (Verified: the round trip is exact.)
+@MainActor
+func makeScrollEvent(panelLocal: CGPoint, phase: Int64 = 0) -> NSEvent? {
+    guard let cg = CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1,
+                           wheel1: -120, wheel2: 0, wheel3: 0) else { return nil }
+    if phase != 0 {
+        // A trackpad stream: phase-tagged, continuous. This is the shape that engaged
+        // NSScrollView's cross-window event tracking under the old forwarding design.
+        cg.setIntegerValueField(.scrollWheelEventScrollPhase, value: phase)
+        cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+    }
+    let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+    cg.location = CGPoint(x: panelLocal.x, y: primaryHeight - panelLocal.y)
+    return NSEvent(cgEvent: cg)
+}
+
 // MARK: - SwiftUI host (mirrors AnnotKitDemo's DemoView) for issue-2 coverage
 
 /// A SwiftUI control surface identical in shape to `AnnotKitDemo.DemoView`, so the
@@ -341,6 +466,26 @@ func makeSwiftUIHost(title: String) -> NSWindow {
 /// Depth-first search for the AX frame (AX top-left screen coords) of the element
 /// with `id` inside a public snapshot. Used to derive each control's true center
 /// as the AX point to fire the queries at.
+/// The overlay now mounts TWO child panels: a permanently present TOOLBAR panel that
+/// carries the pill (fixed size, pinned to the host's bottom-right, unchanged by the
+/// menu opening) and a CATCHER panel that exists only while the menu is open and
+/// covers the host. `childWindows.first` is therefore no longer "the overlay" — these
+/// pick the one each assertion actually means.
+@MainActor
+func overlayCatcher(of host: NSWindow) -> NSWindow? {
+    // The catcher is the host-sized one; the toolbar is the small fixed corner.
+    host.childWindows?.max { lhs, rhs in
+        (lhs.frame.width * lhs.frame.height) < (rhs.frame.width * rhs.frame.height)
+    }
+}
+
+@MainActor
+func overlayToolbar(of host: NSWindow) -> NSWindow? {
+    host.childWindows?.min { lhs, rhs in
+        (lhs.frame.width * lhs.frame.height) < (rhs.frame.width * rhs.frame.height)
+    }
+}
+
 @MainActor
 func frame(ofID id: String, in windows: [WindowSnapshot]) -> CGRect? {
     func walk(_ element: Element) -> CGRect? {
@@ -451,11 +596,138 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ note: Notification) {
+        // Opt-in interactive reproduction of the vanishing-pill report: drives REAL
+        // window-server events (scroll, hover on the pill, hover off) against a tall
+        // SwiftUI ScrollView host, sampling the panel's visibility throughout. Kept
+        // out of the default run because it needs Accessibility trust to post events
+        // and takes over the pointer.
+        if ProcessInfo.processInfo.environment["ANNOTKIT_PROBE_HOVERSCROLL"] == "1" {
+            runHoverScrollRepro()
+            return
+        }
         print("=== AnnotKitOverlayProbe: EXPANDED-overlay AX diagnostic ===")
         h1 = makeSwiftUIHost(title: "AnnotKit Harness W1")
         // SwiftUI needs a beat to render before its AX tree materializes.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
             self?.phase1Baseline()
+        }
+    }
+
+    // ---- Interactive reproduction: scroll, hover on, hover off ------------
+
+    var reproHost: NSWindow?
+    var reproController: OverlayController?
+
+    func post(_ event: CGEvent?) { event?.post(tap: .cghidEventTap) }
+
+    func moveMouse(to cocoaPoint: CGPoint) {
+        // CGEvent uses top-left global coords; Cocoa is bottom-left.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let cg = CGPoint(x: cocoaPoint.x, y: primaryHeight - cocoaPoint.y)
+        post(CGEvent(mouseEventSource: nil, mouseType: .mouseMoved, mouseCursorPosition: cg, mouseButton: .left))
+    }
+
+    func scroll(lines: Int32) {
+        post(CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1, wheel1: lines, wheel2: 0, wheel3: 0))
+    }
+
+    func sample(_ label: String) {
+        guard let host = reproHost else { return }
+        let panel = host.childWindows?.first
+        let mode = reproController?.session.mode
+        print("[\(label)] panel: exists=\(panel != nil) visible=\(panel?.isVisible ?? false) " +
+              "frame=\(panel.map { fmt($0.frame) } ?? "-") parentSet=\(panel?.parent != nil) " +
+              "hostChildren=\(host.childWindows?.count ?? 0) mode=\(mode.map { "\($0)" } ?? "-") " +
+              "hostFrame=\(fmt(host.frame))")
+    }
+
+    func runHoverScrollRepro() {
+        print("=== HOVER/SCROLL REPRO: open menu -> scroll -> hover on pill -> hover off ===")
+        print("AXIsProcessTrusted=\(AXIsProcessTrusted()) (event posting needs trust; if false, events will not land)")
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
+        // A tall scrollable SwiftUI host, like the report's "scrollable screens".
+        // TALL=1 makes it taller than the display so the CLAMPED placement path runs —
+        // AppKit constrains the top under the menu bar but lets the bottom hang.
+        let tall = ProcessInfo.processInfo.environment["TALL"] == "1"
+        let window = UnconstrainedWindow(
+            contentRect: tall ? NSRect(x: 300, y: -500, width: 560, height: 1800)
+                              : NSRect(x: 300, y: 80, width: 560, height: 760),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false
+        )
+        window.title = "AnnotKit Scroll Host"
+        window.contentView = NSHostingView(rootView: ScrollView {
+            LazyVStack(alignment: .leading, spacing: 12) {
+                ForEach(0 ..< 120, id: \.self) { i in
+                    Text("Row \(i) — scrollable content that makes a large AX tree")
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.gray.opacity(0.12))
+                        .accessibilityIdentifier("Repro.Row\(i)")
+                }
+            }.padding(16)
+        })
+        window.makeKeyAndOrderFront(nil)
+        reproHost = window
+
+        let controller = OverlayController(session: AnnotationSession(
+            source: MacElementSource(), sink: NotesFileSink(path: "/dev/null")
+        ))
+        reproController = controller
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+            controller.mount(on: window)
+            controller.start() // "I open the menu"
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [self] in
+                sample("after start")
+                guard let panel = window.childWindows?.first else {
+                    print("NO PANEL — cannot continue"); exit(2)
+                }
+                // The pill sits 20pt in from the panel's bottom-right; aim at its center.
+                let pill = CGPoint(x: panel.frame.maxX - 20 - 90, y: panel.frame.minY + 20 + 22)
+                let content = CGPoint(x: window.frame.midX, y: window.frame.midY)
+                // EXIT decides where "off the menu" goes: back onto the catcher
+                // (inside), or OUT of the window — the pill hugs the corner, so a
+                // real pointer plausibly leaves the window entirely.
+                let exitMode = ProcessInfo.processInfo.environment["EXIT"] ?? "inside"
+                let offPill: CGPoint
+                switch exitMode {
+                case "right": offPill = CGPoint(x: window.frame.maxX + 60, y: pill.y)
+                case "below": offPill = CGPoint(x: pill.x, y: max(2, panel.frame.minY - 40))
+                default: offPill = CGPoint(x: pill.x, y: pill.y + 120)
+                }
+                print("exit mode = \(exitMode), offPill = \(offPill), tall = \(ProcessInfo.processInfo.environment["TALL"] ?? "0")")
+
+                var step = 0
+                let script: [(String, () -> Void)] = [
+                    ("move to content", { self.moveMouse(to: content) }),
+                    ("scroll x5", { for _ in 0 ..< 5 { self.scroll(lines: -3) } }),
+                    ("hover ON pill", { self.moveMouse(to: pill) }),
+                    ("hover OFF pill", { self.moveMouse(to: offPill) }),
+                    ("hover ON pill 2", { self.moveMouse(to: pill) }),
+                    ("hover OFF pill 2", { self.moveMouse(to: offPill) }),
+                ]
+                @MainActor func advance() {
+                    guard step < script.count else {
+                        sample("FINAL")
+                        let panelNow = window.childWindows?.first
+                        let gone = panelNow == nil || !(panelNow?.isVisible ?? false)
+                        print(gone ? "\n*** REPRODUCED: the panel is gone ***" : "\n*** NOT reproduced: panel still visible ***")
+                        exit(gone ? 3 : 0)
+                    }
+                    let (name, action) = script[step]
+                    step += 1
+                    action()
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) {
+                        Task { @MainActor in
+                            self.sample(name)
+                            advance()
+                        }
+                    }
+                }
+                advance()
+            }
         }
     }
 
@@ -690,7 +962,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         check1(session.mode == .idle, "controller.stop() -> idle mode")
         check1(session.pending.count == 2, "retained notes survive leaving annotate mode (pending still 2)")
 
-        guard let panel = h2.window.childWindows?.first else {
+        guard let panel = overlayCatcher(of: h2.window) else {
             check1(false, "child overlay panel STILL PRESENT after stop() (pill persists)")
             verifyPinModel(session: session)
             return
@@ -1159,8 +1431,484 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
 
             self.specController?.unmount()
             window.orderOut(nil)
-            self.finish()
+            self.phase7Marquee()
         }
+    }
+
+    // ---- Phase 7: marquee frame selection (F4) ------------------------------
+    // The user press-drags a rectangle around what they mean. Unlike a click
+    // (deepest-wins) a FRAME means "this whole thing", so the LARGEST element the
+    // frame surrounds wins — the promise being that a sloppy rect around a card
+    // binds to the card and not to the label inside it. Reuses the Phase 6
+    // fixture, whose seeded card / card text / section / button are exactly the
+    // nesting a marquee must disambiguate, and runs through the EXPANDED overlay
+    // because that is when a drag actually happens.
+    var marqueeController: OverlayController?
+    var marqueeSession: AnnotationSession?
+    var marqueeHost: NSWindow?
+    var passMarquee = true
+    func check7(_ cond: Bool, _ msg: String) {
+        passMarquee = passMarquee && cond
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+    }
+
+    /// One-line rendering of a ladder for the log.
+    func describe(_ ladder: [Element]) -> String {
+        ladder.isEmpty ? "[] (region fallback)" : ladder.map { "#\($0.id) \(fmt($0.frame))" }.joined(separator: "  ->  ")
+    }
+
+    /// The ladder contract the session depends on: `ladder[0]` is the bound
+    /// target, and every further rung is a DISTINCT, strictly enclosing component
+    /// (so widening from a framed selection only ever gets coarser).
+    func checkLadderShape(_ ladder: [Element], label: String) {
+        guard let target = ladder.first else {
+            check7(false, "\(label): ladder is non-empty")
+            return
+        }
+        var seen: Set<String> = [target.id]
+        let targetArea = target.frame.width * target.frame.height
+        var wellFormed = true
+        for rung in ladder.dropFirst() {
+            let encloses = rung.frame.contains(target.frame)
+            let notSmaller = rung.frame.width * rung.frame.height >= targetArea
+            let distinct = seen.insert(rung.id).inserted
+            if !(encloses && notSmaller && distinct) {
+                wellFormed = false
+                print("        rung #\(rung.id) \(fmt(rung.frame)) encloses=\(encloses) " +
+                      "notSmaller=\(notSmaller) distinct=\(distinct)")
+            }
+        }
+        check7(wellFormed, "\(label): every rung above ladder[0] encloses the target, is no smaller, and is distinct")
+        // Regression guard for a defect this probe found: the ancestor chain climbs
+        // to AXApplication, whose direct CHILDREN are the app's windows — our own
+        // overlay panel among them, identified and enclosing everything. It used to
+        // be the top rung of every ladder, so widening bound the note to AnnotKit's
+        // own UI. Never a host component, so never a rung.
+        check7(!ladder.contains { $0.id == overlayWindowIdentifier },
+               "\(label): no rung is AnnotKit's own overlay panel")
+    }
+
+    func phase7Marquee() {
+        print("\n--- Phase 7: marquee frame selection (drawn rect -> element) ---")
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 480),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "AnnotKit Harness W7 (marquee)"
+        window.contentView = NSHostingView(rootView: ProbeSpecificityView())
+        window.makeKeyAndOrderFront(nil)
+        marqueeHost = window
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-marquee.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: window)
+        controller.start()
+        marqueeController = controller
+        marqueeSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self else { return }
+            let source = MacElementSource()
+            let roots = source.snapshot().map(\.root)
+            guard let button = self.findElement(id: "Spec.Button", in: roots),
+                  let card = self.findElement(id: "Spec.Card", in: roots),
+                  let cardText = self.findElement(id: "Spec.CardText", in: roots),
+                  let section = self.findElement(id: "Spec.Section", in: roots) else {
+                check7(false, "snapshot exposes Spec.Button/Card/CardText/Section")
+                self.marqueeController?.unmount()
+                window.orderOut(nil)
+                self.finish()
+                return
+            }
+            print("      fixture: card=\(fmt(card.frame)) cardText=\(fmt(cardText.frame)) " +
+                  "section=\(fmt(section.frame)) button=\(fmt(button.frame))")
+
+            // 7a — a SLOPPY frame around the card (drawn 8pt proud of it, the way a
+            // hand-drag overshoots) binds to the CARD. The frame also fully
+            // surrounds the card's text, so this is the check that largest-wins is
+            // in force: without it the drag would bind to the label inside.
+            let aroundCard = card.frame.insetBy(dx: -8, dy: -8)
+            let cardLadder = source.marqueeLadder(in: aroundCard)
+            print("      frame around card \(fmt(aroundCard)) -> \(self.describe(cardLadder))")
+            check7(aroundCard.contains(cardText.frame), "sanity: the drawn frame also surrounds the card's TEXT")
+            check7(cardLadder.first?.id == "Spec.Card",
+                   "frame around the card -> #Spec.Card (got \(cardLadder.first.map { "#\($0.id)" } ?? "nil"))")
+            check7(cardLadder.first?.id != "Spec.CardText",
+                   "frame around the card is NOT bound to the text inside it (the feature's core promise)")
+            self.checkLadderShape(cardLadder, label: "card ladder")
+            check7(cardLadder.dropFirst().contains { $0.id == "Spec.Section" },
+                   "the card ladder can still widen to #Spec.Section (widening works from a framed selection)")
+
+            // 7b — a frame around the whole section binds to the SECTION, even
+            // though it surrounds the card, the button and the texts as well.
+            let aroundSection = section.frame.insetBy(dx: -6, dy: -6)
+            let sectionLadder = source.marqueeLadder(in: aroundSection)
+            print("      frame around section \(fmt(aroundSection)) -> \(self.describe(sectionLadder))")
+            check7(sectionLadder.first?.id == "Spec.Section",
+                   "frame around the section -> #Spec.Section (got \(sectionLadder.first.map { "#\($0.id)" } ?? "nil"))")
+            self.checkLadderShape(sectionLadder, label: "section ladder")
+
+            // 7c — a tight frame around just the button binds to the BUTTON: a
+            // small drag stays as specific as a click would have been.
+            let aroundButton = button.frame.insetBy(dx: -4, dy: -4)
+            let buttonLadder = source.marqueeLadder(in: aroundButton)
+            print("      frame around button \(fmt(aroundButton)) -> \(self.describe(buttonLadder))")
+            check7(buttonLadder.first?.id == "Spec.Button",
+                   "frame around the button -> #Spec.Button (got \(buttonLadder.first.map { "#\($0.id)" } ?? "nil"))")
+            self.checkLadderShape(buttonLadder, label: "button ladder")
+
+            // 7d — a frame drawn strictly INSIDE the card, in its padding, that
+            // surrounds NOTHING: the enclosing fallback binds it to the tightest
+            // thing it was drawn inside, the card — not the section that also
+            // contains it. This is the rect generalization of the point-region path.
+            let insideCard = CGRect(x: card.frame.minX + 6, y: card.frame.midY - 8, width: 16, height: 16)
+            let insideLadder = source.marqueeLadder(in: insideCard)
+            print("      frame inside card \(fmt(insideCard)) -> \(self.describe(insideLadder))")
+            check7(card.frame.contains(insideCard), "sanity: the inside frame is strictly within the card")
+            check7(!insideCard.intersects(cardText.frame), "sanity: the inside frame surrounds nothing (misses the text)")
+            check7(insideLadder.first?.id == "Spec.Card",
+                   "frame inside the card -> #Spec.Card via the enclosing fallback (got \(insideLadder.first.map { "#\($0.id)" } ?? "nil"))")
+            self.checkLadderShape(insideLadder, label: "inside-card ladder")
+
+            // 7e — a frame over empty space, outside every window: the adapter
+            // returns [] and hands the drag to the session's region fallback rather
+            // than binding a note to whatever happened to be frontmost.
+            let nowhere = CGRect(x: -20000, y: -20000, width: 120, height: 90)
+            let nowhereLadder = source.marqueeLadder(in: nowhere)
+            print("      frame over empty space \(fmt(nowhere)) -> \(self.describe(nowhereLadder))")
+            check7(nowhereLadder.isEmpty, "frame outside any window -> [] (region-fallback handoff)")
+
+            // 7f — a press-release that never moved is a CLICK, not a marquee: a
+            // degenerate rect must not bind to everything that encloses it.
+            let degenerate = CGRect(origin: center(of: card.frame), size: .zero)
+            check7(source.marqueeLadder(in: degenerate).isEmpty,
+                   "zero-area frame -> [] (a click is not a marquee)")
+
+            // 7g — NOTHING from AnnotKit's own overlay can enter the candidate set.
+            // Sharper for a marquee than for a click: a drag rect by construction
+            // spans screen the overlay is drawn across, and overlay elements are
+            // genuinely identified and genuinely meaningful, so the rule cannot
+            // reject them — a large overlay surface would WIN pass 1 on area and
+            // bind the user's note to our own UI. The walk is rooted at the HOST
+            // window (the overlay is filtered out of `kAXWindows` by identifier
+            // BEFORE the root is picked, never by "key" or "frontmost"), so the
+            // overlay's descendants are out of reach by construction. This asserts
+            // that construction against the live tree instead of trusting it.
+            let app = AXUIElementCreateApplication(ProcessInfo.processInfo.processIdentifier)
+            AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanTrue)
+            let rawWindows = AX.windows(app)
+            // BOTH overlay panels carry the identifier — correctly, since the point
+            // query has to skip the toolbar as well as the catcher — so pick the one
+            // that actually spans the host: the catcher. Taking `.first` here grabbed
+            // the small fixed toolbar and made the span check below fail.
+            let overlayPanel = rawWindows
+                .filter { AX.string($0, kAXIdentifierAttribute) == overlayWindowIdentifier }
+                .max { AX.frame($0).width * AX.frame($0).height < AX.frame($1).width * AX.frame($1).height }
+            check7(overlayPanel != nil, "the overlay panel IS a live AX window during the drag (a real shadowing risk)")
+            if let overlayPanel {
+                let panelFrame = AX.frame(overlayPanel)
+                // Without this the whole sub-phase would be vacuous: an overlay that
+                // does not cover the drag region proves nothing about one that does.
+                check7(panelFrame.contains(card.frame),
+                       "sanity: the expanded overlay SPANS the drag region (the card is drawn beneath it)")
+                let overlayIDs = Set(self.axCollectIDs(in: overlayPanel, depth: 0))
+                let hostWindow = rawWindows.first { AX.string($0, kAXTitleAttribute) == "AnnotKit Harness W7 (marquee)" }
+                let panelIsAXChildOfHost = hostWindow.map { host in
+                    AX.children(host).contains { CFEqual($0, overlayPanel) }
+                } ?? false
+                print("      overlay panel \(fmt(panelFrame)) carries \(overlayIDs.count) identified element(s); " +
+                      "exposed as an AX CHILD of the host window: \(panelIsAXChildOfHost)")
+                let everyResult = cardLadder + sectionLadder + buttonLadder + insideLadder
+                check7(!everyResult.contains { overlayIDs.contains($0.id) },
+                       "no marquee result — target or rung — is an element from AnnotKit's own overlay subtree")
+            }
+
+            self.marqueeController?.unmount()
+            window.orderOut(nil)
+            self.phase8Navigation()
+        }
+    }
+
+    // ---- Phase 8: selection navigation (F1 + F2) ----------------------------
+    // Parent/Child is BIDIRECTIONAL navigation over one path, and the property
+    // that makes it usable is that it round-trips: whatever you climbed, you can
+    // walk back down to, and vice versa. That is a claim about a LIVE tree — the
+    // whole reason descent replays history instead of re-querying is that a live
+    // UI would answer the same question differently on consecutive presses — so it
+    // has to be asserted here rather than only against hand-built fixtures.
+    var navController: OverlayController?
+    var navSession: AnnotationSession?
+    var navHost: NSWindow?
+    var passNav = true
+    func check8(_ cond: Bool, _ msg: String) {
+        passNav = passNav && cond
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+    }
+
+    /// Climb to the broadest rung, returning how many rungs were actually walked.
+    /// Doubles as the probe's only view of the path's SHAPE: the session keeps the
+    /// path private, so "how many rungs sit above the bound one" is observable only
+    /// by walking them — which is what lets 8c prove no extra rung was inserted.
+    func climbToTop(_ session: AnnotationSession) -> Int {
+        var climbed = 0
+        while session.selectParent() != nil { climbed += 1 }
+        return climbed
+    }
+
+    /// Walk `count` rungs back down, returning how many actually moved.
+    @discardableResult
+    func descend(_ session: AnnotationSession, _ count: Int) -> Int {
+        var moved = 0
+        for _ in 0 ..< count where session.selectChild() != nil { moved += 1 }
+        return moved
+    }
+
+    /// Identity for a round-trip assertion: id AND frame. The id alone is not
+    /// enough — an UNSEEDED element's id is its slash-joined path, which two
+    /// sibling rows of the same role and depth can share — and the frame alone is
+    /// not enough either, because a coextensive surface shares it with the content
+    /// group in front of it.
+    func same(_ lhs: Element?, _ rhs: Element?) -> Bool {
+        guard let lhs, let rhs else { return false }
+        return lhs.id == rhs.id && approxEqual(lhs.frame, rhs.frame, tol: 0.5)
+    }
+
+    func label(_ element: Element?) -> String {
+        guard let element else { return "nil" }
+        let text = element.value.isEmpty ? element.label : element.value
+        return "#\(element.id) \(element.role)\(text.isEmpty ? "" : " \"\(text)\"") \(fmt(element.frame))"
+    }
+
+    func phase8Navigation() {
+        print("\n--- Phase 8: selection navigation (parent/child round trips, frame anchoring) ---")
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 520, height: 700),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = "AnnotKit Harness W8 (navigation)"
+        window.contentView = NSHostingView(rootView: ProbeNavigationView())
+        window.makeKeyAndOrderFront(nil)
+        navHost = window
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-navigation.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: window)
+        controller.start()
+        navController = controller
+        navSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) { [weak self] in
+            guard let self else { return }
+            let source = MacElementSource()
+            let roots = source.snapshot().map(\.root)
+            guard let card = self.findElement(id: "Spec.Card", in: roots),
+                  let cardText = self.findElement(id: "Spec.CardText", in: roots),
+                  let section = self.findElement(id: "Spec.Section", in: roots),
+                  let list = self.findFirst(in: roots, where: { $0.label == "Nav list" }) else {
+                check8(false, "snapshot exposes Spec.Card/CardText/Section + the Nav list container")
+                self.navController?.unmount()
+                window.orderOut(nil)
+                self.phase9Clamp()
+                return
+            }
+            print("      fixture: card=\(fmt(card.frame)) cardText=\(fmt(cardText.frame)) " +
+                  "section=\(fmt(section.frame)) list=\(self.label(list))")
+
+            self.phase8aRoundTripUp(session: session, source: source, cardText: cardText)
+            self.phase8bcdDescent(session: session, source: source, list: list)
+            self.phase8eHover(session: session, cardText: cardText)
+            self.phase8fAnchoring(session: session, card: card)
+
+            // The hover re-check runs on a later turn ON PURPOSE: `hover` is
+            // throttled to ~60fps, so a re-hover issued in this same runloop turn
+            // would be dropped by the throttle and "still nil" would prove the
+            // throttle, not the tool gate.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
+                guard let self else { return }
+                self.phase8eHoverRevived(session: session, cardText: cardText)
+                self.navController?.unmount()
+                window.orderOut(nil)
+                self.phase9Clamp()
+            }
+        }
+    }
+
+    /// 8a — climbing N rungs and descending N returns to the ORIGINAL element.
+    func phase8aRoundTripUp(session: AnnotationSession, source: MacElementSource, cardText: Element) {
+        print("\n  8a — round trip UP: climb N, descend N, land on the original element:")
+        let point = center(of: cardText.frame)
+        let origin = session.select(atAXPoint: point)
+        print("      click \(fmt(CGRect(origin: point, size: .zero))) -> \(self.label(origin))")
+        check8(origin?.id == "Spec.CardText", "click selects #Spec.CardText (got \(self.label(origin)))")
+
+        let climbed = climbToTop(session)
+        let top = session.selected
+        print("      climbed \(climbed) rung(s) -> \(self.label(top))")
+        // Without this the round trip is vacuous: descending zero rungs trivially
+        // "returns" to where it started. Two rungs, not one, so the descent has to
+        // replay a sequence rather than a single undo.
+        check8(climbed >= 2, "the click's ladder offered >=2 rungs to climb (got \(climbed) — a real multi-rung path)")
+        check8(!same(top, origin), "climbing actually moved the binding off the original element")
+        check8(!session.canSelectParent, "the climb stopped at the BROADEST rung (Select Parent is spent)")
+
+        let descended = descend(session, climbed)
+        print("      descended \(descended) rung(s) -> \(self.label(session.selected))")
+        check8(descended == climbed, "descending walks back exactly as many rungs as were climbed")
+        check8(same(session.selected, origin),
+               "N up then N down returns to the ORIGINAL element (got \(self.label(session.selected)))")
+    }
+
+    /// 8b/8c/8d — descending BELOW the target: a real `ChildNavigationSource` query
+    /// against the live tree, the history replay, and the `component` fix.
+    ///
+    /// Why this needs the Nav-list container rather than the Spec fixtures: every
+    /// element in `ProbeSpecificityView` is an AX LEAF (the card and section are
+    /// `children: .ignore` surfaces; the button and texts have no AX children), so
+    /// a child query there can only ever return [] and every assertion built on it
+    /// would pass while proving nothing. That is asserted below rather than assumed,
+    /// so the day the fixture grows children this comment does not quietly rot.
+    func phase8bcdDescent(session: AnnotationSession, source: MacElementSource, list: Element) {
+        print("\n  8b/8c/8d — descend BELOW the target (live child query), history replay, component:")
+
+        // The frame IS how this selection is made: the list container's AX frame is
+        // the union of its rows (the documented `children: .contain` behaviour), so
+        // there is no point inside it that hit-tests to the container itself. A
+        // drawn frame binds to it by the marquee rule's largest-surrounded pass.
+        let drawn = list.frame.insetBy(dx: -6, dy: -6)
+        let target = session.select(inAXRect: drawn)
+        print("      frame \(fmt(drawn)) -> \(self.label(target))")
+        // Matched on label + frame, NOT on id, and that is not laziness: an unseeded
+        // element's id is its slash-joined path, and the path is rooted differently
+        // depending on which entry point produced the element — `snapshot()` roots
+        // its trees at the window, while the hit-test / marquee / navigation paths
+        // build the chain from the AXApplication. So the SAME live node is
+        // `AXWindow[0]/AXGroup[0]/…` here and `AXApplication[0]/AXWindow[1]/…`
+        // there. Pre-existing and orthogonal to this phase — but it is the concrete
+        // reason a note's `component` must be an IDENTIFIER and never an id (8d).
+        check8(target?.label == list.label && approxEqual(target?.frame ?? .zero, list.frame, tol: 0.5),
+               "the drawn frame binds to the Nav list container (got \(self.label(target)))")
+        check8((target?.path.last?.identifier ?? "").isEmpty,
+               "the bound target is UNSEEDED (so `component` must come from a rung above it)")
+        check8(target?.id.contains("/") == true,
+               "the unseeded target's id IS a slash-joined path (got \(target?.id ?? "nil")) — the string that must never be exported as a grep target")
+
+        let children = source.children(of: list, near: center(of: drawn))
+        print("      live children(of: list) = \(children.isEmpty ? "[]" : children.map { self.label($0) }.joined(separator: "  |  "))")
+        check8(!children.isEmpty, "the live tree really offers children under the bound target (the query is not returning [])")
+
+        // 8b — descend below the target, then Parent returns to the target.
+        let child = session.selectChild()
+        print("      selectChild() -> \(self.label(child))")
+        check8(child != nil, "selectChild() descends below the deepest known rung")
+        check8(!same(child, target), "the descent landed on a DIFFERENT element than the target")
+        check8(same(child, children.first),
+               "the descent landed on the rule's most-likely child (got \(self.label(child)), rule ranked \(self.label(children.first)))")
+        let backUp = session.selectParent()
+        print("      selectParent() -> \(self.label(backUp))")
+        check8(same(backUp, target), "Parent from the prepended child returns to the ORIGINAL target (round trip DOWN)")
+
+        // 8c — history, not a re-query. `descend` measures the path's shape by
+        // walking it: a second descent that RE-QUERIED would prepend a second rung,
+        // so the number of rungs above the child would grow by one. That count is
+        // the only externally visible witness of the prepend, which is why the
+        // check is phrased as a depth comparison rather than "the ids match" alone.
+        let secondChild = session.selectChild()
+        print("      selectChild() again -> \(self.label(secondChild))")
+        check8(same(secondChild, child), "the second descent lands on the SAME child (history, not a fresh heuristic)")
+        let depthAfterFirst = climbToTop(session)
+        descend(session, depthAfterFirst)
+        let thirdChild = session.selected
+        session.selectParent()
+        let fourthChild = session.selectChild()
+        let depthAfterThird = climbToTop(session)
+        descend(session, depthAfterThird)
+        print("      rungs above the child: after descent \(depthAfterFirst), after an up-down replay \(depthAfterThird)")
+        check8(depthAfterFirst >= 2, "the descended path has >=2 rungs above the child (a real path to compare)")
+        check8(same(thirdChild, child), "a full climb-and-return still lands on that same child")
+        check8(same(fourthChild, child), "the replayed descent lands on that same child")
+        check8(depthAfterThird == depthAfterFirst,
+               "re-descending did NOT prepend another rung (\(depthAfterFirst) -> \(depthAfterThird)) — it replayed history rather than re-querying the live tree")
+
+        // 8d — the component fix, against the live tree. The bound element is
+        // unseeded, so `component` is searched UPWARD from the bound rung — and it
+        // must be an identifier, never an unseeded element's slash-joined id, which
+        // would export as a grep target that matches nothing while looking
+        // perfectly plausible in the note.
+        check8(same(session.selected, child), "still bound to the descended child going into the capture")
+        check8((session.selected?.path.last?.identifier ?? "").isEmpty,
+               "the descended child is itself UNSEEDED (so the note's component is not just its own id)")
+        let note = session.addNote(comment: "phase 8 descended note")
+        print("      note component=\(note?.component ?? "nil") unseeded=\(note?.unseeded.map(String.init) ?? "nil") selector=\(note?.selector ?? "nil")")
+        check8(note != nil, "a note captured from the descended selection")
+        check8(note?.component != nil, "the descended note names a component to grep")
+        check8(note?.component?.contains("/") != true,
+               "the component is NOT a slash-joined path (got \(note?.component ?? "nil")) — an unseeded id must never be exported as a grep target")
+        check8(note?.component == "Nav.Section",
+               "the component is the first SEEDED rung above the bound one (got \(note?.component ?? "nil"))")
+    }
+
+    /// 8e — frame mode makes hover inert, gated in the SESSION.
+    func phase8eHover(session: AnnotationSession, cardText: Element) {
+        print("\n  8e — hover is POINT-MODE ONLY (gated in the session, not the view):")
+        let point = center(of: cardText.frame)
+        session.setTool(.point)
+        session.hover(atAXPoint: point)
+        print("      point-mode hover at \(String(format: "(%.0f, %.0f)", point.x, point.y)) -> \(self.label(session.hovered))")
+        // Non-vacuity: a point that hits nothing would leave `hovered` nil in BOTH
+        // modes, and the frame-mode assertion below would prove nothing at all.
+        check8(session.hovered?.id == "Spec.CardText",
+               "sanity: this point DOES resolve to a real element in point mode (got \(self.label(session.hovered)))")
+
+        session.setTool(.frame)
+        check8(session.hovered == nil, "switching to frame mode drops the standing highlight")
+        session.hover(atAXPoint: point)
+        print("      frame-mode hover at the SAME live point -> \(self.label(session.hovered))")
+        check8(session.hovered == nil, "hover() in frame mode is inert (no highlight, and no AX hit-test spent)")
+    }
+
+    /// 8e (continued, a later runloop turn) — and it comes back in point mode, so
+    /// the gate is the TOOL and not a point that went dead.
+    func phase8eHoverRevived(session: AnnotationSession, cardText: Element) {
+        session.setTool(.point)
+        session.hover(atAXPoint: center(of: cardText.frame))
+        print("      back in point mode, same point -> \(self.label(session.hovered))")
+        check8(session.hovered?.id == "Spec.CardText",
+               "hover resolves again once the tool is point (the gate was the TOOL, not a dead point)")
+    }
+
+    /// 8f — the drawn frame is the anchor until the user navigates.
+    func phase8fAnchoring(session: AnnotationSession, card: Element) {
+        print("\n  8f — frame anchoring: the drawn rect anchors the overlay until Parent/Child is pressed:")
+        let drawn = card.frame.insetBy(dx: -8, dy: -8)
+        let target = session.select(inAXRect: drawn)
+        print("      frame \(fmt(drawn)) -> \(self.label(target)) anchor=\(session.selectionAnchorFrame.map(fmt) ?? "nil")")
+        check8(target?.id == "Spec.Card", "the drawn frame resolves to a real element (got \(self.label(target)))")
+        // Non-vacuity: the anchor must differ from the resolved element's own frame,
+        // or "anchors to the frame" and "anchors to the element" are the same claim.
+        check8(!approxEqual(drawn, target?.frame ?? .zero, tol: 0.5),
+               "sanity: the drawn frame is NOT the resolved element's own frame (8pt proud of it)")
+        check8(session.selectionAnchorFrame.map { approxEqual($0, drawn, tol: 0.5) } ?? false,
+               "selectionAnchorFrame IS the drawn rect (got \(session.selectionAnchorFrame.map(fmt) ?? "nil"))")
+
+        let parent = session.selectParent()
+        print("      selectParent() -> \(self.label(parent)) anchor=\(session.selectionAnchorFrame.map(fmt) ?? "nil") " +
+              "marquee=\(session.selectedMarqueeRect.map(fmt) ?? "nil")")
+        check8(parent != nil, "sanity: the framed selection really had a parent rung to navigate to")
+        check8(session.selectionAnchorFrame == nil,
+               "navigating drops the frame anchor, revealing the bound element (got \(session.selectionAnchorFrame.map(fmt) ?? "nil"))")
+        check8(session.selectedMarqueeRect.map { approxEqual($0, drawn, tol: 0.5) } ?? false,
+               "the drawn rect SURVIVES navigation (it is still what the note records)")
+        session.cancelSelection()
     }
 
     /// First element matching `predicate`, depth-first.
@@ -1170,6 +1918,19 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             if let found = findFirst(in: element.children, where: predicate) { return found }
         }
         return nil
+    }
+
+    /// Every non-empty AX identifier in `element`'s subtree, including its own —
+    /// the set of ids a walk that strayed into the overlay would surface.
+    func axCollectIDs(in element: AXUIElement, depth: Int) -> [String] {
+        guard depth < 32 else { return [] }
+        var out: [String] = []
+        let id = AX.string(element, kAXIdentifierAttribute)
+        if !id.isEmpty { out.append(id) }
+        for child in AX.children(element) {
+            out.append(contentsOf: axCollectIDs(in: child, depth: depth + 1))
+        }
+        return out
     }
 
     /// Recursive raw-AX search for elements matching one of `subroles`.
@@ -1192,6 +1953,370 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         return nil
     }
 
+    // ---- Phase 9: a host that hangs off the visible screen ------------------
+    // The dogfooding report: "on scrollable screens, the menu in the bottom right
+    // disappears." A tall/scrollable host is a window taller than the display, and
+    // AppKit constrains a window's TOP under the menu bar but never lifts its bottom —
+    // so its bottom edge ends up below `visibleFrame`. BOTH overlay modes anchor the
+    // pill to that bottom edge (idle: a 240x104 panel at the host's bottom-right corner;
+    // annotate: the pill drawn at the bottom-right INSIDE a full-host-frame panel), so
+    // the toolbar is drawn under the Dock or off the display entirely and there is no
+    // way to reach it. Every sub-phase here first PROVES the host really extends past
+    // the visible area, or it would be asserting nothing.
+    var clampController: OverlayController?
+    var clampSession: AnnotationSession?
+    var clampHost: ClampedHost?
+    var passClamp = true
+    func check9(_ cond: Bool, _ msg: String) {
+        passClamp = passClamp && cond
+        print("      " + (cond ? "ok   " : "FAIL ") + msg)
+    }
+
+    /// The display the clamp is measured against. `NSScreen.main` is the screen the
+    /// probe's own windows land on, which is what `host.screen` will report back.
+    var visibleFrame: NSRect {
+        (NSScreen.main ?? NSScreen.screens.first)?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    }
+
+    /// How far the fixtures hang past the visible edge. Large enough that a stale,
+    /// unclamped placement is unambiguously off-screen rather than a rounding artifact.
+    let overhang: CGFloat = 300
+
+    func phase9Clamp() {
+        print("\n--- Phase 9: the pill on a host that hangs BELOW the visible screen (scrollable-window report) ---")
+        let visible = visibleFrame
+        // Top pinned to the visible top (so AppKit does not fight the placement) and
+        // TALLER than the visible height by `overhang` — exactly the shape a window
+        // takes when its content grows past the display.
+        let frame = NSRect(x: visible.midX - 310, y: visible.minY - overhang,
+                           width: 620, height: visible.height + overhang)
+        let host = makeClampedHost(title: "AnnotKit Harness W9 (below the fold)",
+                                   frame: frame, unconstrained: false,
+                                   visibleBand: visible.intersection(frame))
+        clampHost = host
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-clamp.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: host.window)
+        clampController = controller
+        clampSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.phase9aIdle()
+        }
+    }
+
+    /// The precondition every assertion in this phase rests on: the host really does
+    /// extend past the bottom of the visible area. Printed with the numbers so a run on
+    /// a different display arrangement is diagnosable.
+    @discardableResult
+    func assertHangsBelow(_ host: NSWindow) -> Bool {
+        let visible = visibleFrame
+        let hangs = host.frame.minY < visible.minY - 100
+        print("      host=\(fmt(host.frame)) visibleFrame=\(fmt(visible)) " +
+              "bottom hangs \(String(format: "%.0f", visible.minY - host.frame.minY))pt BELOW the visible area")
+        check9(hangs, "sanity: the host really extends past the bottom of the visible screen (else this phase is vacuous)")
+        return hangs
+    }
+
+    // ---- 9a: the IDLE pill stays on the visible screen ----------------------
+    func phase9aIdle() {
+        print("\n  9a — IDLE pill on a host whose bottom is below the visible area:")
+        guard let host = clampHost, let panel = overlayCatcher(of: host.window) else {
+            check9(false, "the overlay mounted a child panel on the clamped host")
+            return phase9dTucked()
+        }
+        assertHangsBelow(host.window)
+
+        let visible = visibleFrame
+        let unclamped = idleFrame(host.window.frame)
+        print("      idle panel=\(fmt(panel.frame)) pill=\(fmt(pillRect(inPanel: panel.frame))) " +
+              "(unclamped placement would be \(fmt(unclamped)), pill \(fmt(pillRect(inPanel: unclamped))))")
+        check9(!visible.contains(pillRect(inPanel: unclamped)),
+               "sanity: the UNCLAMPED bottom-right placement really is off the visible screen (the reported bug)")
+        check9(visible.contains(pillRect(inPanel: panel.frame)),
+               "the idle pill is fully inside the visible screen")
+        // Size, not just position: clamping by intersecting the panel down to the
+        // visible region would leave the pill's own panel too short to draw it.
+        check9(approxEqual(panel.frame, CGRect(origin: panel.frame.origin, size: CGSize(width: 240, height: 104))),
+               "the idle panel keeps its full 240x104 size (a clipped panel would clip the pill)")
+        // Hit-testability, the property the user actually lost: AppKit's own
+        // "which window would a click here land on" answer must be OUR panel.
+        //
+        // Ask only about THIS PROCESS's windows. `windowNumber(at:)` answers globally,
+        // so any unrelated app that happens to cover the point — a full-screen
+        // terminal running the probe, most obviously — makes the assertion fail for a
+        // reason that has nothing to do with AnnotKit. Walking our own window list
+        // front-to-back keeps the check about the panel-vs-host layering it is
+        // actually testing, and keeps the probe from flaking on whatever is frontmost.
+        let pillCenter = center(of: pillRect(inPanel: panel.frame))
+        let ownNumbers = Set(NSApp.windows.map(\.windowNumber))
+        var hitNumber = NSWindow.windowNumber(at: pillCenter, belowWindowWithWindowNumber: 0)
+        while hitNumber != 0, !ownNumbers.contains(hitNumber) {
+            hitNumber = NSWindow.windowNumber(at: pillCenter, belowWindowWithWindowNumber: hitNumber)
+        }
+        print("      windowNumber(at: pill center \(String(format: "(%.0f, %.0f)", pillCenter.x, pillCenter.y)))=\(hitNumber) " +
+              "panel=\(panel.windowNumber) host=\(host.window.windowNumber)")
+        check9(hitNumber == panel.windowNumber, "a click at the pill's center lands on the overlay panel (it is hit-testable)")
+
+        clampController?.start()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) { [weak self] in
+            self?.phase9bAnnotate()
+        }
+    }
+
+    // ---- 9b: the ANNOTATE pill stays on screen AND the hit-test stays true ---
+    func phase9bAnnotate() {
+        print("\n  9b — ANNOTATE pill + hit-test on the same clamped host:")
+        guard let host = clampHost, let controller = clampController,
+              let panel = overlayCatcher(of: host.window) else {
+            check9(false, "the overlay is still mounted in annotate mode")
+            return phase9dTucked()
+        }
+        let visible = visibleFrame
+        assertHangsBelow(host.window)
+        print("      annotate panel=\(fmt(panel.frame)) pill=\(fmt(pillRect(inPanel: panel.frame))) " +
+              "(unclamped would be the host frame, pill \(fmt(pillRect(inPanel: host.window.frame))))")
+        check9(!visible.contains(pillRect(inPanel: host.window.frame)),
+               "sanity: the pill drawn at the bottom-right of the FULL host frame is off the visible screen")
+        check9(visible.contains(pillRect(inPanel: panel.frame)),
+               "the annotate pill is fully inside the visible screen")
+
+        // The part that would make a naive fix worse than the bug: the surface the
+        // overlay transforms clicks through must be the surface it is now DRAWN on.
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        let panelAXOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: panel.frame, primaryHeight: primaryHeight)
+        guard let axOrigin = overlayValue(controller, "axOrigin", as: CGPoint.self),
+              let surfaceSize = overlayValue(controller, "surfaceSize", as: CGSize.self) else {
+            check9(false, "the controller still has axOrigin/surfaceSize to read (this phase asserts nothing otherwise)")
+            return phase9cScroll()
+        }
+        print("      axOrigin=\(String(format: "(%.1f, %.1f)", axOrigin.x, axOrigin.y)) " +
+              "panel-derived=\(String(format: "(%.1f, %.1f)", panelAXOrigin.x, panelAXOrigin.y)) " +
+              "surfaceSize=\(String(format: "%.0fx%.0f", surfaceSize.width, surfaceSize.height)) " +
+              "panel=\(String(format: "%.0fx%.0f", panel.frame.width, panel.frame.height)) " +
+              "host=\(String(format: "%.0fx%.0f", host.window.frame.width, host.window.frame.height))")
+        check9(approxEqualPt(axOrigin, panelAXOrigin), "axOrigin is derived from the CLAMPED panel frame")
+        check9(abs(surfaceSize.height - panel.frame.height) < 2,
+               "surfaceSize is the CLAMPED panel's size (the composer clamps cards to the VISIBLE region)")
+        check9(surfaceSize.height < host.window.frame.height - 100,
+               "the clamped surface is materially shorter than the host (the clip is real, not a no-op)")
+
+        // And now the click itself, along the real path: SwiftUI hands the catcher a
+        // PANEL-local point, the catcher ADDS axOrigin, the source resolves that.
+        let source = MacElementSource()
+        guard let buttonFrame = frame(ofID: "Clamp.Button", in: source.snapshot()) else {
+            check9(false, "the host's button is in the AX tree (needed to test the click through the clamped panel)")
+            return phase9cScroll()
+        }
+        let buttonAXCenter = center(of: buttonFrame)
+        let local = CGPoint(x: buttonAXCenter.x - panelAXOrigin.x, y: buttonAXCenter.y - panelAXOrigin.y)
+        let queried = CGPoint(x: local.x + axOrigin.x, y: local.y + axOrigin.y)
+        let hit = source.hitTest(queried)
+        print("      button AX \(fmt(buttonFrame)) -> panel-local \(String(format: "(%.0f, %.0f)", local.x, local.y)) " +
+              "-> catcher queries \(String(format: "(%.0f, %.0f)", queried.x, queried.y)) -> hit=\(hit?.id ?? "nil")")
+        check9(panel.frame.contains(CGPoint(x: buttonAXCenter.x, y: primaryHeight - buttonAXCenter.y)),
+               "sanity: the button really is under the clamped panel (a click on it goes through the catcher)")
+        check9(hit?.id == "Clamp.Button",
+               "a click on the clamped host still resolves to the element under it (got \(hit?.id ?? "nil"))")
+
+        phase9cScroll()
+    }
+
+    // ---- 9c: can the host be scrolled AT ALL while annotating? --------------
+    // The other half of the report: the expanded catcher covers the host with
+    // `ignoresMouseEvents = false`, and an event no view handles walks the PANEL's own
+    // responder chain, never the window beneath. If the wheel dies there, nothing below
+    // the fold can be annotated — on precisely the screens the report is about.
+    func phase9cScroll() {
+        print("\n  9c — scroll WHILE ANNOTATING: does a wheel over the catcher reach the host?")
+        guard let host = clampHost, let panel = overlayCatcher(of: host.window) else {
+            check9(false, "the overlay panel is present for the scroll measurement")
+            return phase9dTucked()
+        }
+        // Aim at the vertical middle of the VISIBLE band. Chosen so the correct
+        // (converted) host-local point lands in the UPPER spy while the unconverted
+        // panel-local point would land in the LOWER one — the two answers are
+        // distinguishable, so this measures the conversion and not just the routing.
+        let visible = visibleFrame
+        let aimScreen = CGPoint(x: panel.frame.midX, y: visible.midY)
+        let panelLocal = CGPoint(x: aimScreen.x - panel.frame.minX, y: aimScreen.y - panel.frame.minY)
+        let hostLocal = CGPoint(x: aimScreen.x - host.window.frame.minX, y: aimScreen.y - host.window.frame.minY)
+        let split = (host.window.contentView?.bounds.height ?? 0) / 2
+        print("      aim screen=\(String(format: "(%.0f, %.0f)", aimScreen.x, aimScreen.y)) " +
+              "panel-local=\(String(format: "(%.0f, %.0f)", panelLocal.x, panelLocal.y)) " +
+              "host-local=\(String(format: "(%.0f, %.0f)", hostLocal.x, hostLocal.y)) spy split at y=\(String(format: "%.0f", split))")
+        check9(panel.frame.contains(aimScreen), "sanity: the annotate catcher really covers the point being scrolled")
+        check9((hostLocal.y > split) != (panelLocal.y > split),
+               "sanity: converted and unconverted points land in DIFFERENT spies (so the target proves the conversion)")
+
+        guard let event = makeScrollEvent(panelLocal: panelLocal) else {
+            check9(false, "a synthesized wheel event could be built")
+            return phase9dTucked()
+        }
+        check9(approxEqualPt(event.locationInWindow, panelLocal),
+               "sanity: the synthesized event carries the panel-local location a real wheel would")
+
+        // The panel drives the enclosing scroller's CLIP directly — the event object
+        // never enters the host's view tree (a phase `began` would otherwise engage
+        // NSScrollView's event tracking against the PANEL window and wedge it; that
+        // was the vanishing-toolbar bug). Offset movement is therefore observable
+        // even for a synthesized event, which the old event-delivery path ignored.
+        let upperBefore = host.upperScroll.contentView.bounds.origin.y
+        let lowerBefore = host.lowerScroll.contentView.bounds.origin.y
+        panel.scrollWheel(with: event)
+        let upperMoved = abs(host.upperScroll.contentView.bounds.origin.y - upperBefore)
+        let lowerMoved = abs(host.lowerScroll.contentView.bounds.origin.y - lowerBefore)
+        print("      after the wheel: upper clip moved \(String(format: "%.1f", upperMoved))pt, lower \(String(format: "%.1f", lowerMoved))pt")
+        check9(upperMoved > 0, "a wheel over the annotate catcher SCROLLS the host (it is not swallowed by the panel)")
+        check9(lowerMoved == 0, "and it scrolls the pane actually under the pointer (the panel→host conversion is applied)")
+
+        // The trackpad case that used to KILL the overlay: a phase-tagged event. It
+        // must scroll like any other — and, mechanically, must never reach the host's
+        // own scrollWheel, which is what the direct-clip design guarantees.
+        if let phased = makeScrollEvent(panelLocal: panelLocal, phase: 1) {
+            let before = host.upperScroll.contentView.bounds.origin.y
+            panel.scrollWheel(with: phased)
+            check9(abs(host.upperScroll.contentView.bounds.origin.y - before) > 0,
+                   "a PHASE-tagged (trackpad) wheel scrolls too — the stream that wedged the old event-forwarding design")
+        } else {
+            check9(false, "a phase-tagged wheel event could be built")
+        }
+
+        clampController?.unmount()
+        clampHost?.window.orderOut(nil)
+        phase9dTucked()
+    }
+
+    // ---- 9d: the OTHER clamp direction — a host tucked under the menu bar ----
+    // Clamping the bottom leaves `axOrigin` untouched (it hangs off the frame's TOP
+    // edge), so 9b cannot tell a fix that re-derives the origin from one that forgot to.
+    // A host whose TOP is clipped can: there the origin really moves, and a host-derived
+    // origin offsets every click by exactly the clipped amount.
+    func phase9dTucked() {
+        print("\n  9d — the other direction: a host whose TOP is tucked under the menu bar:")
+        let visible = visibleFrame
+        let frame = NSRect(x: visible.midX - 310, y: visible.minY + 80,
+                           width: 620, height: visible.height - 80 + overhang)
+        let host = makeClampedHost(title: "AnnotKit Harness W9 (under the menu bar)",
+                                   frame: frame, unconstrained: true,
+                                   visibleBand: visible.intersection(frame))
+        clampHost = host
+
+        let session = AnnotationSession(
+            source: MacElementSource(),
+            sink: NotesFileSink(path: NSTemporaryDirectory() + "annotkit-clamp-top.md")
+        )
+        let controller = OverlayController(session: session)
+        controller.mount(on: host.window)
+        controller.start()
+        clampController = controller
+        clampSession = session
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.7) { [weak self] in
+            self?.phase9dChecks()
+        }
+    }
+
+    func phase9dChecks() {
+        guard let host = clampHost, let controller = clampController,
+              let panel = overlayCatcher(of: host.window) else {
+            check9(false, "the overlay mounted on the menu-bar-tucked host")
+            return finish()
+        }
+        let visible = visibleFrame
+        let primaryHeight = NSScreen.screens.first?.frame.height ?? 0
+        print("      host=\(fmt(host.window.frame)) visibleFrame=\(fmt(visible)) " +
+              "top is \(String(format: "%.0f", host.window.frame.maxY - visible.maxY))pt ABOVE the visible top")
+        check9(host.window.frame.maxY > visible.maxY + 50,
+               "sanity: the host's top really is under the menu bar (else the origin never moves and this proves nothing)")
+
+        let hostAXOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: host.window.frame, primaryHeight: primaryHeight)
+        let panelAXOrigin = ScreenSpace.windowAXOrigin(cocoaFrame: panel.frame, primaryHeight: primaryHeight)
+        guard let axOrigin = overlayValue(controller, "axOrigin", as: CGPoint.self) else {
+            check9(false, "the controller still has an axOrigin to read")
+            return finish()
+        }
+        print("      panel=\(fmt(panel.frame)) axOrigin=\(String(format: "(%.1f, %.1f)", axOrigin.x, axOrigin.y)) " +
+              "panel-derived=\(String(format: "(%.1f, %.1f)", panelAXOrigin.x, panelAXOrigin.y)) " +
+              "host-derived=\(String(format: "(%.1f, %.1f)", hostAXOrigin.x, hostAXOrigin.y))")
+        check9(!approxEqualPt(panelAXOrigin, hostAXOrigin),
+               "sanity: clamping the TOP really does move the AX origin (the two candidates differ)")
+        check9(approxEqualPt(axOrigin, panelAXOrigin),
+               "axOrigin follows the CLAMPED panel, not the host (a host-derived origin offsets every click here)")
+
+        let source = MacElementSource()
+        guard let buttonFrame = frame(ofID: "Clamp.Button", in: source.snapshot()) else {
+            check9(false, "the tucked host's button is in the AX tree")
+            return finish()
+        }
+        let buttonAXCenter = center(of: buttonFrame)
+        let local = CGPoint(x: buttonAXCenter.x - panelAXOrigin.x, y: buttonAXCenter.y - panelAXOrigin.y)
+        let queried = CGPoint(x: local.x + axOrigin.x, y: local.y + axOrigin.y)
+        let hit = source.hitTest(queried)
+        // What the SAME click would resolve to if the origin had stayed host-derived:
+        // named explicitly so the failure mode has a number next to it, not a shrug.
+        let stale = CGPoint(x: local.x + hostAXOrigin.x, y: local.y + hostAXOrigin.y)
+        print("      button AX \(fmt(buttonFrame)) -> panel-local \(String(format: "(%.0f, %.0f)", local.x, local.y)) " +
+              "-> queries \(String(format: "(%.0f, %.0f)", queried.x, queried.y)) hit=\(hit?.id ?? "nil"); " +
+              "a host-derived origin would query \(String(format: "(%.0f, %.0f)", stale.x, stale.y)) " +
+              "-> \(source.hitTest(stale)?.id ?? "nil")")
+        check9(hit?.id == "Clamp.Button",
+               "a click on the menu-bar-tucked host still resolves to the element under it (got \(hit?.id ?? "nil"))")
+
+        clampController?.unmount()
+        clampHost?.window.orderOut(nil)
+        phase10Escape()
+    }
+
+    // ---- Phase 10: Escape closes the menu -----------------------------------
+    // The one claim no unit test can make. A local key monitor is invoked by
+    // NSApplication's event DISPATCH, so it needs a real app with a running
+    // runloop — `NSApp.postEvent` puts a real key-down into that queue, which is
+    // as close to a keypress as a process can get to itself.
+    var passEscape = true
+    func check10(_ c: Bool, _ m: String) {
+        print("      " + (c ? "ok   " : "FAIL ") + m)
+        passEscape = passEscape && c
+    }
+
+    func escapeEvent() -> NSEvent? {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [],
+                         timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: 0,
+                         context: nil, characters: "\u{1B}", charactersIgnoringModifiers: "\u{1B}",
+                         isARepeat: false, keyCode: 53)
+    }
+
+    func phase10Escape() {
+        print("\n--- Phase 10: Escape closes the menu ---")
+        let host = makeHostWindow(title: "AnnotKit Escape W1")
+        let controller = OverlayController(session: AnnotationSession(
+            source: MacElementSource(), sink: NotesFileSink(path: "/dev/null")
+        ))
+        controller.mount(on: host.window)
+        controller.start()
+        check10(controller.session.mode == .annotating, "sanity: the menu is OPEN before the keypress")
+
+        guard let event = escapeEvent() else {
+            check10(false, "a real Escape key-down could be built")
+            controller.unmount(); host.window.orderOut(nil); return finish()
+        }
+        NSApp.postEvent(event, atStart: true)
+        // Dispatch happens on the runloop, not inline: let it turn.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+            guard let self else { return }
+            let mode = controller.session.mode
+            print("      after posting Escape: mode=\(mode)")
+            self.check10(mode == .idle, "Escape closed the menu (annotate mode exited)")
+            controller.unmount()
+            host.window.orderOut(nil)
+            self.finish()
+        }
+    }
+
     func finish() {
         print("\n  issue-2 (per-control hit-test through the expanded overlay): \(passIssue2 ? "PASS" : "FAIL")")
         print("  issue-1 (retention / copy / export / pill persistence):       \(pass1 ? "PASS" : "FAIL")")
@@ -1200,8 +2325,12 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 4 (window chrome excluded from the hit-test): \(passChrome ? "PASS" : "FAIL")")
         print("  Phase 5 (seeded container resolves on body hover): \(passCard ? "PASS" : "FAIL")")
         print("  Phase 6 (positional specificity by cursor position): \(passSpec ? "PASS" : "FAIL")")
+        print("  Phase 7 (marquee frame selection: drawn rect -> element): \(passMarquee ? "PASS" : "FAIL")")
+        print("  Phase 8 (selection navigation: round trips, history, component, frame anchor): \(passNav ? "PASS" : "FAIL")")
+        print("  Phase 9 (pill + hit-test + scroll on a host hanging off the visible screen): \(passClamp ? "PASS" : "FAIL")")
+        print("  Phase 10 (Escape closes the menu): \(passEscape ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp && passEscape ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {
@@ -1268,6 +2397,47 @@ struct ProbeSpecificityView: View {
                 .accessibilityIdentifier("Spec.Section")
         )
         .padding(24)
+    }
+}
+
+/// Phase 8 host content: the specificity fixture (reused unchanged — its card /
+/// card text / section are the nesting the UPWARD navigation and the frame anchor
+/// need) plus ONE addition it cannot supply: a container with real children.
+///
+/// The addition is deliberate and minimal. `ProbeSpecificityView`'s elements are
+/// all AX leaves, so `ChildNavigationSource` can only return [] for them and every
+/// descent assertion built on it would be vacuously green. This container is:
+///
+/// * MEANINGFUL but UNSEEDED (a label, no identifier) — so descending below it
+///   exercises the `component` search that must skip unseeded rungs, and its own
+///   `Element.id` is the slash-joined path that must never reach a note; and
+/// * a real AX parent (`children: .contain`) of two UNSEEDED rows — so the child
+///   the descent lands on is unseeded too, and the note's component has to be
+///   found further up, at `Nav.Section`.
+///
+/// Both fixtures share one window so the phase reads one snapshot; they are
+/// independent subtrees, so neither one's geometry disturbs the other.
+struct ProbeNavigationView: View {
+    var body: some View {
+        VStack(spacing: 24) {
+            ProbeSpecificityView()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Row one")
+                Text("Row two")
+            }
+            .padding(20)
+            .accessibilityElement(children: .contain)
+            .accessibilityLabel("Nav list")
+        }
+        .padding(24)
+        .background(
+            Color.clear
+                .contentShape(Rectangle())
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier("Nav.Section")
+        )
+        .padding(16)
     }
 }
 

@@ -12,12 +12,17 @@ final class LucideIconTests: XCTestCase {
 
     private let icons: [(name: String, icon: LucideIcon)] = [
         ("pencil", .pencil),
-        ("pencilOff", .pencilOff),
         ("check", .check),
         ("copy", .copy),
         ("download", .download),
         ("trash", .trash),
         ("close", .close),
+        ("mousePointer", .mousePointer),
+        ("squareDashed", .squareDashed),
+        ("arrowUp", .arrowUp),
+        ("arrowDown", .arrowDown),
+        ("undo2", .undo2),
+        ("send", .send),
     ]
 
     func testEachIconRendersNonEmptyPath() {
