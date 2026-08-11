@@ -1275,6 +1275,87 @@ final class AnnotationSessionTests: XCTestCase {
                        "a note outside the scroller is chrome, and chrome does not scroll")
     }
 
+    /// The LIVE selection travels with its content too, not just the captured notes.
+    ///
+    /// Reproduced before it was written: a frame drawn around row 3 held its exact
+    /// window position across a 360pt scroll and ended up drawn around row 8, while
+    /// the composer still named row 3 — reported as "the manually drawn frames
+    /// disappear on scroll". They detach rather than disappear, which is worse:
+    /// a rectangle that has quietly changed what it is pointing at.
+    func testScrollTranslatesTheLiveSelectionWithItsContent() {
+        let card = makeLadderElement("Card", frame: CGRect(x: 100, y: 300, width: 200, height: 80))
+        let section = makeLadderElement("Section", frame: CGRect(x: 50, y: 200, width: 400, height: 300))
+        let session = AnnotationSession(source: MarqueeSource(ladder: [card, section]),
+                                        sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let drawn = CGRect(x: 110, y: 310, width: 180, height: 60)
+        session.select(inAXRect: drawn)
+        XCTAssertEqual(session.selectionAnchorFrame, drawn, "sanity: the frame is the anchor before the scroll")
+
+        session.translateSelection(by: CGSize(width: 0, height: -120),
+                                   within: CGRect(x: 0, y: 0, width: 800, height: 800))
+
+        XCTAssertEqual(session.selectionAnchorFrame, drawn.offsetBy(dx: 0, dy: -120),
+                       "the drawn frame moves with the content it was drawn around")
+        XCTAssertEqual(session.selected?.frame, card.frame.offsetBy(dx: 0, dy: -120),
+                       "and so does the element it resolved to")
+        XCTAssertEqual(session.selected?.id, "Card",
+                       "a scroll MOVES an element; it does not make it a different element")
+        // The rungs are what Parent/Child will bind to later, so a rung left behind
+        // would re-anchor the note to where its element used to be.
+        XCTAssertEqual(session.selectParent()?.frame, section.frame.offsetBy(dx: 0, dy: -120),
+                       "the navigation path travelled with the selection")
+    }
+
+    /// A selection over something that did NOT scroll — a fixed sidebar, a second
+    /// pane — must stay exactly where it is. The viewport test is the whole
+    /// difference between correcting a stale frame and inventing a wrong one.
+    func testASelectionOutsideTheScrollersViewportDoesNotMove() {
+        let card = makeLadderElement("Card", frame: CGRect(x: 100, y: 300, width: 200, height: 80))
+        let session = AnnotationSession(source: MarqueeSource(ladder: [card]),
+                                        sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let drawn = CGRect(x: 110, y: 310, width: 180, height: 60)
+        session.select(inAXRect: drawn)
+
+        // A scroller far below the selection.
+        session.translateSelection(by: CGSize(width: 0, height: -120),
+                                   within: CGRect(x: 0, y: 600, width: 800, height: 200))
+        XCTAssertEqual(session.selectionAnchorFrame, drawn, "a selection that is not over this scroller stays put")
+        XCTAssertEqual(session.selected?.frame, card.frame)
+
+        session.translateSelection(by: .zero, within: CGRect(x: 0, y: 0, width: 800, height: 800))
+        XCTAssertEqual(session.selectionAnchorFrame, drawn, "and a scroll clamped at the end moves nothing at all")
+    }
+
+    /// The PERSISTED locator must be untouched by a scroll. `regionRect` is measured
+    /// from the anchor element, and both ends of that measurement move together — so
+    /// the record an agent reads is identical whether or not the user scrolled while
+    /// the composer was open. If these ever diverge, scrolling silently rewrites the
+    /// note's geometry.
+    func testScrollingDoesNotChangeThePersistedElementRelativeLocator() {
+        let anchor = Element(
+            id: "Panel", role: "AXGroup", type: "AXGroup", label: "Panel", value: "",
+            frame: CGRect(x: 100, y: 300, width: 400, height: 200), isVisible: true, isActionable: false,
+            path: [PathComponent(role: "AXGroup", label: "Panel", identifier: "Panel", indexAmongRole: 0)]
+        )
+        // No ladder, so the drag takes the REGION fallback — the path whose drawn
+        // rect is measured from a separate anchor origin rather than from the
+        // selected element itself.
+        let session = AnnotationSession(source: MarqueeSource(ladder: [], anchor: anchor),
+                                        sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        let drawn = CGRect(x: 140, y: 340, width: 120, height: 40)
+        session.select(inAXRect: drawn)
+        session.translateSelection(by: CGSize(width: -30, height: -120),
+                                   within: CGRect(x: 0, y: 0, width: 800, height: 800))
+
+        XCTAssertEqual(session.addNote(comment: "framed then scrolled")?.regionRect,
+                       CGRect(x: drawn.minX - anchor.frame.minX, y: drawn.minY - anchor.frame.minY,
+                              width: drawn.width, height: drawn.height),
+                       "the element-relative locator is what it would have been with no scroll at all")
+    }
+
     /// A scroll clamped at the end of the document produces no translation, and must
     /// therefore produce no movement — not a rounding-sized drift repeated on every
     /// wheel event.

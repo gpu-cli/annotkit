@@ -808,6 +808,51 @@ public final class AnnotationSession: ObservableObject {
         }
     }
 
+    /// Slide the LIVE selection by the same amount the content under it just moved.
+    /// The companion to ``translateNotes(by:within:)``, and the half that was
+    /// missing: a captured note's mark is recalled deliberately, but the live
+    /// selection is on screen CONTINUOUSLY, with a composer open and a name on it,
+    /// so a stale one is the more visible lie of the two.
+    ///
+    /// Reproduced before it was written: a frame drawn around row 3 kept its exact
+    /// window position across a 360pt scroll, so it ended up drawn around row 8
+    /// while the composer still named row 3. Reported as "the manually drawn frames
+    /// disappear on scroll" — they do not disappear, they detach, and scrolled far
+    /// enough the thing you framed leaves the viewport while its rectangle stays.
+    ///
+    /// `viewport` is in AX SCREEN coordinates here, unlike `translateNotes`' window-
+    /// local one, because everything this touches is AX screen space. The
+    /// TRANSLATION needs no such conversion: the two spaces differ by a fixed
+    /// origin, so a pure delta is identical in both — which is exactly why the
+    /// caller can hand the same `CGSize` to both methods.
+    ///
+    /// Everything geometric about the selection moves together, not just the drawn
+    /// rect. The navigation path and the child cache are rungs the user can bind to
+    /// LATER, with Parent/Child, and a rung left behind would re-anchor the note to
+    /// where its element used to be. `hovered` is deliberately excluded: it is
+    /// re-resolved from the pointer on the next motion event, so correcting it would
+    /// be work with a lifetime of milliseconds.
+    public func translateSelection(by translation: CGSize, within viewport: CGRect) {
+        guard translation != .zero, let element = selected else { return }
+        // Same test as the notes: the rect the overlay ANCHORS to has to belong to
+        // this scroller. A selection over a fixed sidebar must not move because a
+        // list somewhere else scrolled.
+        let anchor = selectionAnchorFrame ?? element.frame
+        guard viewport.contains(CGPoint(x: anchor.midX, y: anchor.midY)) else { return }
+
+        let dx = translation.width
+        let dy = translation.height
+        selectedMarqueeRect = selectedMarqueeRect?.offsetBy(dx: dx, dy: dy)
+        marqueeRegionOrigin = marqueeRegionOrigin.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
+        selectionHint = selectionHint.map { CGPoint(x: $0.x + dx, y: $0.y + dy) }
+        selectionPath = selectionPath.map { $0.offsetBy(dx: dx, dy: dy) }
+        cachedChildren = cachedChildren.map { $0.offsetBy(dx: dx, dy: dy) }
+        // LAST, and non-nil, so the `didSet` clear does not fire: this is the
+        // assignment that publishes, and every value it is published alongside has
+        // to have been updated by the time it lands.
+        selected = element.offsetBy(dx: dx, dy: dy)
+    }
+
     /// Write the full retained set to the sink, WITHOUT clearing it. Notes
     /// persist until ``clear()``, so the same set can be exported repeatedly (and
     /// also copied). The file sink overwrites its file with the current set, so

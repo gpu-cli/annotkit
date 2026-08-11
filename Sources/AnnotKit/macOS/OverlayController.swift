@@ -41,14 +41,14 @@ public final class OverlayController: NSObject {
     /// frame drag, in both modes. Shrinking the panel to the pill is the fix and it
     /// is deliberately not made here.
     private var toolbarPanel: KeyablePanel?
-    private var toolbarHosting: NSHostingView<ToolbarOverlayView>?
+    private var toolbarHosting: FirstMouseHostingView<ToolbarOverlayView>?
     /// The CATCHER panel: exists ONLY while the menu is open. Covers the host so the
     /// SwiftUI catcher can receive hover and clicks, and carries the highlight, the
     /// marquee band, the pins and the cards. Ordered BELOW the toolbar panel so the
     /// pill stays clickable, and torn down on close so nothing of it can outlive the
     /// open state.
     private var catcherPanel: KeyablePanel?
-    private var catcherHosting: NSHostingView<OverlayView>?
+    private var catcherHosting: FirstMouseHostingView<OverlayView>?
     private weak var host: NSWindow?
 
     /// AX top-left origin of the overlay PANEL — the surface `OverlayView` draws into,
@@ -274,7 +274,7 @@ public final class OverlayController: NSObject {
         // resolves to the overlay's hosting view instead of the control beneath.
         panel.setAccessibilityIdentifier(AXIntrospection.overlayWindowIdentifier)
 
-        let hostingView = NSHostingView(rootView: makeToolbarView())
+        let hostingView = FirstMouseHostingView(rootView: makeToolbarView())
         // Keep the overlay out of the app's own AX tree so the point query sees
         // through it (the SwiftUI root is also `accessibilityHidden`).
         hostingView.setAccessibilityElement(false)
@@ -335,7 +335,7 @@ public final class OverlayController: NSObject {
         guard catcherPanel == nil else { return }
         let panel = makePanel(frame: OverlayPlacement.catcherFrame(hostFrame: host.frame,
                                                                   visibleFrame: visibleFrame(for: host)))
-        let hosting = NSHostingView(rootView: makeRootView())
+        let hosting = FirstMouseHostingView(rootView: makeRootView())
         hosting.setAccessibilityElement(false)
         panel.contentView = hosting
         // While the menu is open THIS panel scrolls the host (it covers the whole
@@ -345,7 +345,16 @@ public final class OverlayController: NSObject {
         // content it was made on. Wired on the CATCHER only: the toolbar panel is a
         // 240x104 corner that no host scroller lives under.
         panel.onHostScrolled = { [weak self] translation, viewport in
-            self?.session.translateNotes(by: translation, within: viewport)
+            guard let self else { return }
+            self.session.translateNotes(by: translation, within: viewport)
+            // The LIVE selection too, or the drawn frame the user is looking at
+            // right now detaches from the content it describes. The delta is the
+            // same in both spaces — they differ by a fixed origin — so only the
+            // viewport is converted, window-local to AX screen.
+            self.session.translateSelection(
+                by: translation,
+                within: viewport.offsetBy(dx: self.axOrigin.x, dy: self.axOrigin.y)
+            )
         }
         host.addChildWindow(panel, ordered: .above)
         catcherPanel = panel
@@ -631,11 +640,43 @@ enum OverlayPlacement {
     }
 }
 
+/// An `NSHostingView` that acts on the FIRST click into a panel that is not key.
+///
+/// Without this the overlay costs a click every single time. AppKit's rule: a
+/// mouse-down in a non-key window that CAN become key makes it key and then
+/// DISCARDS the event unless the view under the pointer accepts first mouse — and
+/// `NSHostingView` does not. ``KeyablePanel`` can become key (the composer's text
+/// field needs it), so the first press on the overlay only ever handed it focus:
+/// no selection, no composer, nothing. Measured against the real overlay with the
+/// host key, which is the state a user is always in — click #1 left
+/// `session.selected` nil and made the panel key; click #2 selected the control.
+///
+/// It is not a once-per-launch tax either, which is why it reads as "I have to
+/// click twice" rather than "the first click after launch does nothing":
+/// ``OverlayController/presentCatcher(on:)`` builds a FRESH panel every time the
+/// menu opens, and any interaction with the host app hands key back, so the next
+/// press on the overlay is swallowed again. It costs both tools equally — they
+/// share one gesture on one catcher — so in frame mode the first drag draws no
+/// band and resolves nothing.
+///
+/// Accepting first mouse is the right answer here rather than a workaround:
+/// annotate mode is a deliberate mode the user has already entered, so a press on
+/// the catcher is always meant for the catcher. The alternative — making the panel
+/// unable to become key — would take the composer's keyboard input with it.
+final class FirstMouseHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+}
+
 /// A borderless, non-activating panel that can still become key, so the note
 /// composer's text field accepts keyboard input (a plain borderless panel
 /// cannot become key, which silently blocks typing). `.nonactivatingPanel`
 /// keeps it from stealing app activation on hover; `canBecomeKey` lets a click
 /// into the composer focus the field. Used as a child window per host window.
+///
+/// Note the cost of `canBecomeKey` and what pays it: a window that can become key
+/// swallows the first click that gives it key. ``FirstMouseHostingView`` is what
+/// keeps that from being charged to the user, and both panels' content views are
+/// one, so neither the catcher nor the pill can drift back to costing a click.
 final class KeyablePanel: NSPanel {
     override var canBecomeKey: Bool { true }
 

@@ -2472,6 +2472,58 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         check9(abs(anchorAfter.minX - anchorBefore.minX) < 1 && anchorAfter.size == anchorBefore.size,
                "a vertical scroll moves the rect vertically and only vertically (size and x untouched)")
         session.deleteNote(id: note.id)
+
+        phase9cSelectionFollowsContent(host: host, panel: panel, panelLocal: panelLocal)
+    }
+
+    /// The LIVE drawn frame — the one on screen right now, with a composer open and
+    /// an element named in its header — has to track the content as well.
+    ///
+    /// This is the half that was missing, and the more visible of the two: a
+    /// recalled mark is asked for deliberately and one at a time, whereas the live
+    /// frame is up continuously. Reproduced before the fix: a frame drawn around row
+    /// 3 held its window position across a 360pt scroll and ended up drawn around
+    /// row 8 while the composer still named row 3.
+    func phase9cSelectionFollowsContent(host: ClampedHost, panel: NSWindow, panelLocal: CGPoint) {
+        print("\n  9c(iii) — the LIVE drawn frame follows the content it was drawn around:")
+        guard let session = clampSession else {
+            check9(false, "the clamped session is available for the live-selection measurement")
+            return
+        }
+        let markerRect = axRect(ofCocoa: host.upperMarker.window!.convertToScreen(
+            host.upperMarker.convert(host.upperMarker.bounds, to: nil)))
+        let markerBefore = axCenter(of: host.upperMarker)
+        session.setTool(.frame)
+        let target = session.select(inAXRect: markerRect.insetBy(dx: -8, dy: -6))
+        guard let anchorBefore = session.selectionAnchorFrame else {
+            check9(false, "a frame drawn around the control inside the scroller anchors to what was drawn (got \(self.label(target)))")
+            session.cancelSelection()
+            session.setTool(.point)
+            return
+        }
+        print("      drew \(fmt(anchorBefore)) around \(self.label(target))")
+
+        guard let event = makeScrollEvent(panelLocal: panelLocal) else {
+            check9(false, "a wheel event could be built for the live-selection measurement")
+            session.cancelSelection(); session.setTool(.point); return
+        }
+        panel.scrollWheel(with: event)
+
+        let contentDY = axCenter(of: host.upperMarker).y - markerBefore.y
+        guard let anchorAfter = session.selectionAnchorFrame else {
+            check9(false, "the frame selection SURVIVES the scroll (it must not be dropped)")
+            session.cancelSelection(); session.setTool(.point); return
+        }
+        let frameDY = anchorAfter.minY - anchorBefore.minY
+        print("      after the wheel: content moved \(String(format: "%+.1f", contentDY))pt, " +
+              "the drawn frame moved \(String(format: "%+.1f", frameDY))pt")
+        check9(abs(contentDY) > 1, "sanity: the wheel really moved the framed control (\(String(format: "%.1f", contentDY))pt)")
+        check9(abs(frameDY - contentDY) < 1,
+               "the live drawn frame moved by EXACTLY the translation applied to the content — it never ends up around something else")
+        check9(session.selected?.id == target?.id,
+               "the selection is the SAME element after the scroll (it moved; it did not become a different one)")
+        session.cancelSelection()
+        session.setTool(.point)
     }
 
     // ---- 9d: the OTHER clamp direction — a host tucked under the menu bar ----
@@ -2627,9 +2679,14 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         // window a click at a point would hit, and a window parked at (-12000,-12000)
         // is not in any answer it can give.
         let host = makeHostWindow(title: "AnnotKit Harness W11 (marks)")
-        let visible = visibleFrame
-        host.window.setFrameOrigin(NSPoint(x: visible.minX + 120, y: visible.minY + 200))
-        NSApp.activate(ignoringOtherApps: true)
+        if realClicks {
+            // 11a asks the window server a question, so its fixture has to be on a
+            // real screen. Every other leg here drives the session or sends events
+            // straight to a panel, so by default this stays off-screen like the rest
+            // of the harness and disturbs nothing.
+            host.window.setFrameOrigin(NSPoint(x: visibleFrame.minX + 120, y: visibleFrame.minY + 200))
+            NSApp.activate(ignoringOtherApps: true)
+        }
         host.window.makeKeyAndOrderFront(nil)
         marksHost = host
 
@@ -2662,7 +2719,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
                     self.phase11dRecall(session: session, notes: notes)
                     controller.unmount()
                     host.window.orderOut(nil)
-                    self.finish()
+                    self.phase12FirstClick()
                 }
             ])
         }
@@ -2728,11 +2785,23 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             check11(!toolbar.frame.contains(clear) && catcher.frame.contains(clear),
                     "sanity: the control point is over the catcher and NOT over the toolbar panel")
         }
+        guard realClicks else {
+            if !throughToolbar {
+                print("      (candidate (d) needs a REAL click — skipped; set ANNOTKIT_PROBE_REALCLICK=1)")
+            }
+            clickPoint = nil
+            return
+        }
         guard AXIsProcessTrusted() else {
             check11(false, "posting a real click needs Accessibility trust — candidate (d) CANNOT be settled in this run")
             clickPoint = nil
             return
         }
+        // Re-assert front immediately before the click: anything that came forward
+        // in the last moment would otherwise eat it, and the phase would report a
+        // fact about the desktop as a fact about AnnotKit.
+        NSApp.activate(ignoringOtherApps: true)
+        host.orderFrontRegardless()
 
         session.setTool(.point)
         session.cancelSelection()
@@ -2916,6 +2985,149 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         check11(session.attendedNote == nil, "deleting the attended note drops its mark with no separate bookkeeping")
     }
 
+    // ---- Phase 12: the FIRST click on the overlay acts ---------------------
+    // The dogfooding report was "I have to click twice to get the functionality to
+    // work and the little comment portal to appear", in BOTH tools. AppKit's rule:
+    // a mouse-down in a NON-KEY window that CAN become key makes it key and then
+    // DISCARDS the event unless the view under the pointer accepts first mouse —
+    // and `NSHostingView` does not. `KeyablePanel` can become key (the composer's
+    // text field needs it), so the first press only ever handed the panel focus.
+    //
+    // It is not once per launch, which is why it reads as a permanent tax: the
+    // catcher panel is REBUILT every time the menu opens, and any interaction with
+    // the host app hands key back, so the next press is swallowed again.
+    //
+    // Both panels are measured, because both are `KeyablePanel`s carrying a hosting
+    // view and either could regress on its own. Every leg first asserts the panel is
+    // NOT key — with the panel already key there is no first mouse to accept and the
+    // phase would pass while proving nothing.
+    /// Whether the phases that post REAL clicks at the window server run.
+    ///
+    /// OFF by default, and that is a correctness decision rather than politeness.
+    /// A posted click depends on the whole desktop — Accessibility trust, which app
+    /// is frontmost, whether anything came forward in the last 200ms — and it moves
+    /// the user's pointer. Left on by default it made this probe FLAKY (measured:
+    /// 2 failures in 5 back-to-back runs, in phases that do not click at all,
+    /// because one run's activation and clicks perturbed the next run's AX reads;
+    /// the same loop on `main` was 3 for 3 clean). A regression asset that is red
+    /// two times in five teaches people to ignore it.
+    ///
+    /// What runs by default instead is the WHITE-BOX form of the same claim — the
+    /// property that actually fixes the bug, asserted directly. Set
+    /// `ANNOTKIT_PROBE_REALCLICK=1` for the end-to-end version.
+    var realClicks: Bool { ProcessInfo.processInfo.environment["ANNOTKIT_PROBE_REALCLICK"] == "1" }
+
+    var passFirstClick = true
+    func check12(_ c: Bool, _ m: String) {
+        print("      " + (c ? "ok   " : "FAIL ") + m)
+        passFirstClick = passFirstClick && c
+    }
+
+    var firstClickHost: HostControls?
+    var firstClickController: OverlayController?
+
+    func phase12FirstClick() {
+        print("\n--- Phase 12: the first click on the overlay ACTS (no click tax) ---")
+        let host = makeHostWindow(title: "AnnotKit Harness W12 (first click)")
+        host.window.makeKeyAndOrderFront(nil)
+        firstClickHost = host
+
+        let session = AnnotationSession(source: MacElementSource(), sink: NotesFileSink(path: "/dev/null"))
+        let controller = OverlayController(session: session)
+        // MOUNT ONLY: the menu stays closed, so 12a measures the toolbar panel's
+        // own first click — the one that opens the menu in the first place.
+        controller.mount(on: host.window)
+        firstClickController = controller
+
+        // The DEFAULT, deterministic form: assert the property that fixes the bug,
+        // on both panels, directly. AppKit consults exactly this on the view under
+        // a press into a non-key window, so a regression here — someone swapping
+        // the hosting view back — is the regression, and this catches it without
+        // depending on the desktop.
+        check12(overlayToolbar(of: host.window)?.contentView?.acceptsFirstMouse(for: nil) == true,
+                "the TOOLBAR panel's content view accepts first mouse (one click on the pill opens the menu)")
+        controller.start()
+        check12(overlayCatcher(of: host.window)?.contentView?.acceptsFirstMouse(for: nil) == true,
+                "the CATCHER panel's content view accepts first mouse (one click selects, in either tool)")
+        // Non-vacuity: a plain NSHostingView answers false, so the checks above are
+        // about the subclass and not about some default every view shares.
+        check12(NSHostingView(rootView: Color.clear).acceptsFirstMouse(for: nil) == false,
+                "sanity: a plain NSHostingView does NOT accept first mouse (which is the whole bug)")
+        controller.stop()
+
+        guard realClicks else {
+            print("      (end-to-end real-click legs skipped — set ANNOTKIT_PROBE_REALCLICK=1)")
+            controller.unmount(); host.window.orderOut(nil); return finish()
+        }
+        guard AXIsProcessTrusted() else {
+            check12(false, "posting real clicks needs Accessibility trust — the end-to-end legs CANNOT run")
+            controller.unmount(); host.window.orderOut(nil); return finish()
+        }
+        host.window.setFrameOrigin(NSPoint(x: visibleFrame.minX + 140, y: visibleFrame.minY + 240))
+        NSApp.activate(ignoringOtherApps: true)
+
+        runSteps([
+            { self.phase12aToolbar(session: session, host: host.window) },
+            { self.phase12bCatcher(session: session, host: host.window) },
+            {
+                print("      after ONE click on a control: session.selected = \(self.label(session.selected))")
+                self.check12(session.selected != nil,
+                             "ONE click on the catcher selects — the first press is not spent making the panel key")
+                controller.unmount()
+                host.window.orderOut(nil)
+                self.finish()
+            }
+        ])
+    }
+
+    /// 12a — one click on the pill opens the menu.
+    func phase12aToolbar(session: AnnotationSession, host: NSWindow) {
+        guard let toolbar = overlayToolbar(of: host) else {
+            check12(false, "the toolbar panel is mounted")
+            return
+        }
+        host.makeKeyAndOrderFront(nil)
+        check12(!toolbar.isKeyWindow && host.isKeyWindow,
+                "sanity: the toolbar panel is NOT key and the host IS (else there is no first mouse to accept)")
+        // Idle draws ONE 44pt button at the pill's trailing end, 20pt in from the
+        // panel's bottom-right corner.
+        let pencil = CGPoint(x: toolbar.frame.maxX - 20 - 22, y: toolbar.frame.minY + 20 + 22)
+        let restoreTo = NSEvent.mouseLocation
+        clickOnScreen(pencil)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            CGWarpMouseCursorPosition(CGPoint(x: restoreTo.x, y: (NSScreen.screens.first?.frame.height ?? 0) - restoreTo.y))
+        }
+        pendingFirstClickCheck = { [weak self] in
+            self?.check12(session.mode == .annotating,
+                          "ONE click on the pill opens the menu (got \(session.mode))")
+        }
+    }
+
+    var pendingFirstClickCheck: (() -> Void)?
+
+    /// 12b — with the menu open and the HOST key again, one click on a control
+    /// selects it. This is the leg the user reported: the catcher panel is freshly
+    /// built by every open, so it is never key when the first press arrives.
+    func phase12bCatcher(session: AnnotationSession, host: NSWindow) {
+        pendingFirstClickCheck?()
+        pendingFirstClickCheck = nil
+        guard let catcher = overlayCatcher(of: host), let control = firstClickHost?.primary else {
+            check12(false, "the catcher panel is open for the second leg")
+            return
+        }
+        // Hand key BACK to the host — exactly what happens when a user touches
+        // their own app between annotations.
+        host.makeKeyAndOrderFront(nil)
+        check12(!catcher.isKeyWindow && host.isKeyWindow,
+                "sanity: the catcher panel is NOT key and the host IS")
+        let screen = control.window!.convertToScreen(control.convert(control.bounds, to: nil))
+        let restoreTo = NSEvent.mouseLocation
+        clickOnScreen(CGPoint(x: screen.midX, y: screen.midY))
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            CGWarpMouseCursorPosition(CGPoint(x: restoreTo.x, y: (NSScreen.screens.first?.frame.height ?? 0) - restoreTo.y))
+        }
+    }
+
     func finish() {
         print("\n  issue-2 (per-control hit-test through the expanded overlay): \(passIssue2 ? "PASS" : "FAIL")")
         print("  issue-1 (retention / copy / export / pill persistence):       \(pass1 ? "PASS" : "FAIL")")
@@ -2929,8 +3141,9 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 9 (pill + hit-test + scroll on a host hanging off the visible screen): \(passClamp ? "PASS" : "FAIL")")
         print("  Phase 10 (Escape closes the menu): \(passEscape ? "PASS" : "FAIL")")
         print("  Phase 11 (recallable marks: toolbar pass-through, pins inert in frame mode, hover recall): \(passMarks ? "PASS" : "FAIL")")
+        print("  Phase 12 (the FIRST click on the overlay acts — no click tax): \(passFirstClick ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp && passEscape && passMarks ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp && passEscape && passMarks && passFirstClick ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {

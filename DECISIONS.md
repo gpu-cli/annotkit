@@ -276,6 +276,52 @@ in point mode and does nothing in frame mode.
 typing into must consume its own clicks; dismissing it or starting the drag from
 outside it are the ordinary mitigations. Unlike a pin, it has state to lose.
 
+### The overlay accepts first mouse (dogfooding, VRT-pm3k)
+
+"I have to click twice to get the functionality to work and the little comment
+portal to appear." AppKit discards a mouse-down that lands in a **non-key** window
+which *can* become key, unless the view under the pointer accepts first mouse — and
+`NSHostingView` does not. `KeyablePanel` can become key because the composer's text
+field needs keyboard input, so the first press on the overlay only ever bought it
+focus. Both panels' content views are now a `FirstMouseHostingView`.
+
+It was not a once-per-launch tax, which is why it read as a permanent one: the
+catcher panel is **rebuilt every time the menu opens**, and any interaction with the
+host app hands key back, so the next press was swallowed again. It cost both tools
+equally, since they share one gesture on one catcher — in frame mode the first drag
+drew no band and resolved nothing.
+
+Accepting first mouse is the right answer rather than a workaround: annotate mode is
+a mode the user has deliberately entered, so a press on the catcher is always meant
+for the catcher. The alternative — making the panel unable to become key — would
+take the composer's typing with it.
+
+### The live selection follows the content on scroll, not just the notes
+
+"The manually drawn frames disappear on scroll." They do not disappear, they
+**detach**, which is worse: reproduced, a frame drawn around row 3 kept its exact
+window position across a 360pt scroll and ended up drawn around row 8 while the
+composer still named row 3. Scrolled far enough, the framed thing leaves the
+viewport while its rectangle stays behind on whatever took its place.
+
+F4 corrected captured notes and left the live selection behind — the wrong half to
+skip, since a recalled mark is asked for deliberately and one at a time whereas the
+live frame is on screen continuously with a name on it. `translateSelection` applies
+the same measured translation to the drawn rect, the bound element, the navigation
+path and the child cache. The path and the cache are not housekeeping: they are what
+Parent/Child binds to *later*, and a rung left behind would re-anchor the note to
+where its element used to be.
+
+The delta needs no conversion between AX-screen and window-local space — they differ
+by a fixed origin, so a pure translation is identical in both — and only the viewport
+rect is converted. The persisted, element-relative `regionRect` is invariant under
+all of this by construction (both ends of the measurement move together), and that
+is pinned by test: scrolling must never rewrite the record an agent reads.
+
+When the framed content scrolls fully out of view the frame goes off-surface with
+it, which is the honest outcome; `ComposerPlacement` already clamps the card, so it
+stays on screen and sendable.
+
 ### The toolbar panel claims its whole frame (measured, VRT-pm3k.7)
 
 The permanently-mounted toolbar panel is 240x104 with the pill in its bottom-right

@@ -68,6 +68,26 @@ public struct Element: Sendable, Hashable, Identifiable {
         self.path = path
         self.children = children
     }
+
+    /// The same element, moved. Used when the overlay itself scrolls the host: the
+    /// content the user selected has slid by a known amount, so the frame the
+    /// overlay draws it at has to slide with it or it starts describing whatever
+    /// took its place.
+    ///
+    /// IDENTITY IS UNTOUCHED — `id`, `path`, `role`, `label` — because a scroll
+    /// moves an element, it does not make it a different element. Only ``frame``
+    /// changes; `children`'s frames are deliberately left alone, since nothing
+    /// consumes a selected element's subtree for geometry (child navigation
+    /// re-queries the source by descending on the bound element's frame CENTRE,
+    /// which this correction makes MORE accurate, not less).
+    func offsetBy(dx: CGFloat, dy: CGFloat) -> Element {
+        Element(
+            id: id, role: role, type: type, label: label, value: value,
+            frame: frame.offsetBy(dx: dx, dy: dy),
+            isVisible: isVisible, isActionable: isActionable,
+            path: path, children: children
+        )
+    }
 }
 
 /// One step in an element's ancestor chain. `index` is the element's position
