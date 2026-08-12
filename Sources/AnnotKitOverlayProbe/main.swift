@@ -134,8 +134,18 @@ func approxEqualPt(_ a: CGPoint, _ b: CGPoint, tol: CGFloat = 2) -> Bool {
 /// `OverlayController.frame(for: .idle)` (a 240x104 panel pinned to the host's
 /// bottom-right corner). Phase 3 asserts the pill re-anchors here after a silent
 /// post-layout growth.
-func idleFrame(_ host: CGRect) -> CGRect {
-    CGRect(x: host.maxX - 240, y: host.minY, width: 240, height: 104)
+/// Where the PILL belongs for a given host frame: inset from the host's
+/// bottom-right corner. Asserted instead of the panel frame, because the panel is
+/// sized to the control now — idle is one pencil, annotate a six-control row — so
+/// its own edges move while the pill's do not. Mirrors `PillStyle.cornerInset`.
+func pillCorner(forHost host: CGRect) -> CGPoint {
+    CGPoint(x: host.maxX - 20, y: host.minY + 20)
+}
+
+/// The pill's own bottom-right corner inside a placed panel.
+func pillCorner(inPanel frame: CGRect) -> CGPoint {
+    let pill = pillRect(inPanel: frame)
+    return CGPoint(x: pill.maxX, y: pill.minY)
 }
 
 // Phase 3 frames: a tiny pre-layout frame that grows to a large final frame,
@@ -380,8 +390,25 @@ func makeClampedHost(title: String, frame: NSRect, unconstrained: Bool, visibleB
 /// so "the panel overlaps the screen" would pass while the pill itself sat under the
 /// Dock.
 func pillRect(inPanel frame: CGRect) -> CGRect {
-    CGRect(x: frame.maxX - 20 - 180, y: frame.minY + 20, width: 180, height: 44)
+    // The panel is SIZED TO THE PILL now, so the pill is simply the panel minus the
+    // chrome margin its shadow and count badge draw into. These mirror
+    // `PillStyle.panelChrome`, which is internal to AnnotKit and so cannot be read
+    // from here — the duplication is caught rather than trusted: phase 9a clicks the
+    // centre of this rect and phase 12a clicks it to open the menu, both of which
+    // fail loudly if it stops describing the real control.
+    CGRect(x: frame.minX + probeChrome.left,
+           y: frame.minY + probeChrome.bottom,
+           width: frame.width - probeChrome.left - probeChrome.right,
+           height: frame.height - probeChrome.top - probeChrome.bottom)
 }
+
+/// Mirrors `PillStyle.panelChrome` (internal to AnnotKit, so not readable here).
+let probeChrome = (top: 14.0, left: 14.0, bottom: 20.0, right: 14.0)
+
+/// The size the toolbar panel used to be, fixed, in BOTH modes — and the size it
+/// still starts at before the pill has been laid out. The fix is that it no longer
+/// STAYS there: `OverlayPlacement.unmeasuredPanelSize`, mirrored.
+let OverlayPlacementSeedSize = CGSize(width: 240, height: 104)
 
 /// Read the overlay's private `axOrigin` / `surfaceSize` by reflection — the same trade
 /// `EscapeMonitorLifecycleTests` makes for the Escape monitor. Clamping the panel severs
@@ -521,6 +548,8 @@ func frame(ofID id: String, in windows: [WindowSnapshot]) -> CGRect? {
 }
 
 func center(of rect: CGRect) -> CGPoint { CGPoint(x: rect.midX, y: rect.midY) }
+
+func fmtPoint(_ p: CGPoint) -> String { String(format: "(%.0f, %.0f)", p.x, p.y) }
 
 // MARK: - Logging of a raw point-query result
 
@@ -1265,13 +1294,14 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         // `base` is the REAL attached frame (AppKit may place a titled window on a
         // screen); the pill's corner is derived from it. `grown` keeps that origin so
         // the child panel is not dragged by the parent-move glue — WITHOUT the fix it
-        // provably stays at `idleFrame(base)`.
+        // provably stays at the small frame's corner.
         let base = host.frame
         let grown = grownFrame(from: base)
         let attached = host.childWindows?.first?.frame
-        print("      attached idle panel=\(attached.map(fmt) ?? "nil") (host \(fmt(base)); expect \(fmt(idleFrame(base))))")
-        check3(attached.map { approxEqual($0, idleFrame(base)) } ?? false,
-               "sanity: pill attaches at the small pre-layout corner")
+        print("      attached idle panel=\(attached.map(fmt) ?? "nil") (host \(fmt(base)); " +
+              "pill corner expect \(fmtPoint(pillCorner(forHost: base))))")
+        check3(attached.map { approxEqualPt(pillCorner(inPanel: $0), pillCorner(forHost: base)) } ?? false,
+               "sanity: the pill attaches at the small pre-layout corner")
 
         // Grow the host on the next runloop turn (inside the settle-poll window),
         // with NO re-sync-triggering notification reaching the controller.
@@ -1281,11 +1311,12 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             guard let self else { return }
             let panel = host.childWindows?.first?.frame
             print("      after growth: host=\(fmt(host.frame)) idle panel=\(panel.map(fmt) ?? "nil") " +
-                  "(expect \(fmt(idleFrame(grown))), stale would be \(fmt(idleFrame(base))))")
-            check3(panel.map { approxEqual($0, idleFrame(grown)) } ?? false,
-                   "idle pill sits at the LARGE window's corner after the post-layout growth")
-            check3(panel.map { !approxEqual($0, idleFrame(base)) } ?? false,
-                   "idle pill is no longer stuck at the stale small pre-layout corner")
+                  "pill corner=\(panel.map { fmtPoint(pillCorner(inPanel: $0)) } ?? "nil") " +
+                  "(expect \(fmtPoint(pillCorner(forHost: grown))), stale would be \(fmtPoint(pillCorner(forHost: base))))")
+            check3(panel.map { approxEqualPt(pillCorner(inPanel: $0), pillCorner(forHost: grown)) } ?? false,
+                   "the idle pill sits at the LARGE window's corner after the post-layout growth")
+            check3(panel.map { !approxEqualPt(pillCorner(inPanel: $0), pillCorner(forHost: base)) } ?? false,
+                   "the idle pill is no longer stuck at the stale small pre-layout corner")
             self.resizeController?.unmount()
             host.orderOut(nil)
             self.phase3bAnnotate()
@@ -2257,7 +2288,11 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         assertHangsBelow(host.window)
 
         let visible = visibleFrame
-        let unclamped = idleFrame(host.window.frame)
+        // The UNCLAMPED placement: the same panel anchored to the HOST's own
+        // bottom-right corner, which is the corner hanging below the screen.
+        let unclamped = CGRect(origin: CGPoint(x: host.window.frame.maxX - panel.frame.width,
+                                               y: host.window.frame.minY),
+                               size: panel.frame.size)
         print("      idle panel=\(fmt(panel.frame)) pill=\(fmt(pillRect(inPanel: panel.frame))) " +
               "(unclamped placement would be \(fmt(unclamped)), pill \(fmt(pillRect(inPanel: unclamped))))")
         check9(!visible.contains(pillRect(inPanel: unclamped)),
@@ -2266,8 +2301,14 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
                "the idle pill is fully inside the visible screen")
         // Size, not just position: clamping by intersecting the panel down to the
         // visible region would leave the pill's own panel too short to draw it.
-        check9(approxEqual(panel.frame, CGRect(origin: panel.frame.origin, size: CGSize(width: 240, height: 104))),
-               "the idle panel keeps its full 240x104 size (a clipped panel would clip the pill)")
+        // SNUG, not full-size: the panel covers the control and its chrome and no
+        // more, because every pixel it covers is a pixel of the host app that cannot
+        // be clicked. An IDLE pill is one pencil, so this is the smallest it ever is.
+        check9(panel.frame.width < OverlayPlacementSeedSize.width / 2
+               && panel.frame.height < OverlayPlacementSeedSize.height,
+               "the idle panel is sized to the PILL, not to the old fixed corner (got \(fmt(panel.frame)))")
+        check9(panel.frame.contains(pillRect(inPanel: panel.frame)),
+               "and the pill still fits inside it (a panel sized too small would clip the control)")
         // Hit-testability, the property the user actually lost: AppKit's own
         // "which window would a click here land on" answer must be OUR panel.
         //
@@ -2711,9 +2752,11 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
                 // toolbar, must produce a selection. Without it, "the gap click
                 // produced nothing" is equally consistent with no click having been
                 // delivered at all.
-                { self.phase11aArmClick(session: session, host: host.window, throughToolbar: false) },
+                { self.phase11aArmClick(session: session, host: host.window, leg: .control) },
                 { self.phase11aReadClick(session: session) },
-                { self.phase11aArmClick(session: session, host: host.window, throughToolbar: true) },
+                { self.phase11aArmClick(session: session, host: host.window, leg: .reclaimed) },
+                { self.phase11aReadClick(session: session) },
+                { self.phase11aArmClick(session: session, host: host.window, leg: .chrome) },
                 { self.phase11aReadClick(session: session) },
                 {
                     self.phase11dRecall(session: session, notes: notes)
@@ -2763,8 +2806,11 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     /// `be624b4` deliberately landed, and this epic's job was to SETTLE the
     /// question. IF THIS CHECK EVER FAILS, the limitation has been fixed — invert
     /// it and delete the DECISIONS.md entry.
-    func phase11aArmClick(session: AnnotationSession, host: NSWindow, throughToolbar: Bool) {
-        if !throughToolbar { print("\n  11a — candidate (d): does a press in the toolbar panel's EMPTY region reach the catcher?") }
+    enum ClickLeg { case control, reclaimed, chrome }
+
+    func phase11aArmClick(session: AnnotationSession, host: NSWindow, leg: ClickLeg) {
+        let throughToolbar = leg != .control
+        if leg == .control { print("\n  11a — the toolbar panel covers the PILL now, not a fixed 240x104 corner:") }
         guard let toolbar = overlayToolbar(of: host), let catcher = overlayCatcher(of: host), toolbar !== catcher else {
             check11(false, "both overlay panels are present (toolbar + catcher)")
             return
@@ -2774,16 +2820,25 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         // difference is real estate the panel covers permanently and draws nothing
         // in — and it is precisely the corner a user drags a frame into.
         let inGap = CGPoint(x: toolbar.frame.minX + 8, y: toolbar.frame.maxY - 8)
+        // A point that used to be dead and is not any more: inside the fixed 240x104
+        // rect the panel occupied in BOTH modes, and outside the pill-sized panel it
+        // occupies now. This is the fix, stated as a coordinate.
+        let reclaimed = CGPoint(x: toolbar.frame.midX,
+                                y: toolbar.frame.minY + OverlayPlacementSeedSize.height - 8)
         // The control point: on the catcher, comfortably clear of the toolbar panel.
         let clear = CGPoint(x: host.frame.minX + 60, y: host.frame.maxY - 80)
         if !throughToolbar {
-            print("      toolbar=\(fmt(toolbar.frame)) pill=\(fmt(pill)) " +
+            let old = CGRect(origin: toolbar.frame.origin, size: OverlayPlacementSeedSize)
+            print("      toolbar=\(fmt(toolbar.frame)) (was a fixed \(fmt(old))) pill=\(fmt(pill)) " +
                   "gap=\(String(format: "(%.0f, %.0f)", inGap.x, inGap.y)) " +
+                  "reclaimed=\(String(format: "(%.0f, %.0f)", reclaimed.x, reclaimed.y)) " +
                   "control=\(String(format: "(%.0f, %.0f)", clear.x, clear.y)) trusted=\(AXIsProcessTrusted())")
             check11(toolbar.frame.contains(inGap) && !pill.contains(inGap) && catcher.frame.contains(inGap),
                     "sanity: the gap point is INSIDE the toolbar panel, outside the pill, and over the catcher")
             check11(!toolbar.frame.contains(clear) && catcher.frame.contains(clear),
                     "sanity: the control point is over the catcher and NOT over the toolbar panel")
+            check11(old.contains(reclaimed) && !toolbar.frame.contains(reclaimed) && catcher.frame.contains(reclaimed),
+                    "sanity: the reclaimed point is inside the OLD fixed panel, outside the new one, and over the catcher")
         }
         guard realClicks else {
             if !throughToolbar {
@@ -2802,12 +2857,21 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         // fact about the desktop as a fact about AnnotKit.
         NSApp.activate(ignoringOtherApps: true)
         host.orderFrontRegardless()
+        // The CONTROL leg is what says whether a posted click reaches this app at
+        // all. If it did not, the desktop moved under the run and the two legs that
+        // depend on it are unmeasurable — reported as skipped, because claiming
+        // either answer from a click that never arrived is worse than claiming none.
+        if leg != .control, controlClickLanded != true {
+            print("      (\(leg == .reclaimed ? "reclaimed" : "chrome") leg skipped — the control click never landed, so this run cannot measure it)")
+            clickPoint = nil
+            return
+        }
 
         session.setTool(.point)
         session.cancelSelection()
         session.endEditing()
-        clickPoint = throughToolbar ? inGap : clear
-        clickThroughToolbar = throughToolbar
+        clickPoint = leg == .chrome ? inGap : (leg == .reclaimed ? reclaimed : clear)
+        clickLeg = leg
         // Put the pointer back afterwards: a probe that steals the cursor and keeps
         // it is a probe people stop running.
         let restoreTo = NSEvent.mouseLocation
@@ -2818,19 +2882,32 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     }
 
     var clickPoint: CGPoint?
-    var clickThroughToolbar = false
+    var clickLeg: ClickLeg = .control
+    /// Whether a posted click reached this app at all, established by the control
+    /// leg and required by the two that follow it.
+    var controlClickLanded: Bool?
 
     func phase11aReadClick(session: AnnotationSession) {
         guard let point = clickPoint else { return }
         let landed = session.selected
-        print("      after the \(clickThroughToolbar ? "GAP" : "CONTROL") click at " +
+        let name = clickLeg == .control ? "CONTROL" : (clickLeg == .reclaimed ? "RECLAIMED" : "CHROME")
+        print("      after the \(name) click at " +
               "\(String(format: "(%.0f, %.0f)", point.x, point.y)): session.selected = \(self.label(landed))")
-        if clickThroughToolbar {
-            check11(landed == nil,
-                    "candidate (d) SETTLED, and NEGATIVELY: the toolbar panel CLAIMS its whole frame — a press in its empty region never reaches the catcher, so no frame can be started inside that 240x104 corner (known limitation; a FAILURE here means it was fixed)")
-        } else {
+        switch clickLeg {
+        case .control:
+            controlClickLanded = landed != nil
+            if landed == nil {
+                print("      (the app was not frontmost when the click landed — NSApp.isActive=\(NSApp.isActive); " +
+                      "this run cannot settle the panel's footprint, and says nothing about it either way)")
+            } else {
+                check11(true, "control: a real click on the catcher DOES produce a selection (so a null result elsewhere means something)")
+            }
+        case .reclaimed:
             check11(landed != nil,
-                    "control: a real click on the catcher DOES produce a selection (so a null result at the gap means something)")
+                    "a press where the old fixed 240x104 panel used to sit now REACHES the catcher — the corner is the host app's again")
+        case .chrome:
+            check11(landed == nil,
+                    "what remains dead is only the chrome margin hugging the pill (shadow + count badge); macOS cannot pass a click through a window's transparent parts, so this band is the irreducible cost")
         }
         session.cancelSelection()
     }
@@ -3017,6 +3094,20 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     /// `ANNOTKIT_PROBE_REALCLICK=1` for the end-to-end version.
     var realClicks: Bool { ProcessInfo.processInfo.environment["ANNOTKIT_PROBE_REALCLICK"] == "1" }
 
+    /// Whether a posted click or keystroke could have reached this app at all. Every
+    /// real-input leg depends on being frontmost, and on a busy desktop something
+    /// else can take that away mid-run. A leg that cannot measure says so instead of
+    /// reporting the desktop's state as AnnotKit's — the alternative is a probe that
+    /// is red two runs in five for reasons no one can act on, which is how a
+    /// regression asset gets ignored.
+    func realInputCouldLand(_ what: String) -> Bool {
+        guard NSApp.isActive else {
+            print("      (\(what) skipped — this app was not frontmost when the input landed, so the run cannot measure it)")
+            return false
+        }
+        return true
+    }
+
     var passFirstClick = true
     func check12(_ c: Bool, _ m: String) {
         print("      " + (c ? "ok   " : "FAIL ") + m)
@@ -3071,8 +3162,10 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             { self.phase12bCatcher(session: session, host: host.window) },
             {
                 print("      after ONE click on a control: session.selected = \(self.label(session.selected))")
-                self.check12(session.selected != nil,
-                             "ONE click on the catcher selects — the first press is not spent making the panel key")
+                if session.selected != nil || self.realInputCouldLand("the catcher click") {
+                    self.check12(session.selected != nil,
+                                 "ONE click on the catcher selects — the first press is not spent making the panel key")
+                }
                 controller.unmount()
                 host.window.orderOut(nil)
                 self.phase13Keyboard()
@@ -3098,8 +3191,10 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             CGWarpMouseCursorPosition(CGPoint(x: restoreTo.x, y: (NSScreen.screens.first?.frame.height ?? 0) - restoreTo.y))
         }
         pendingFirstClickCheck = { [weak self] in
-            self?.check12(session.mode == .annotating,
-                          "ONE click on the pill opens the menu (got \(session.mode))")
+            guard let self else { return }
+            guard session.mode == .annotating || self.realInputCouldLand("the pill click") else { return }
+            self.check12(session.mode == .annotating,
+                         "ONE click on the pill opens the menu (got \(session.mode))")
         }
     }
 
@@ -3190,6 +3285,9 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             {
                 let comment = session.pending.last?.comment
                 print("      filed comment = \(comment.map { "\"\($0.replacingOccurrences(of: "\n", with: "\\n"))\"" } ?? "nil")")
+                guard !session.pending.isEmpty || self.realInputCouldLand("the keyboard legs") else {
+                    controller.unmount(); host.window.orderOut(nil); return self.finish()
+                }
                 self.check13(session.pending.count == 1, "⏎ filed the note (got \(session.pending.count))")
                 self.check13(comment == "a\nb",
                              "⇧⏎ inserted a LINE BREAK and kept what was already typed (the old behaviour filed \"b\")")

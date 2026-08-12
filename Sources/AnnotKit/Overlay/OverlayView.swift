@@ -635,19 +635,21 @@ struct ToolbarOverlayView: View {
     let onExport: () -> Void
 
     var body: some View {
-        VStack {
-            Spacer()
-            HStack {
-                Spacer()
-                ToolbarView(
-                    session: session,
-                    onToggle: onToggle,
-                    onCopy: onCopy,
-                    onExport: onExport
-                )
-                .padding(20)
-            }
-        }
+        // JUST the pill, inset by the space its shadow and count badge need. There
+        // are no Spacers pushing it into a corner any more, because the panel is no
+        // longer a fixed 240x104 rect the pill sits in the corner of — it is sized
+        // to THIS view (`fittingSize`) and placed so the pill lands exactly where it
+        // always has. The panel covering only the control is the point: every pixel
+        // it covers is a pixel the host app cannot be clicked through, in both
+        // modes, permanently.
+        ToolbarView(
+            session: session,
+            onToggle: onToggle,
+            onCopy: onCopy,
+            onExport: onExport
+        )
+        .padding(PillStyle.panelChrome)
+        .fixedSize()
         .ignoresSafeArea()
         .accessibilityHidden(true)
     }

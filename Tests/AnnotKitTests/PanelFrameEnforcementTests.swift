@@ -85,7 +85,11 @@ final class PanelFrameEnforcementTests: XCTestCase {
     /// menu — which creates a second, host-sized catcher panel — cannot shift it. The
     /// old design drew the pill inside that resizing panel, so every open/close moved
     /// the thing the user is aiming at.
-    func testTheToolbarDoesNotMoveWhenTheMenuOpensOrCloses() {
+    /// Asserted about the PILL, not about the panel frame. The panel is sized to the
+    /// control now — idle is one pencil, annotate is a six-control row — so its own
+    /// width legitimately changes across an open/close. What must not change is where
+    /// the user is aiming, which is the pill's bottom-right corner.
+    func testTheToolbarDoesNotMoveWhenTheMenuOpensOrCloses() async {
         let visible = (NSScreen.screens.first?.visibleFrame) ?? NSRect(x: 0, y: 0, width: 1512, height: 900)
         let host = NSWindow(contentRect: NSRect(x: visible.minX + 120, y: visible.minY + 120,
                                                 width: 700, height: 500),
@@ -96,18 +100,35 @@ final class PanelFrameEnforcementTests: XCTestCase {
         defer { controller.unmount() }
 
         guard let toolbar = host.childWindows?.first else { return XCTFail("no toolbar panel") }
-        let closed = toolbar.frame
+        /// The pill's anchored corner: the panel's, minus the chrome margin the
+        /// shadow and badge draw into.
+        func pillCorner() -> CGPoint {
+            CGPoint(x: toolbar.frame.maxX - PillStyle.panelChrome.trailing,
+                    y: toolbar.frame.minY + PillStyle.panelChrome.bottom)
+        }
+        func settle() async { try? await Task.sleep(nanoseconds: 500_000_000) }
+
+        await settle()
+        let closed = pillCorner()
+        let closedWidth = toolbar.frame.width
         XCTAssertEqual(host.childWindows?.count, 1, "closed: only the toolbar is mounted")
 
         controller.start()
-        XCTAssertEqual(toolbar.frame, closed, "the pill moved when the menu opened")
+        await settle()
+        XCTAssertEqual(pillCorner(), closed, "the pill moved when the menu opened")
         XCTAssertEqual(host.childWindows?.count, 2, "open: the catcher joins the toolbar")
         // The toolbar must be ABOVE the catcher, or the full-frame catcher eats the
         // click that closes the menu.
         XCTAssertEqual(host.childWindows?.last, toolbar, "the toolbar must stay on top of the catcher")
+        // Non-vacuity: the panel really did change size, so "the pill did not move"
+        // is a claim about the anchoring and not about nothing having happened.
+        XCTAssertGreaterThan(toolbar.frame.width, closedWidth,
+                             "sanity: annotate mode is a wider pill, so the panel grew")
 
         controller.stop()
-        XCTAssertEqual(toolbar.frame, closed, "the pill moved when the menu closed")
+        await settle()
+        XCTAssertEqual(pillCorner(), closed, "the pill moved when the menu closed")
+        XCTAssertEqual(toolbar.frame.width, closedWidth, "and the panel narrowed back to the idle pill")
         XCTAssertEqual(host.childWindows?.count, 1, "closed again: the catcher is gone")
     }
 
@@ -126,6 +147,9 @@ final class PanelFrameEnforcementTests: XCTestCase {
         let controller = makeController(on: host)
         defer { controller.unmount() }
 
+        // Let the toolbar narrow to its measured size FIRST. That resize is a change
+        // something did ask for; this test is about the re-assert not inventing one.
+        try? await Task.sleep(nanoseconds: 500_000_000)
         guard let panel = host.childWindows?.first else { return XCTFail("no panel") }
         let settled = panel.frame
         NotificationCenter.default.post(name: NSWindow.didMoveNotification, object: host)

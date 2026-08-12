@@ -24,22 +24,26 @@ import SwiftUI
 @MainActor
 public final class OverlayController: NSObject {
     public let session: AnnotationSession
-    /// The TOOLBAR panel: permanently mounted, fixed size, pinned to the host's
-    /// bottom-right. It holds only the pill, and its frame changes for exactly one
-    /// reason — the host moved, resized, or changed screen. Opening and closing the
-    /// menu does not touch it, which is what makes the pill "always visible, always
-    /// in the same spot" a structural property rather than a coincidence.
+    /// The TOOLBAR panel: permanently mounted, pinned to the host's bottom-right,
+    /// and SIZED TO THE PILL. It holds only the pill, and its frame changes for two
+    /// reasons — the host moved/resized/changed screen, or the pill itself changed
+    /// width (idle is one pencil, annotate is a six-control row). The pill does not
+    /// move for either: ``OverlayPlacement/toolbarFrame(hostFrame:visibleFrame:panelSize:)``
+    /// derives the frame BACKWARDS from where the control has to land, so the panel
+    /// grows leftwards and shrinks back with the control fixed. "Always visible,
+    /// always in the same spot" stays a structural property.
     ///
-    /// KNOWN LIMITATION, measured rather than assumed (`AnnotKitOverlayProbe` 11a,
-    /// DECISIONS.md → "The toolbar panel claims its whole frame"): this panel is
-    /// 240x104 while the pill occupies only its bottom-right corner, and it consumes
-    /// presses across the WHOLE rect. macOS does not pass mouse events through the
-    /// transparent parts of a window — a panel whose content view draws nothing at
-    /// all swallows a click just the same — and `ignoresMouseEvents = true`, the one
-    /// thing that would let them through, would take the pill's own clicks with it.
-    /// So the host's bottom-right 240x104 is inert to clicks and to the start of a
-    /// frame drag, in both modes. Shrinking the panel to the pill is the fix and it
-    /// is deliberately not made here.
+    /// WHY IT IS SIZED AT ALL, rather than left at a comfortable constant: macOS
+    /// does not route mouse events through a window's transparent parts. Measured,
+    /// and true even of a panel whose content view draws nothing at all — a bare
+    /// `NSView` with `isOpaque = false` and a clear background swallows the click
+    /// just the same, and `ignoresMouseEvents = true`, the one setting that lets
+    /// them through, would take the pill's own clicks with it. So every pixel this
+    /// panel covers is a pixel of the HOST APP that cannot be clicked, in both
+    /// modes, permanently. At the old fixed 240x104 the idle pill used 8% of that
+    /// and the other 92% was dead space no user could see and every user could hit.
+    /// What remains dead is ``PillStyle/panelChrome``, the band the drop shadow and
+    /// count badge draw into, which hugs the control and reads as part of it.
     private var toolbarPanel: KeyablePanel?
     private var toolbarHosting: FirstMouseHostingView<ToolbarOverlayView>?
     /// The CATCHER panel: exists ONLY while the menu is open. Covers the host so the
@@ -150,6 +154,9 @@ public final class OverlayController: NSObject {
         session.start()
         if let host { presentCatcher(on: host) }
         syncFrameAndOrigin()
+        // Annotate mode swaps one pencil for a six-control row: grow now, settle once
+        // the pill has animated.
+        scheduleToolbarShrink()
         installEscapeMonitor()
     }
 
@@ -161,6 +168,8 @@ public final class OverlayController: NSObject {
         session.stop()
         dismissCatcher()
         syncFrameAndOrigin()
+        // ...and back down to the lone pencil.
+        scheduleToolbarShrink()
     }
 
     private func export() {
@@ -258,7 +267,8 @@ public final class OverlayController: NSObject {
         self.host = host
 
         let panel = KeyablePanel(
-            contentRect: OverlayPlacement.toolbarFrame(hostFrame: host.frame, visibleFrame: visibleFrame(for: host)),
+            contentRect: OverlayPlacement.toolbarFrame(hostFrame: host.frame, visibleFrame: visibleFrame(for: host),
+                                                       panelSize: OverlayPlacement.unmeasuredPanelSize),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
             defer: false
@@ -275,6 +285,13 @@ public final class OverlayController: NSObject {
         panel.setAccessibilityIdentifier(AXIntrospection.overlayWindowIdentifier)
 
         let hostingView = FirstMouseHostingView(rootView: makeToolbarView())
+        // The CONTROLLER owns this panel's frame. Now that the content is just the
+        // pill it has a definite intrinsic size, and an `NSHostingView` with one
+        // resizes its window to fit — preserving the window's TOP-LEFT, which is the
+        // one corner that must not be preserved here. The pill is anchored
+        // bottom-RIGHT, so an automatic resize slid the control left by the chrome
+        // margin (measured: 14pt, visible in a screenshot diff of the pill band).
+        hostingView.sizingOptions = []
         // Keep the overlay out of the app's own AX tree so the point query sees
         // through it (the SwiftUI root is also `accessibilityHidden`).
         hostingView.setAccessibilityElement(false)
@@ -295,6 +312,8 @@ public final class OverlayController: NSObject {
         NotificationCenter.default.removeObserver(self, name: NSWindow.didBecomeMainNotification, object: nil)
         registerGeometryObservers(for: host)
         syncFrameAndOrigin()
+        // The panel is still at its generous seed size; narrow it to the pill.
+        scheduleToolbarShrink()
         // A content-sized host is often still at its pre-layout frame right here and
         // grows a runloop turn or two later without posting a move/resize; poll until
         // the host frame settles so the panel and axOrigin reflect the FINAL frame.
@@ -486,7 +505,15 @@ public final class OverlayController: NSObject {
         guard let host else { return }
         let visible = visibleFrame(for: host)
 
-        let toolbarFrame = OverlayPlacement.toolbarFrame(hostFrame: host.frame, visibleFrame: visible)
+        // GROW-ONLY here; `scheduleToolbarShrink()` takes it back in once the pill's
+        // width animation has settled. Shrinking on this path would clip the control
+        // mid-animation.
+        let measured = measuredToolbarSize()
+        let current = toolbarPanel?.frame.size ?? OverlayPlacement.unmeasuredPanelSize
+        let toolbarSize = CGSize(width: max(measured.width, current.width),
+                                 height: max(measured.height, current.height))
+        let toolbarFrame = OverlayPlacement.toolbarFrame(hostFrame: host.frame, visibleFrame: visible,
+                                                         panelSize: toolbarSize)
         desiredToolbarFrame = toolbarFrame
         toolbarPanel?.setFrame(toolbarFrame, display: true)
 
@@ -527,6 +554,45 @@ public final class OverlayController: NSObject {
         catcherHosting?.rootView = makeRootView()
     }
 
+    /// The pill's laid-out size, plus the chrome margin the view pads it by.
+    ///
+    /// Measured on a FRESH, uninstalled hosting view rather than on the one in the
+    /// panel, and that is the whole trick. The installed view has already been
+    /// stretched to whatever frame the panel currently has, so asking IT for a
+    /// fitting size returns the answer we are trying to replace — a measurement of
+    /// the status quo, which never shrinks. A throwaway view has no frame imposed on
+    /// it and reports the content's own ideal size. It costs one SwiftUI layout on
+    /// geometry changes, which are rare, and nothing per frame.
+    ///
+    /// A nonsense measurement is discarded in favour of the generous seed: a panel
+    /// too small would clip the control it exists to carry, which is the failure the
+    /// old fixed size existed to prevent.
+    private func measuredToolbarSize() -> CGSize {
+        let size = NSHostingView(rootView: makeToolbarView()).fittingSize
+        guard size.width > 1, size.height > 1 else { return OverlayPlacement.unmeasuredPanelSize }
+        return size
+    }
+
+    /// Re-measure once the pill's width animation has settled, and let the panel
+    /// shrink to it.
+    ///
+    /// The asymmetry with growing is the scheme: a panel that grows LATE clips the
+    /// control it carries, so growth is immediate; a panel that shrinks EARLY clips
+    /// it just the same — the pill animates its width over 0.15s on a mode change —
+    /// so shrinking waits for the animation. In between the panel is briefly larger
+    /// than it needs to be, which costs a few dead pixels for a fraction of a second.
+    private func scheduleToolbarShrink() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            guard let self, let host = self.host, let panel = self.toolbarPanel else { return }
+            let frame = OverlayPlacement.toolbarFrame(hostFrame: host.frame,
+                                                      visibleFrame: self.visibleFrame(for: host),
+                                                      panelSize: self.measuredToolbarSize())
+            self.desiredToolbarFrame = frame
+            guard panel.frame != frame else { return }
+            panel.setFrame(frame, display: true)
+        }
+    }
+
     /// Put both panels back where placement said they belong, if AppKit moved them.
     ///
     /// Child windows are repositioned to preserve their offset from the parent, which
@@ -547,26 +613,17 @@ public final class OverlayController: NSObject {
         panel.setFrame(desired, display: true)
     }
 
-    private func frame(for mode: AnnotationSession.Mode, on host: NSWindow) -> NSRect {
-        OverlayPlacement.panelFrame(
-            for: mode,
-            hostFrame: host.frame,
-            // `host.screen` is the display the window is mostly on, so the clamp
-            // follows the host across displays. A window AppKit reports no screen for
-            // (entirely off-display, or mid-teardown) falls back to the primary rather
-            // than skipping the clamp, so the pill still lands somewhere reachable.
-            visibleFrame: (host.screen ?? NSScreen.screens.first)?.visibleFrame
-        )
-    }
 }
 
 /// Where the overlay panel goes, as pure geometry — no window, no display, so the
 /// rules below are unit-testable instead of only observable on a real screen.
 enum OverlayPlacement {
-    /// The idle panel's size: fits the widest pill state (toggle + count badge + copy
-    /// + export + clear, ~180pt) plus its 20pt inset and the drop shadow, and the 44pt
-    /// pill plus the same inset.
-    static let idleSize = CGSize(width: 240, height: 104)
+    /// The size the toolbar panel starts at, BEFORE the pill has been laid out and
+    /// can be measured. Generous on purpose — it is the fixed size the panel used to
+    /// be, which comfortably fits the widest pill state — because the one failure
+    /// worth ruling out here is a panel too small to draw the control it carries.
+    /// ``OverlayController`` narrows it to the measured pill as soon as there is one.
+    static let unmeasuredPanelSize = CGSize(width: 240, height: 104)
 
     /// The part of the host the user can actually see and click: its frame narrowed to
     /// the screen's `visibleFrame`.
@@ -593,20 +650,34 @@ enum OverlayPlacement {
         return region.isEmpty ? hostFrame : region
     }
 
-    /// The TOOLBAR panel's frame: a fixed-size corner, pinned to the visible region's
-    /// bottom-right. Identical in both states — the menu opening must never move the
-    /// pill — and dependent only on where the host is, never on what mode it is in.
-    static func toolbarFrame(hostFrame: CGRect, visibleFrame: CGRect?) -> CGRect {
+    /// The TOOLBAR panel's frame: `panelSize` — the pill plus the chrome margin it
+    /// needs, MEASURED from the laid-out view — pinned so the pill keeps its
+    /// ``PillStyle/cornerInset`` from the visible region's bottom-right corner.
+    ///
+    /// THE PANEL IS SIZED TO THE CONTROL, not to a constant, and that is a
+    /// hit-testing decision rather than a cosmetic one. macOS does not route mouse
+    /// events through a window's transparent parts — measured, and true even of a
+    /// panel whose content view draws nothing at all — so every pixel this panel
+    /// covers is a pixel of the host app that cannot be clicked, in BOTH modes,
+    /// permanently. It used to be a fixed 240x104 over the host's bottom-right
+    /// corner, of which the idle pill used 8%; the rest was dead space no user
+    /// could see and every user could hit.
+    ///
+    /// THE PILL DOES NOT MOVE when the size changes. The frame is derived BACKWARDS
+    /// from where the control has to land — corner, minus the inset, minus the
+    /// pill — so a wider pill (annotate mode) grows the panel leftwards and an idle
+    /// one shrinks it back, with the control fixed throughout. That is the guarantee
+    /// giving the toolbar its own window bought, and it survives.
+    static func toolbarFrame(hostFrame: CGRect, visibleFrame: CGRect?, panelSize: CGSize) -> CGRect {
         let region = region(hostFrame: hostFrame, visibleFrame: visibleFrame)
         // Anchored at FULL size rather than intersected down to the region: shrinking
-        // this panel would clip the pill it exists to carry. Pinning its BOTTOM edge
-        // inside the region is what keeps the pill reachable; only the panel's empty
-        // upper part may spill past a region shorter than itself.
+        // this panel would clip the pill it exists to carry. Pinning the PILL inside
+        // the region is what keeps it reachable; only the chrome margin may spill.
         return CGRect(
-            x: region.maxX - idleSize.width,
-            y: region.minY,
-            width: idleSize.width,
-            height: idleSize.height
+            x: region.maxX - PillStyle.cornerInset - (panelSize.width - PillStyle.panelChrome.trailing),
+            y: region.minY + PillStyle.cornerInset - PillStyle.panelChrome.bottom,
+            width: panelSize.width,
+            height: panelSize.height
         )
     }
 
@@ -615,29 +686,6 @@ enum OverlayPlacement {
         region(hostFrame: hostFrame, visibleFrame: visibleFrame)
     }
 
-    static func panelFrame(for mode: AnnotationSession.Mode, hostFrame: CGRect, visibleFrame: CGRect?) -> CGRect {
-        let region = region(hostFrame: hostFrame, visibleFrame: visibleFrame)
-        switch mode {
-        case .annotating:
-            // The host's outer frame minus whatever hangs off the display (the title
-            // bar is included, so the window-local y still aligns with AX y). Clipping
-            // the catcher costs nothing: the part that was cut cannot be hovered or
-            // clicked anyway.
-            return region
-        case .idle:
-            // Anchored to the visible region's bottom-right corner at FULL size, not
-            // intersected down to it: shrinking this panel would clip the pill it
-            // exists to carry. The pill is drawn against the panel's BOTTOM edge, so
-            // pinning that edge inside the region is what keeps it reachable — only the
-            // panel's empty upper part can spill past a region shorter than 104pt.
-            return CGRect(
-                x: region.maxX - idleSize.width,
-                y: region.minY,
-                width: idleSize.width,
-                height: idleSize.height
-            )
-        }
-    }
 }
 
 /// An `NSHostingView` that acts on the FIRST click into a panel that is not key.

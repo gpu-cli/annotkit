@@ -346,26 +346,49 @@ When the framed content scrolls fully out of view the frame goes off-surface wit
 it, which is the honest outcome; `ComposerPlacement` already clamps the card, so it
 stays on screen and sendable.
 
-### The toolbar panel claims its whole frame (measured, VRT-pm3k.7)
+### The toolbar panel is sized to the pill (VRT-jiuo)
 
-The permanently-mounted toolbar panel is 240x104 with the pill in its bottom-right
-corner, and it consumes presses across the **whole** rect — so the host's
-bottom-right 240x104 is inert to clicks and to the start of a frame drag, in both
-modes.
+The panel carrying the pill used to be a fixed 240x104 rect pinned to the host's
+bottom-right, permanently mounted in BOTH modes. It consumes presses across its
+whole frame, so that corner of the host app could not be clicked, and no frame drag
+could be started in it. The idle pill used 8% of it; the other 92% was dead space no
+user could see and every user could hit.
 
-This was listed as candidate (d) on the assumption that per-pixel alpha
-pass-through would save it. It does not: measured against a panel whose content
-view was a bare `NSView` drawing nothing at all, with `isOpaque = false` and a
-clear background, the click was still swallowed. macOS does not route mouse events
-through the transparent parts of a window; `ignoresMouseEvents = true` is the only
-configuration that lets them through, and it would take the pill's own clicks with
-it. `AnnotKitOverlayProbe` phase 11a pins the behaviour with a real posted click,
-against a control click on the catcher so a null result means something.
+**The mechanism, measured rather than assumed.** macOS does not route mouse events
+through a window's transparent parts. This was listed as a candidate on the
+assumption that per-pixel alpha pass-through would save it; it does not. A panel
+whose content view is a bare `NSView` drawing NOTHING at all, with `isOpaque =
+false` and a clear background, swallows the click just the same.
+`ignoresMouseEvents = true` is the only setting that lets events through, and it
+would take the pill's own clicks with it. So the only lever is the panel's SIZE.
 
-Not fixed here, deliberately: the remedy is to size the panel to the pill, which
-changes the design `be624b4` landed (a fixed-size panel whose frame moves for
-exactly one reason), and this epic's job was to settle the question. Tracked
-separately.
+**Sizing and placement are split, and the split is the design.** SwiftUI knows
+exactly how wide the pill is — including while it animates between the lone pencil
+and the six-control row — so the size is measured from it. What AppKit gets wrong is
+the ANCHOR: a window resize preserves the TOP-LEFT, and this panel is anchored
+bottom-RIGHT, so letting AppKit apply the size slid the control left by the chrome
+margin. `sizingOptions = []` takes that away, and
+``OverlayPlacement/toolbarFrame(hostFrame:visibleFrame:panelSize:)`` derives the
+frame BACKWARDS from where the pill has to land. The panel grows leftwards and
+shrinks back with the control fixed at `host.maxX - 20`, exactly where it always
+was — verified from AppKit's own view frames, not from the formula under test.
+
+**Measured on a FRESH hosting view, not the installed one.** The installed view has
+already been stretched to the panel's current frame, so asking it for a fitting size
+returns the answer being replaced — a measurement of the status quo, which never
+shrinks. That circularity is why the first attempt silently did nothing.
+
+**Grow now, shrink later.** A panel that grows LATE clips the control it carries; a
+panel that shrinks EARLY clips it just the same, because the pill animates its width
+over 0.15s on a mode change. So growth is immediate and speculative and shrinking
+waits for the animation. In between the panel is briefly larger than it needs to be.
+
+What remains dead is ``PillStyle/panelChrome`` — the band the drop shadow (radius
+12, offset 8 down) and the count badge (hung 5pt past the pill's top-left corner)
+draw into. Clipping either is visible, so this is the irreducible cost, and it hugs
+the control and reads as part of it. Pinned by probe 11a with three real clicks: a
+control click that must land, a click where the old fixed panel used to sit that must
+now reach the catcher, and a click in the chrome band that must still be swallowed.
 
 ### Recall survives a scroll, best-effort and no further (macOS)
 

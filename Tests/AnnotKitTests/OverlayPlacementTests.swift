@@ -1,9 +1,10 @@
 #if os(macOS)
 import CoreGraphics
+import SwiftUI
 import XCTest
 @testable import AnnotKit
 
-/// Where the overlay panel is placed when the host window does not fit on the display.
+/// Where the overlay panels are placed when the host window does not fit on the display.
 ///
 /// The reported bug: "on scrollable screens, the menu in the bottom right disappears."
 /// A tall/scrollable host is a window taller than the display, AppKit constrains a
@@ -11,18 +12,40 @@ import XCTest
 /// anchor the toolbar to the host's BOTTOM edge — so the pill was drawn under the Dock
 /// or off the display entirely. These are the placement rules that fix it, tested as
 /// pure geometry so they hold on display arrangements no test machine has.
+///
+/// Everything here is asserted about the PILL rather than about the panel carrying it.
+/// The panel is sized to the control now (so it stops eating clicks the host app needs
+/// — see ``OverlayPlacement/toolbarFrame(hostFrame:visibleFrame:panelSize:)``), which
+/// means its own edges move whenever the pill's width changes. The pill's position is
+/// the invariant, and it is the only part a user can see or hit.
 @MainActor
 final class OverlayPlacementTests: XCTestCase {
     /// A 1512x982 display with a 33pt menu bar and a 61pt Dock — the shape of a real
     /// laptop screen, so "visible" and "screen" are never accidentally interchangeable.
     private let visible = CGRect(x: 0, y: 61, width: 1512, height: 888)
 
+    /// A representative measured panel: an annotate-width pill plus the chrome margin
+    /// the view pads it by. The placement rule only ever sees a size, so pinning one
+    /// here keeps these tests about placement rather than about SwiftUI's layout.
+    private let panelSize = CGSize(width: 227, height: 80)
+    /// The idle panel: the same pill row collapsed to a single pencil.
+    private let idlePanelSize = CGSize(width: 72, height: 80)
+
     private func annotating(_ host: CGRect, _ visible: CGRect?) -> CGRect {
-        OverlayPlacement.panelFrame(for: .annotating, hostFrame: host, visibleFrame: visible)
+        OverlayPlacement.catcherFrame(hostFrame: host, visibleFrame: visible)
     }
 
-    private func idle(_ host: CGRect, _ visible: CGRect?) -> CGRect {
-        OverlayPlacement.panelFrame(for: .idle, hostFrame: host, visibleFrame: visible)
+    private func toolbar(_ host: CGRect, _ visible: CGRect?, size: CGSize? = nil) -> CGRect {
+        OverlayPlacement.toolbarFrame(hostFrame: host, visibleFrame: visible, panelSize: size ?? panelSize)
+    }
+
+    /// Where the PILL lands inside a toolbar panel: the panel minus the chrome margin
+    /// the shadow and count badge draw into.
+    private func pill(in panel: CGRect) -> CGRect {
+        CGRect(x: panel.minX + PillStyle.panelChrome.leading,
+               y: panel.minY + PillStyle.panelChrome.bottom,
+               width: panel.width - PillStyle.panelChrome.leading - PillStyle.panelChrome.trailing,
+               height: panel.height - PillStyle.panelChrome.top - PillStyle.panelChrome.bottom)
     }
 
     // MARK: - The unchanged case
@@ -32,7 +55,34 @@ final class OverlayPlacementTests: XCTestCase {
     func testHostInsideTheVisibleAreaIsPlacedExactlyAsBefore() {
         let host = CGRect(x: 200, y: 200, width: 800, height: 600)
         XCTAssertEqual(annotating(host, visible), host)
-        XCTAssertEqual(idle(host, visible), CGRect(x: host.maxX - 240, y: host.minY, width: 240, height: 104))
+        let corner = pill(in: toolbar(host, visible))
+        XCTAssertEqual(corner.maxX, host.maxX - PillStyle.cornerInset)
+        XCTAssertEqual(corner.minY, host.minY + PillStyle.cornerInset)
+    }
+
+    /// The property the whole re-sizing rests on: the panel changing width must not
+    /// move the control. Idle is one pencil and annotate is a six-control row, so this
+    /// happens every time the menu opens or closes.
+    func testThePillLandsInTheSamePlaceWhateverSizeThePanelIs() {
+        let host = CGRect(x: 200, y: 200, width: 800, height: 600)
+        let wide = pill(in: toolbar(host, visible, size: panelSize))
+        let narrow = pill(in: toolbar(host, visible, size: idlePanelSize))
+        XCTAssertEqual(wide.maxX, narrow.maxX, "the pill's trailing edge is the anchor")
+        XCTAssertEqual(wide.minY, narrow.minY, "and so is its bottom")
+        XCTAssertLessThan(toolbar(host, visible, size: idlePanelSize).width,
+                          toolbar(host, visible, size: panelSize).width,
+                          "sanity: the idle panel really is narrower — the panel grows LEFTWARDS")
+    }
+
+    /// The point of sizing the panel at all: it covers the control instead of a fixed
+    /// rect, because every pixel it covers is a pixel of the host app that cannot be
+    /// clicked (macOS does not pass mouse events through a window's transparent parts).
+    func testTheIdlePanelIsFarSmallerThanTheFixedSizeItReplaced() {
+        let host = CGRect(x: 200, y: 200, width: 800, height: 600)
+        let area = toolbar(host, visible, size: idlePanelSize)
+        let old = OverlayPlacement.unmeasuredPanelSize
+        XCTAssertLessThan(area.width * area.height, old.width * old.height / 3,
+                          "an idle pill claims less than a third of the corner it used to")
     }
 
     // MARK: - The reported direction: the bottom hangs off
@@ -46,16 +96,17 @@ final class OverlayPlacementTests: XCTestCase {
         XCTAssertEqual(annotate, host.intersection(visible))
         XCTAssertEqual(annotate.minY, visible.minY, "the catcher's bottom edge — where the pill is drawn — is on screen")
 
-        let corner = idle(host, visible)
-        XCTAssertEqual(corner.minY, visible.minY)
-        XCTAssertEqual(corner.maxX, host.maxX, "the pill stays anchored to the host's right edge, which is on screen")
+        let corner = pill(in: toolbar(host, visible))
+        XCTAssertEqual(corner.minY, visible.minY + PillStyle.cornerInset, "the pill is lifted onto the visible screen")
+        XCTAssertEqual(corner.maxX, host.maxX - PillStyle.cornerInset,
+                       "and stays anchored to the host's right edge, which is on screen")
     }
 
-    /// The idle panel is anchored, never intersected: shrinking it to the visible region
-    /// would clip the pill it exists to carry.
-    func testIdlePanelKeepsItsFullSizeWhenTheHostHangsOff() {
+    /// The toolbar panel is anchored, never intersected: shrinking it to the visible
+    /// region would clip the pill it exists to carry.
+    func testToolbarPanelKeepsItsFullSizeWhenTheHostHangsOff() {
         let host = CGRect(x: 400, y: visible.minY - 300, width: 620, height: visible.height + 300)
-        XCTAssertEqual(idle(host, visible).size, OverlayPlacement.idleSize)
+        XCTAssertEqual(toolbar(host, visible).size, panelSize)
     }
 
     /// The coordinate half of the fix, in the direction that is easy to get right by
@@ -95,7 +146,7 @@ final class OverlayPlacementTests: XCTestCase {
 
     func testRightOverhangPullsTheIdlePillInsideTheDisplay() {
         let host = CGRect(x: 1200, y: 300, width: 800, height: 400)   // 488pt off the right edge
-        XCTAssertEqual(idle(host, visible).maxX, visible.maxX)
+        XCTAssertEqual(pill(in: toolbar(host, visible)).maxX, visible.maxX - PillStyle.cornerInset)
         XCTAssertEqual(annotating(host, visible).maxX, visible.maxX)
     }
 
@@ -108,7 +159,7 @@ final class OverlayPlacementTests: XCTestCase {
     func testHostEntirelyOffDisplayKeepsTheUnclampedPlacement() {
         let host = CGRect(x: -12000, y: -12000, width: 600, height: 400)
         XCTAssertEqual(annotating(host, visible), host)
-        XCTAssertEqual(idle(host, visible), CGRect(x: host.maxX - 240, y: host.minY, width: 240, height: 104))
+        XCTAssertEqual(pill(in: toolbar(host, visible)).maxX, host.maxX - PillStyle.cornerInset)
         XCTAssertFalse(annotating(host, visible).isEmpty)
     }
 
@@ -117,18 +168,17 @@ final class OverlayPlacementTests: XCTestCase {
     func testNoScreenFallsBackToTheHostFrame() {
         let host = CGRect(x: 100, y: -400, width: 600, height: 1400)
         XCTAssertEqual(annotating(host, nil), host)
-        XCTAssertEqual(idle(host, nil), CGRect(x: host.maxX - 240, y: host.minY, width: 240, height: 104))
+        XCTAssertEqual(pill(in: toolbar(host, nil)).maxX, host.maxX - PillStyle.cornerInset)
     }
 
-    /// A host with only a sliver on screen still gets a full-size idle panel whose
-    /// BOTTOM edge — the edge the pill is drawn against — is inside the visible region.
+    /// A host with only a sliver on screen still gets a full-size toolbar panel whose
+    /// PILL — the part that has to be reachable — is inside the visible region.
     func testSliverOfHostOnScreenStillYieldsAReachablePill() {
         let host = CGRect(x: 400, y: visible.minY - 1000, width: 620, height: 1040)   // 40pt visible
-        let corner = idle(host, visible)
-        XCTAssertEqual(corner.size, OverlayPlacement.idleSize)
-        XCTAssertEqual(corner.minY, visible.minY)
-        XCTAssertTrue(visible.contains(CGRect(x: corner.maxX - 200, y: corner.minY + 20, width: 180, height: 44)),
-                      "the pill itself (bottom-right, 20pt inset) is inside the visible region")
+        let corner = toolbar(host, visible)
+        XCTAssertEqual(corner.size, panelSize)
+        XCTAssertTrue(visible.contains(pill(in: corner)),
+                      "the pill itself is inside the visible region")
     }
 }
 #endif

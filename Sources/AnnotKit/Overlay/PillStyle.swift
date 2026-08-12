@@ -48,6 +48,30 @@ enum PillStyle {
     /// white-on-dark weight as ``border`` but a touch stronger, so it reads as a
     /// deliberate group boundary at 1pt instead of disappearing into the capsule.
     static let divider = Color.white.opacity(0.1)
+
+    /// Blank space the toolbar panel keeps AROUND the pill, for the chrome that
+    /// draws OUTSIDE the control's own layout bounds and would otherwise be clipped
+    /// by a snug window: the drop shadow (radius 12, offset 8 DOWN, hence the taller
+    /// bottom) and the count badge, which is hung 5pt past the pill's top-left
+    /// corner.
+    ///
+    /// This is the whole remaining cost of the panel being hit-testable. macOS does
+    /// not route mouse events through a window's transparent parts — measured, and
+    /// true even of a panel drawing nothing at all — so every pixel the panel covers
+    /// is a pixel the host app cannot be clicked through. Sizing the panel to the
+    /// pill reduces that to this band, which hugs the control and reads as part of
+    /// it. It was a permanently-mounted 240x104 rect over the host's bottom-right
+    /// corner, dead in BOTH modes, of which the pill used 8% when idle.
+    ///
+    /// Shared with ``OverlayPlacement/toolbarFrame(hostFrame:visibleFrame:panelSize:)``,
+    /// which subtracts it to keep the pill at the same inset from the host's corner
+    /// it has always had: the panel changing size must not move the control.
+    static let panelChrome = EdgeInsets(top: 14, leading: 14, bottom: 20, trailing: 14)
+
+    /// The pill's inset from the visible region's bottom-right corner. Unchanged
+    /// from when it was padding INSIDE a fixed 240x104 panel, so the control sits
+    /// exactly where it always has.
+    static let cornerInset: CGFloat = 20
 }
 
 // MARK: - Icon-button palette
