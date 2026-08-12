@@ -3057,11 +3057,11 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
 
         guard realClicks else {
             print("      (end-to-end real-click legs skipped — set ANNOTKIT_PROBE_REALCLICK=1)")
-            controller.unmount(); host.window.orderOut(nil); return finish()
+            controller.unmount(); host.window.orderOut(nil); return phase13Keyboard()
         }
         guard AXIsProcessTrusted() else {
             check12(false, "posting real clicks needs Accessibility trust — the end-to-end legs CANNOT run")
-            controller.unmount(); host.window.orderOut(nil); return finish()
+            controller.unmount(); host.window.orderOut(nil); return phase13Keyboard()
         }
         host.window.setFrameOrigin(NSPoint(x: visibleFrame.minX + 140, y: visibleFrame.minY + 240))
         NSApp.activate(ignoringOtherApps: true)
@@ -3075,7 +3075,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
                              "ONE click on the catcher selects — the first press is not spent making the panel key")
                 controller.unmount()
                 host.window.orderOut(nil)
-                self.finish()
+                self.phase13Keyboard()
             }
         ])
     }
@@ -3128,6 +3128,92 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // ---- Phase 13: the card's keyboard contract ----------------------------
+    // The card promises "⏎ save · ⇧⏎ newline" in its own header, and the second
+    // half of that was not true: Shift+Return inserted nothing AND discarded what
+    // had already been typed, because a vertical `TextField` has no newline gesture
+    // on macOS and the key reached AppKit as an ordinary `insertNewline:`.
+    //
+    // Asserted END TO END, through the composer's real text field, because that is
+    // the only place the claim is meaningful: the draft is `@State` in the view, so
+    // the only honest way to read it is to make the note and look at what was
+    // filed. Real key events, so it rides the same opt-in flag as the click legs.
+    var passKeyboard = true
+    func check13(_ c: Bool, _ m: String) {
+        print("      " + (c ? "ok   " : "FAIL ") + m)
+        passKeyboard = passKeyboard && c
+    }
+
+    var keyboardController: OverlayController?
+
+    func phase13Keyboard() {
+        print("\n--- Phase 13: the card's keyboard contract (⏎ saves, ⇧⏎ inserts a line break) ---")
+        guard realClicks else {
+            print("      (needs real key events — skipped; set ANNOTKIT_PROBE_REALCLICK=1)")
+            return finish()
+        }
+        guard AXIsProcessTrusted() else {
+            check13(false, "posting real key events needs Accessibility trust")
+            return finish()
+        }
+        let host = makeHostWindow(title: "AnnotKit Harness W13 (keyboard)")
+        host.window.setFrameOrigin(NSPoint(x: visibleFrame.minX + 160, y: visibleFrame.minY + 260))
+        NSApp.activate(ignoringOtherApps: true)
+        host.window.makeKeyAndOrderFront(nil)
+
+        let session = AnnotationSession(source: MacElementSource(), sink: NotesFileSink(path: "/dev/null"))
+        let controller = OverlayController(session: session)
+        controller.mount(on: host.window)
+        controller.start()
+        keyboardController = controller
+
+        runSteps([
+            {
+                // Open the composer on a real control. The card focuses itself and
+                // makes the panel key, which is what puts the field editor in the
+                // responder chain the keystrokes will reach.
+                NSApp.activate(ignoringOtherApps: true)
+                session.select(atAXPoint: axCenter(of: host.primary))
+                self.check13(session.selected != nil, "sanity: the composer is open on a real element")
+            },
+            {
+                // "a", Shift+Return, "b" — the sequence that used to leave "b".
+                self.typeKey(0)
+                self.typeKey(36, shift: true)
+                self.typeKey(11)
+            },
+            {
+                // Enter commits, which is the only way to read a draft that lives
+                // in the view's own @State.
+                self.typeKey(36)
+            },
+            {
+                let comment = session.pending.last?.comment
+                print("      filed comment = \(comment.map { "\"\($0.replacingOccurrences(of: "\n", with: "\\n"))\"" } ?? "nil")")
+                self.check13(session.pending.count == 1, "⏎ filed the note (got \(session.pending.count))")
+                self.check13(comment == "a\nb",
+                             "⇧⏎ inserted a LINE BREAK and kept what was already typed (the old behaviour filed \"b\")")
+                controller.unmount()
+                host.window.orderOut(nil)
+                self.finish()
+            }
+        ])
+    }
+
+    /// One real keystroke. Virtual key codes are hardware positions, so they are
+    /// layout-independent: 0 = "a", 11 = "b", 36 = Return.
+    func typeKey(_ code: CGKeyCode, shift: Bool = false) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        guard let down = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: code, keyDown: false) else { return }
+        if shift {
+            down.flags = .maskShift
+            up.flags = .maskShift
+        }
+        down.post(tap: .cghidEventTap)
+        up.post(tap: .cghidEventTap)
+    }
+
     func finish() {
         print("\n  issue-2 (per-control hit-test through the expanded overlay): \(passIssue2 ? "PASS" : "FAIL")")
         print("  issue-1 (retention / copy / export / pill persistence):       \(pass1 ? "PASS" : "FAIL")")
@@ -3142,8 +3228,9 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 10 (Escape closes the menu): \(passEscape ? "PASS" : "FAIL")")
         print("  Phase 11 (recallable marks: toolbar pass-through, pins inert in frame mode, hover recall): \(passMarks ? "PASS" : "FAIL")")
         print("  Phase 12 (the FIRST click on the overlay acts — no click tax): \(passFirstClick ? "PASS" : "FAIL")")
+        print("  Phase 13 (the card's keyboard contract: ⏎ saves, ⇧⏎ newlines): \(passKeyboard ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")
-        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp && passEscape && passMarks && passFirstClick ? 0 : 1)
+        exit(pass1 && passIssue2 && passPins && passResize && passChrome && passCard && passSpec && passMarquee && passNav && passClamp && passEscape && passMarks && passFirstClick && passKeyboard ? 0 : 1)
     }
 
     func collectIDs(_ elements: [Element]) -> [String] {

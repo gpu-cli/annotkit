@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// The overlay's SwiftUI content, shared by the macOS and iOS hosts.
 ///
@@ -707,10 +710,10 @@ private struct AnnotationCard<Footer: View>: View {
                 .lineLimit(2 ... 5)
                 .frame(width: 260)
                 .focused($focused)
-                // Enter submits; Shift+Enter falls through to insert a newline in
-                // the multiline field.
+                // Enter submits; Shift+Enter inserts a line break (see
+                // ``insertLineBreak()`` for why that needs doing by hand).
                 .onKeyPress(keys: [.return]) { key in
-                    if key.modifiers.contains(.shift) { return .ignored }
+                    guard !key.modifiers.contains(.shift) else { return insertLineBreak() }
                     onSubmit()
                     return .handled
                 }
@@ -748,6 +751,38 @@ private struct AnnotationCard<Footer: View>: View {
         // it is delivered. Restoring this modifier would not be redundancy: with the
         // panel key BOTH handlers would run on one press, closing the card and then
         // acting again on the state that leaves behind.
+    }
+
+    /// Insert a line break at the caret for Shift+Enter, and keep editing.
+    ///
+    /// This used to `return .ignored` and trust the field to do it. It does not —
+    /// and the failure is not merely inert, which is why it was worth measuring
+    /// rather than reasoning about. On a `TextField(axis: .vertical)`, typing "a",
+    /// Shift+Return, "b" leaves the binding holding **"b"**: no line break, and the
+    /// text that was already typed is GONE. A field with no key handler at all
+    /// behaves identically, so the interception was never the problem — a vertical
+    /// TextField on macOS simply has no newline gesture, and Shift+Return reaches
+    /// AppKit as an ordinary `insertNewline:`, which ends editing.
+    ///
+    /// `insertNewlineIgnoringFieldEditor(_:)` is the action AppKit provides for
+    /// exactly this — "a line break, do NOT end editing", what Option+Return does in
+    /// any `NSTextField` — sent to the FIELD EDITOR, the `NSTextView` that actually
+    /// holds the text while a SwiftUI `TextField` is focused. Going through it
+    /// rather than appending to the binding is what makes the break land at the
+    /// CARET: a user fixing the middle of a sentence gets it where they are typing,
+    /// not stapled to the end.
+    ///
+    /// macOS-only by necessity (`NSTextView`, `NSApp`). On iOS the key is
+    /// `.ignored`, which is the right answer there: UIKit's multiline field inserts
+    /// the break itself, and on a touch keyboard there is no Shift+Return to press.
+    private func insertLineBreak() -> KeyPress.Result {
+        #if os(macOS)
+        guard let editor = NSApp.keyWindow?.firstResponder as? NSTextView else { return .ignored }
+        editor.insertNewlineIgnoringFieldEditor(nil)
+        return .handled
+        #else
+        return .ignored
+        #endif
     }
 
     /// Focus the text field, making the host panel key FIRST so the non-activating

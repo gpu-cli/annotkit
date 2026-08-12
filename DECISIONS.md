@@ -296,6 +296,30 @@ a mode the user has deliberately entered, so a press on the catcher is always me
 for the catcher. The alternative — making the panel unable to become key — would
 take the composer's typing with it.
 
+### Shift+Enter inserts the line break by hand (dogfooding)
+
+The card promises `⏎ save · ⇧⏎ newline` in its own header, and the second half was
+not true. It used to `return .ignored` for Shift+Return and trust the field. A
+vertical `TextField` on macOS has no newline gesture: the key arrives at AppKit as
+an ordinary `insertNewline:`, which ENDS EDITING. Measured — typing "a",
+Shift+Return, "b" left the binding holding **"b"**: no break, and the text already
+typed was gone. A field with no key handler at all behaved identically, so the
+interception was never the cause.
+
+`insertNewlineIgnoringFieldEditor(_:)` sent to the FIELD EDITOR — the `NSTextView`
+that actually holds the text while a SwiftUI `TextField` is focused — is AppKit's
+action for "a line break, do NOT end editing" (what Option+Return does in any
+`NSTextField`). Going through the editor rather than appending to the binding is
+what puts the break at the CARET, so someone fixing the middle of a sentence gets
+it where they are typing instead of stapled to the end.
+
+Rejected: swapping the field for a `TextEditor`, which does honour Shift+Return.
+It would have meant re-creating the rounded border, the 2–5 line growth and the
+placeholder by hand — restyling the one control on both cards to fix a keystroke.
+
+macOS-only by necessity; on iOS `.ignored` is correct, since UIKit's multiline
+field inserts the break itself and a touch keyboard has no Shift+Return.
+
 ### The live selection follows the content on scroll, not just the notes
 
 "The manually drawn frames disappear on scroll." They do not disappear, they
