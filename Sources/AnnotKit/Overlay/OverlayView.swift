@@ -646,13 +646,14 @@ struct ToolbarOverlayView: View {
     let onExport: () -> Void
 
     var body: some View {
-        // JUST the pill, inset by the space its shadow and count badge need. There
-        // are no Spacers pushing it into a corner any more, because the panel is no
-        // longer a fixed 240x104 rect the pill sits in the corner of — it is sized
-        // to THIS view (`fittingSize`) and placed so the pill lands exactly where it
-        // always has. The panel covering only the control is the point: every pixel
-        // it covers is a pixel the host app cannot be clicked through, in both
-        // modes, permanently.
+        // JUST the pill, inset by the space its shadow and count badge need. The
+        // panel is no longer a fixed 240x104 rect with the pill parked in one
+        // corner of it — it is sized to THIS view (`fittingSize`) and placed so the
+        // pill lands exactly where it always has. The panel covering only the
+        // control is the point: every pixel it covers is a pixel the host app
+        // cannot be clicked through, in both modes, permanently. The corner
+        // alignment below is what keeps that true while the panel is briefly LARGER
+        // than the pill, which is every open and close.
         ToolbarView(
             session: session,
             onToggle: onToggle,
@@ -661,6 +662,29 @@ struct ToolbarOverlayView: View {
         )
         .padding(PillStyle.panelChrome)
         .fixedSize()
+        // PINNED to the panel's bottom-trailing corner, which is where
+        // ``OverlayPlacement/toolbarFrame(hostFrame:visibleFrame:panelSize:)``
+        // computes backwards FROM — it subtracts the trailing/bottom chrome to put
+        // the pill at its inset from the host's corner. Without this the pill is
+        // CENTERED in whatever bounds the panel has, and the two agree only while
+        // the panel is exactly the measured size.
+        //
+        // They disagree for a third of a second on EVERY open and close, because
+        // the panel grows immediately and shrinks late (see
+        // ``OverlayController/scheduleToolbarShrink()``), and that is the whole of
+        // the "it shortens to the left, then jumps right" close animation: a
+        // centered pill collapsed toward the middle of the still-wide panel, then
+        // snapped back to the corner when the panel finally narrowed under it. With
+        // the corner pinned, the width animation is the ONLY thing that moves — the
+        // pill opens leftwards and closes back in from the left — and the late
+        // shrink is invisible because it only takes away space the pill was never
+        // occupying. It also fixes the same offset at mount, where the panel is
+        // still at its generous unmeasured seed.
+        //
+        // `maxWidth`/`maxHeight` do not disturb the measurement this same view is
+        // used for: an unspecified proposal (what `fittingSize` asks with) resolves
+        // a flexible frame to its content's ideal size. Verified.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
         .ignoresSafeArea()
         .accessibilityHidden(true)
     }
