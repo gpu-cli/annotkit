@@ -74,6 +74,7 @@ Tools: `annotation_get_pending`, `annotation_resolve`.
 swift build
 swift test
 swift run AnnotKitProbe   # live macOS smoke test
+swift run AnnotKitDemo    # interactive demo app (overlay mounted; good for recordings)
 ```
 
 Swift 6 (strict concurrency), macOS 15+, iOS 17+.

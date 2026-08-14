@@ -1,0 +1,39 @@
+# Taskfile for AnnotKit. Requires go-task (brew install go-task).
+# `task` or `task --list` shows all commands.
+version: '3'
+
+tasks:
+  default:
+    cmds:
+      - task --list
+    silent: true
+
+  build:
+    desc: Build all package targets (debug)
+    cmds:
+      - swift build
+
+  test:
+    desc: Run the full test suite
+    cmds:
+      - swift test
+
+  demo:
+    desc: Boot the interactive demo app (overlay mounted; for practice and recordings)
+    cmds:
+      - swift run AnnotKitDemo
+
+  probe:
+    desc: Run the live macOS AX smoke probe (off-screen window)
+    cmds:
+      - swift run AnnotKitProbe
+
+  mcp:
+    desc: Run the MCP server over a notes file — `task mcp -- path/to/AGENTATION_NOTES.json`
+    cmds:
+      - swift run annotkit-mcp {{.CLI_ARGS | default "./AGENTATION_NOTES.json"}}
+
+  clean:
+    desc: Remove Swift build artifacts (.build)
+    cmds:
+      - swift package clean

@@ -6,3 +6,7 @@
 DerivedData/
 .DS_Store
 Package.resolved
+
+# Demo/practice artifacts: AnnotKitDemo writes notes into the working directory
+AGENTATION_NOTES.md
+AGENTATION_NOTES.json
