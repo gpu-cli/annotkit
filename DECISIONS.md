@@ -263,14 +263,32 @@ window) leaves the catcher's last answer pointing at the pin it saw before.
 Observed exactly that way during the visual check — the card read note 1 while the
 canvas drew note 3.
 
-**Why pins are inert in frame mode.** `AnnotationPin` is a `Button` mounted above
-the catcher, so a press starting on one never reaches the drag gesture — and every
-capture plants one exactly where the next frame is most likely to be drawn. That,
-plus hover-to-edit dropping a ~284x172 card under the pointer, is the reported "if
-I select an element I cannot also use the frame tool". In frame mode the user is
-drawing, not editing, so one condition removes both with no gesture negotiation.
-Measured both ways in the probe (11c): the same synthesized press opens the editor
-in point mode and does nothing in frame mode.
+**Why the pin VIEW is inert in frame mode.** `AnnotationPin` is a `Button` mounted
+above the catcher, so a press starting on one never reaches the drag gesture — and
+every capture plants one exactly where the next frame is most likely to be drawn.
+That, plus hover-to-edit dropping a ~284x172 card under the pointer, is the reported
+"if I select an element I cannot also use the frame tool". In frame mode the user is
+drawing, so one condition removes both with no gesture negotiation.
+
+**Why a pin is still CLICKABLE there (VRT-u209).** Going hit-test-inert was meant to
+stop a pin swallowing a DRAG; it also removed the only route to the editor, so a
+comment written with the frame tool could be read and never edited — reported as "I
+need to click the comment again to edit it… right now when I hover on one of the
+numbers, nothing happens", and settled by probe 11c printing `editingNoteID=nil` for
+a real press on a real pin in frame mode. The press is now routed by GEOMETRY at the
+catcher's release (`PinAttentionRule.pressedNote` via `SelectionGesture`), so the
+view stays inert and the pin stays live. **Travel, not tool, is the gate**: a click
+on a pin edits it in either tool, a drag from a pin still draws its frame — one
+sentence true of both, and the `VRT-dp47` report cannot come back. Probe 11c now
+measures all three legs (click in each tool, drag from a pin).
+
+**Why the press radius is the pin's own, not `attentionRadius`.** The two circles are
+paid for differently. Attending is free — it draws a picture and takes nothing away —
+so it may reach outside the pin (and must, since in point mode the catcher only ever
+sees points outside a live button). A click is scarce: the same press could have
+selected the element underneath, so its target is exactly the circle the user can
+SEE. Wired to `attentionRadius`, every pin would be a 40pt hole in the canvas that
+looks 20pt wide.
 
 **The composer covering its own element is ACCEPTED.** A card the user may be
 typing into must consume its own clicks; dismissing it or starting the drag from

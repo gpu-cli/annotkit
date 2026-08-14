@@ -43,19 +43,53 @@ enum PinAttentionRule {
     /// window from empty space has already set the answer to nil on its way out.
     static let attentionRadius: CGFloat = pinDiameter
 
+    /// How close a CLICK must come to a pin's centre to open that note's editor —
+    /// the pin's OWN drawn radius, deliberately NOT ``attentionRadius``.
+    ///
+    /// The two differ because they are paid for differently. Attending a pin is free:
+    /// it draws a picture and takes nothing away, so a generous annulus outside the
+    /// pin costs a user nothing when it fires early. A click is scarce — the same
+    /// press could have selected the element underneath — so its target must be
+    /// exactly the circle the user can SEE. At ``attentionRadius`` a press 18pt clear
+    /// of a pin would silently open an editor instead of selecting what was pressed,
+    /// and the pin would be a 40pt hole in the canvas that looks 20pt wide.
+    static let pressRadius: CGFloat = pinDiameter / 2
+
     /// The id of the note whose pin the pointer at `point` (WINDOW-LOCAL, the space
     /// ``AnnotationNote/anchorRect`` is stored in) is attending, or nil for a point
     /// near no pin.
+    static func attendedNote(atWindowPoint point: CGPoint, in notes: [AnnotationNote]) -> String? {
+        note(atWindowPoint: point, in: notes, within: attentionRadius)
+    }
+
+    /// The id of the note whose pin a CLICK at `point` (WINDOW-LOCAL) landed on, or
+    /// nil for a press that hit no pin.
     ///
+    /// This is what makes click-to-edit work in BOTH tools. In point mode the pin is
+    /// a live `Button` and answers its own click; in frame mode it is deliberately
+    /// `allowsHitTesting(false)` — so a press there reaches the catcher, and geometry
+    /// is the only thing left that can say "that was pin 3". Deciding it from the
+    /// stored anchors rather than from a view means the answer does not depend on
+    /// which tool happens to be active, which is the whole defect this closes: a
+    /// note captured in frame mode could be read but never re-opened.
+    ///
+    /// The CALLER owns the click-vs-drag distinction (see ``SelectionGesture``): a
+    /// press that travelled is a drag, and a drag that began on a pin must still draw
+    /// its frame.
+    static func pressedNote(atWindowPoint point: CGPoint, in notes: [AnnotationNote]) -> String? {
+        note(atWindowPoint: point, in: notes, within: pressRadius)
+    }
+
     /// LAST NOTE WINS on overlap, because pins are drawn in `pending` order and a
     /// later one is therefore painted ON TOP of an earlier one. The user can only
-    /// mean the pin they can see.
-    static func attendedNote(atWindowPoint point: CGPoint, in notes: [AnnotationNote]) -> String? {
+    /// mean the pin they can see — which is why both callers share this walk rather
+    /// than each writing their own loop and disagreeing about the tie.
+    private static func note(atWindowPoint point: CGPoint, in notes: [AnnotationNote], within radius: CGFloat) -> String? {
         for note in notes.reversed() {
             guard let anchor = note.anchorRect?.origin else { continue }
             let dx = point.x - anchor.x
             let dy = point.y - anchor.y
-            if dx * dx + dy * dy <= attentionRadius * attentionRadius { return note.id }
+            if dx * dx + dy * dy <= radius * radius { return note.id }
         }
         return nil
     }

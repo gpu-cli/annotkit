@@ -204,4 +204,105 @@ final class SelectionGestureTests: XCTestCase {
             CGRect(x: 1612, y: 130, width: 80, height: 60)
         )
     }
+
+    // MARK: - Clicking an existing pin (VRT-u209)
+
+    /// The pin of a note captured at window-local (100, 100) — the same point these
+    /// tests press from, so a press at `start` is a press dead on the pin.
+    private func pinnedNote(id: String = "n1", at origin: CGPoint = CGPoint(x: 100, y: 100)) -> AnnotationNote {
+        AnnotationNote(
+            id: id,
+            selector: "#SaveButton",
+            elementPath: "AXWindow > AXButton",
+            comment: "c",
+            timestamp: "t",
+            anchorRect: CGRect(origin: origin, size: CGSize(width: 40, height: 20))
+        )
+    }
+
+    /// THE ASK: a comment can be re-opened by clicking its number. In point mode the
+    /// pin's own `Button` already answered this; the rule has to agree with it, or
+    /// the two routes would resolve the same press differently.
+    func testAClickOnAPinEditsThatNoteInPointMode() {
+        XCTAssertEqual(
+            SelectionGesture.resolve(tool: .point, from: start, to: start, axOrigin: .zero, pins: [pinnedNote()]),
+            .editNote("n1")
+        )
+    }
+
+    /// THE DEFECT THIS CLOSES. In frame mode the pin view is hit-test-inert, so the
+    /// press arrives at the catcher and nothing downstream knew what it had landed
+    /// on: measured as `editingNoteID=nil` by the probe's phase 11c, reported as "I
+    /// hover the numbers and nothing happens". A note written with the frame tool
+    /// could be read and never edited.
+    func testAClickOnAPinEditsThatNoteInFrameModeToo() {
+        XCTAssertEqual(
+            SelectionGesture.resolve(tool: .frame, from: start, to: start, axOrigin: .zero, pins: [pinnedNote()]),
+            .editNote("n1"),
+            "a click on a pin means the same thing in both tools — the tool governs what a press binds to, not whether an existing note can be re-opened"
+        )
+    }
+
+    /// THE `VRT-dp47` REGRESSION GUARD, and the reason the rule gates on TRAVEL
+    /// rather than on the tool. Every capture plants a pin exactly where the user is
+    /// most likely to draw the next frame — on the thing they just annotated — so if
+    /// a press starting on a pin were an edit unconditionally, frame mode would lose
+    /// its main gesture precisely where it is most used.
+    func testADragThatStartsOnAPinStillDrawsItsFrame() {
+        let farEnough = CGPoint(x: start.x + 200, y: start.y + 150)
+        XCTAssertEqual(
+            SelectionGesture.resolve(tool: .frame, from: start, to: farEnough, axOrigin: .zero, pins: [pinnedNote()]),
+            .frame(CGRect(x: 100, y: 100, width: 200, height: 150))
+        )
+    }
+
+    /// The point-mode mirror: point mode calls ANY travel a sloppy click, so a press
+    /// that drifted off a pin is not an edit either — it binds to where the user
+    /// aimed, exactly as it did before pins were clickable.
+    func testADragInPointModeFromAPinIsAStillASelectionNotAnEdit() {
+        let farEnough = CGPoint(x: start.x + 200, y: start.y + 150)
+        XCTAssertEqual(
+            SelectionGesture.resolve(tool: .point, from: start, to: farEnough, axOrigin: .zero, pins: [pinnedNote()]),
+            .point(CGPoint(x: 100, y: 100))
+        )
+    }
+
+    /// A click that missed every pin routes exactly as it always has — the empty-set
+    /// default and a populated-but-missed set must agree, or notes on screen would
+    /// quietly change what a click on the app means.
+    func testAClickAwayFromEveryPinRoutesAsBefore() {
+        let elsewhere = CGPoint(x: 600, y: 600)
+        XCTAssertEqual(
+            SelectionGesture.resolve(tool: .point, from: elsewhere, to: elsewhere, axOrigin: .zero, pins: [pinnedNote()]),
+            .point(elsewhere)
+        )
+        XCTAssertEqual(
+            SelectionGesture.resolve(tool: .frame, from: elsewhere, to: elsewhere, axOrigin: .zero, pins: [pinnedNote()]),
+            .none,
+            "frame mode's too-short press still does nothing — a pin miss must not become a selection"
+        )
+    }
+
+    /// COORDINATES, as an assertion. The pin test consumes the WINDOW-LOCAL press
+    /// point, while the selection payloads are shifted into AX screen space by
+    /// `axOrigin`. Shifting the pin test too would look symmetrical and test every
+    /// pin against a point off by the window's screen origin — invisible on the
+    /// primary display at the global origin, wrong on every other one.
+    func testThePinTestUsesWindowLocalCoordinatesNotAXScreenSpace() {
+        let axOrigin = CGPoint(x: 1512, y: 30)
+        XCTAssertEqual(
+            SelectionGesture.resolve(tool: .frame, from: start, to: start, axOrigin: axOrigin, pins: [pinnedNote()]),
+            .editNote("n1"),
+            "the pin is stored window-local, so a secondary display must not move its hit target"
+        )
+        // ...and the note whose pin sits where the AX-SHIFTED point would land is NOT
+        // the one that opens.
+        XCTAssertEqual(
+            SelectionGesture.resolve(
+                tool: .frame, from: start, to: start, axOrigin: axOrigin,
+                pins: [pinnedNote(id: "shifted", at: CGPoint(x: 1612, y: 130)), pinnedNote()]
+            ),
+            .editNote("n1")
+        )
+    }
 }

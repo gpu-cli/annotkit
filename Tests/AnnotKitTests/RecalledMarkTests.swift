@@ -81,6 +81,54 @@ final class RecalledMarkTests: XCTestCase {
         XCTAssertEqual(PinAttentionRule.attendedNote(atWindowPoint: CGPoint(x: 101, y: 101), in: notes), "second")
     }
 
+    // MARK: - PinAttentionRule: the PRESS target
+
+    /// A press on the pin's own pixels opens that note. This is the route that makes
+    /// click-to-edit work in FRAME mode, where the pin view is hit-test-inert and the
+    /// catcher gets the press instead — measured before it was written, by the
+    /// probe's phase 11c reporting `editingNoteID=nil` there.
+    func testAPressOnAPinIdentifiesThatNote() {
+        let notes = [note(id: "a", anchorRect: CGRect(x: 100, y: 200, width: 40, height: 20))]
+        XCTAssertEqual(PinAttentionRule.pressedNote(atWindowPoint: CGPoint(x: 100, y: 200), in: notes), "a")
+        // Anywhere on the drawn circle, not just dead centre.
+        XCTAssertEqual(
+            PinAttentionRule.pressedNote(atWindowPoint: CGPoint(x: 100 + PinAttentionRule.pressRadius - 1, y: 200), in: notes),
+            "a"
+        )
+    }
+
+    /// THE ASYMMETRY WITH HOVER, stated as a test rather than left to the header: a
+    /// click is scarce (the same press could have selected the element underneath),
+    /// so its target is exactly the circle the user can SEE, while attention is free
+    /// and may reach outside it. Wire the press to `attentionRadius` and every pin
+    /// becomes a 40pt hole in the canvas that looks 20pt wide.
+    func testAPressJustOutsideTheDrawnPinHitsNothingEvenThoughItWouldAttendIt() {
+        let notes = [note(id: "a", anchorRect: CGRect(x: 100, y: 200, width: 40, height: 20))]
+        let justOutsideTheCircle = CGPoint(x: 100 + PinAttentionRule.pinDiameter / 2 + 2, y: 200)
+        XCTAssertEqual(PinAttentionRule.pressRadius, PinAttentionRule.pinDiameter / 2,
+                       "the press target is the pin as DRAWN")
+        XCTAssertLessThan(PinAttentionRule.pressRadius, PinAttentionRule.attentionRadius)
+        XCTAssertEqual(PinAttentionRule.attendedNote(atWindowPoint: justOutsideTheCircle, in: notes), "a",
+                       "sanity: this point does attend the pin")
+        XCTAssertNil(PinAttentionRule.pressedNote(atWindowPoint: justOutsideTheCircle, in: notes),
+                     "...but it must not STEAL the click from the element underneath")
+    }
+
+    /// The same tie-break as attention, and for the same reason — a press can only
+    /// mean the pin the user can see. Shared implementation, so the two can never
+    /// drift into disagreeing about which pin an overlap belongs to.
+    func testOverlappingPinsResolveAPressToTheOneDrawnOnTop() {
+        let notes = [
+            note(id: "first", anchorRect: CGRect(x: 100, y: 100, width: 10, height: 10)),
+            note(id: "second", anchorRect: CGRect(x: 103, y: 103, width: 10, height: 10))
+        ]
+        XCTAssertEqual(PinAttentionRule.pressedNote(atWindowPoint: CGPoint(x: 101, y: 101), in: notes), "second")
+    }
+
+    func testAPressOnANoteWithoutGeometryMatchesNothing() {
+        XCTAssertNil(PinAttentionRule.pressedNote(atWindowPoint: .zero, in: [note(id: "decoded", anchorRect: nil)]))
+    }
+
     func testNotesWithoutGeometryAreSkippedRatherThanMatched() {
         // A note decoded from disk has no rects (they are deliberately not
         // persisted). It draws no pin, so no point can be resting on one.

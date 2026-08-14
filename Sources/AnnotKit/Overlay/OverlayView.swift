@@ -326,8 +326,19 @@ struct OverlayView: View {
                                 tool: session.tool,
                                 from: value.startLocation,
                                 to: value.location,
-                                axOrigin: axOrigin
+                                axOrigin: axOrigin,
+                                // The retained notes, so a click that landed on a pin
+                                // re-opens that note rather than binding a new one.
+                                // Handing the WHOLE set (not a pre-filtered hit) keeps
+                                // the overlap tie-break — last drawn wins — inside the
+                                // rule with the geometry it belongs to.
+                                pins: session.pending
                             ) {
+                            case .editNote(let id):
+                                // The one branch that does NOT touch the app beneath:
+                                // it opens the note's own card, which nils `selected`
+                                // for the usual exactly-one-card-at-a-time reason.
+                                session.beginEditing(id: id)
                             case .point(let point):
                                 session.select(atAXPoint: point)
                             case .frame(let rect):

@@ -44,6 +44,11 @@ enum SelectionGesture {
     /// — the transform living in one place is why the click path, the frame path
     /// and the highlight agree on a secondary display.
     enum Outcome: Equatable {
+        /// The press landed on the numbered pin of an already-captured note: open
+        /// that note's editor instead of binding anything new. Carries the note id
+        /// rather than a coordinate because nothing downstream needs the geometry —
+        /// the card anchors itself to the pin it belongs to.
+        case editNote(String)
         case point(CGPoint)
         case frame(CGRect)
         case none
@@ -61,12 +66,42 @@ enum SelectionGesture {
 
     /// Route a completed press. The one place the mode semantics live, so they are
     /// pinned by tests rather than by a human dragging a mouse.
+    ///
+    /// `pins` is the retained note set, consulted so a CLICK on an existing pin
+    /// re-opens that note instead of binding a new one — in BOTH tools. It defaults
+    /// to empty, which reproduces the original two-branch routing exactly, so a
+    /// caller with no notes on screen pays nothing and reads the same.
     static func resolve(
         tool: AnnotationSession.SelectionTool,
         from start: CGPoint,
         to end: CGPoint,
-        axOrigin: CGPoint
+        axOrigin: CGPoint,
+        pins: [AnnotationNote] = []
     ) -> Outcome {
+        // A CLICK on a pin edits that note, whatever the tool. Ordered FIRST because
+        // it is the most specific reading of the press: the user pressed a control
+        // that is on screen, drawn, and numbered, and every other branch below is
+        // about the app UNDERNEATH it.
+        //
+        // The travel gate is what keeps this from costing frame mode its main
+        // gesture. A press that travelled is a DRAG, and a drag that began on a pin
+        // must still draw its frame — pins sit exactly where the user just annotated,
+        // so they are precisely where the next frame gets drawn from (the `VRT-dp47`
+        // report, and the reason the pins are hit-test-inert in frame mode at all).
+        // Gating on travel rather than on tool keeps one sentence true of both: a
+        // click on a pin edits it, a drag from a pin draws.
+        //
+        // COORDINATES: `start` is WINDOW-LOCAL here, which is the space
+        // ``AnnotationNote/anchorRect`` is stored in — so it is handed to the rule
+        // UNSHIFTED. The `axOrigin` additions below are what turn the same point into
+        // the AX screen space the element queries use; adding it here too would look
+        // symmetrical and test every pin against a point off by the window's screen
+        // origin (invisible on the primary display, wrong on every other one).
+        if !travelledFarEnough(from: start, to: end),
+           let id = PinAttentionRule.pressedNote(atWindowPoint: start, in: pins) {
+            return .editNote(id)
+        }
+
         switch tool {
         case .point:
             // `startLocation`, not `location`: it is where the user AIMED, and it is

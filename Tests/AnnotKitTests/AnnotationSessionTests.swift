@@ -1167,6 +1167,76 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertEqual(session.attendedNoteID, second.id, "closing the card hands the answer back to the pointer")
     }
 
+    /// THE WHOLE `VRT-u209` ASK, walked end to end through the real rules in the tool
+    /// it was actually broken in: capture a note with the FRAME tool, click its
+    /// number, and get the editor open on that note's comment with the selection it
+    /// was captured from marked on the canvas.
+    ///
+    /// Frame mode is not incidental here, it is the defect. The pin view is
+    /// deliberately hit-test-inert there (so a drag can start on top of it), which
+    /// also removed the only route to `beginEditing` — the probe measured
+    /// `editingNoteID=nil` for a real press on a real pin, and the report was "I hover
+    /// the numbers and nothing happens". The press now resolves geometrically, so
+    /// this composition is the fix stated as behaviour rather than as a code path.
+    func testClickingAPinInFrameModeOpensItsEditorAndMarksWhatItWasCapturedFrom() {
+        let session = AnnotationSession(
+            source: MarqueeSource(ladder: [makeLadderElement("Sphere.Identity")]),
+            sink: NotesFileSink(path: "/dev/null"),
+            timestamp: { "T" }, makeID: { "id1" }
+        )
+        session.start()
+        session.setTool(.frame)
+        session.select(inAXRect: CGRect(x: 10, y: 10, width: 120, height: 40))
+        guard let note = session.addNote(comment: "the sphere name is wrong"),
+              let pin = note.anchorRect?.origin else {
+            return XCTFail("a framed note with a drawable pin")
+        }
+        XCTAssertNil(session.editingNoteID, "nothing is open before the click")
+
+        // The press the catcher sends on release: a CLICK (no travel) at the pin, in
+        // window-local coordinates, with the retained set as the pin candidates.
+        let outcome = SelectionGesture.resolve(
+            tool: session.tool, from: pin, to: pin, axOrigin: .zero, pins: session.pending
+        )
+        guard case .editNote(let id) = outcome else {
+            return XCTFail("a click on a pin must route to its editor in frame mode, got \(outcome)")
+        }
+        session.beginEditing(id: id)
+
+        // Ask 1: the comment is re-openable, with its text intact to edit.
+        XCTAssertEqual(session.editingNoteID, note.id)
+        XCTAssertEqual(session.pending.first(where: { $0.id == id })?.comment, "the sphere name is wrong")
+        // Ask 2: and the canvas shows what that note was captured from, for the whole
+        // edit — an area note recalls the rectangle the user swept.
+        XCTAssertEqual(session.attendedNote?.id, note.id,
+                       "a card that names a note must not face an empty canvas")
+        XCTAssertEqual(RecalledMark.resolve(session.attendedNote!)?.rect, note.drawnRect,
+                       "the mark is the frame the user drew, not a box they never swept")
+
+        // Editing it is the point of opening it.
+        session.updateNote(id: id, comment: "the sphere name is right")
+        session.endEditing()
+        XCTAssertEqual(session.pending.first(where: { $0.id == id })?.comment, "the sphere name is right")
+        XCTAssertNil(session.editingNoteID)
+    }
+
+    /// The mark belongs to the OPEN CARD, so it must not depend on which tool is
+    /// active — the user opens an editor to read and fix a comment, and swapping
+    /// tools underneath it says nothing about the note being edited.
+    func testTheEditingMarkSurvivesAToolSwitchInBothDirections() {
+        let session = makeSession(path: "/dev/null")
+        session.start()
+        capture(session, comment: "one")
+        let note = session.pending[0]
+        session.beginEditing(id: note.id)
+
+        session.setTool(.frame)
+        XCTAssertEqual(session.attendedNote?.id, note.id, "still marked in frame mode")
+        session.setTool(.point)
+        XCTAssertEqual(session.attendedNote?.id, note.id, "and still marked back in point mode")
+        XCTAssertEqual(session.editingNoteID, note.id, "switching tools never closes an open card")
+    }
+
     /// No separate bookkeeping: the mark is looked up in `pending` on every read, so
     /// a note that is gone simply has none.
     func testAMarkCannotBeRecalledForADeletedOrClearedNote() {

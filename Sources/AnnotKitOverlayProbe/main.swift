@@ -2715,7 +2715,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
     var marksHost: HostControls?
 
     func phase11Marks() {
-        print("\n--- Phase 11: element + area notes coexist; a hover recalls ONE mark; pins are inert in frame mode ---")
+        print("\n--- Phase 11: element + area notes coexist; a hover recalls ONE mark; a pin CLICK edits in both tools, a drag from one still draws ---")
         // ON SCREEN, unlike the other model phases: 11a asks the WINDOW SERVER which
         // window a click at a point would hit, and a window parked at (-12000,-12000)
         // is not in any answer it can give.
@@ -2748,6 +2748,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
             self.runSteps([
                 { self.phase11cPress(session: session, host: host.window, notes: notes, tool: .point) },
                 { self.phase11cPress(session: session, host: host.window, notes: notes, tool: .frame) },
+                { self.phase11cDragFromPin(session: session, host: host.window, notes: notes) },
                 // The control click FIRST: a real click on the catcher, far from the
                 // toolbar, must produce a selection. Without it, "the gap click
                 // produced nothing" is equally consistent with no click having been
@@ -2970,19 +2971,34 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         return (element, area)
     }
 
-    /// (a), measured both ways: a press on an existing pin must open the note's
-    /// editor in POINT mode and do NOTHING in FRAME mode.
+    /// A press on an existing pin must open that note's editor — IN BOTH TOOLS.
     ///
-    /// The point-mode leg is the non-vacuity control for the frame-mode one. Without
-    /// it, "the editor did not open" is equally consistent with the press never
-    /// having arrived — which is not a hypothetical: the harness's first version sent
-    /// the press in the same runloop turn as the `setTool` call, so it landed on the
-    /// previous layout, and the control leg is what exposed that.
+    /// THIS PHASE USED TO ASSERT THE OPPOSITE for frame mode, and that is the whole
+    /// of `VRT-u209`. Pins were made hit-test-inert in frame mode so a press starting
+    /// on one could still draw a frame (`VRT-dp47`), and this leg pinned "the editor
+    /// does not open" as the desired outcome. It was half a contract: going inert was
+    /// only ever meant to stop a pin SWALLOWING A DRAG, but it also removed the only
+    /// route to the editor, so a comment written with the frame tool could be read
+    /// and never edited. The user's report — "when I hover on one of the numbers,
+    /// nothing happens" — is this line, and the run that printed `editingNoteID=nil`
+    /// here is what settled the diagnosis.
+    ///
+    /// A press is now routed by GEOMETRY at the catcher's release
+    /// (``PinAttentionRule/pressedNote(atWindowPoint:in:)`` via ``SelectionGesture``),
+    /// so both halves hold at once: a CLICK on a pin edits it in either tool, and a
+    /// DRAG from a pin still draws its frame — which is what the third leg guards, so
+    /// the fix cannot quietly re-break the report that motivated the inertness.
+    ///
+    /// The point-mode leg remains the non-vacuity control for the others. Without it,
+    /// "the editor did not open" is equally consistent with the press never having
+    /// arrived — not a hypothetical: the harness's first version sent the press in the
+    /// same runloop turn as the `setTool` call, so it landed on the previous layout,
+    /// and the control leg is what exposed that.
     ///
     /// Each call runs on its OWN turn (see `runSteps`) so the tool switch has been
     /// rendered before the press is sent.
     func phase11cPress(session: AnnotationSession, host: NSWindow, notes: (element: AnnotationNote?, area: AnnotationNote?), tool: AnnotationSession.SelectionTool) {
-        if tool == .point { print("\n  11c — candidate (a): does a press that starts on a PIN reach the catcher?") }
+        if tool == .point { print("\n  11c — a click on a PIN opens its editor, in BOTH tools; a DRAG from one still draws:") }
         guard let catcher = overlayCatcher(of: host), let note = notes.element,
               let anchor = note.anchorRect?.origin else {
             check11(false, "a captured note with a drawable pin is on screen for the press")
@@ -3013,15 +3029,67 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
               "(\(String(format: "(%.0f, %.0f)", pinPoint.x, pinPoint.y)) in the catcher panel) -> editingNoteID=\(opened ?? "nil")")
         if tool == .point {
             check11(opened == note.id,
-                    "control: in POINT mode the press lands on the pin and opens its editor (pins behave exactly as they did)")
+                    "control: in POINT mode the press lands on the pin and opens its editor (the pin's own Button answers it)")
         } else {
-            check11(opened == nil,
-                    "in FRAME mode the pin is INERT — the press is not swallowed by the pin, so it can start a frame drag")
+            check11(opened == note.id,
+                    "in FRAME mode the SAME press opens the SAME editor — the pin view is still inert, so this one came back through the catcher by geometry (this assertion was `== nil` before VRT-u209, and that was the bug)")
         }
+        // The mark is the other half of the ask: a card that names a note must not
+        // face an empty canvas, whichever tool is active.
+        check11(session.attendedNote?.id == note.id,
+                "...and the note's captured selection is marked while its card is open")
         session.endEditing()
         // Leave the NEXT step's tool set here rather than at the top of it, so the
         // switch gets a full runloop turn to be rendered before that press is sent.
-        session.setTool(tool == .point ? .frame : .point)
+        // The frame leg leaves it in FRAME, because the drag leg that follows it is
+        // the one that needs that mode.
+        session.setTool(tool == .point ? .frame : .frame)
+    }
+
+    /// The `VRT-dp47` GUARD, in the real view tree: a press that starts on a pin and
+    /// TRAVELS is a frame drag, not an edit.
+    ///
+    /// This is the leg that makes click-to-edit in frame mode safe to have. Every
+    /// capture plants a pin exactly where the user is most likely to draw the next
+    /// frame — on the thing they just annotated — so a rule that read any press on a
+    /// pin as an edit would take frame mode's main gesture away precisely where it is
+    /// most used. Measured here rather than reasoned about, because the travel gate
+    /// lives in a pure rule but the thing that has to honour it is a SwiftUI gesture.
+    func phase11cDragFromPin(session: AnnotationSession, host: NSWindow, notes: (element: AnnotationNote?, area: AnnotationNote?)) {
+        guard let catcher = overlayCatcher(of: host), let note = notes.element,
+              let anchor = note.anchorRect?.origin else {
+            check11(false, "a captured note with a drawable pin is on screen for the drag")
+            return
+        }
+        check11(session.tool == .frame, "sanity: the overlay is in FRAME mode before the drag")
+        session.endEditing()
+        session.cancelSelection()
+        let from = CGPoint(x: anchor.x, y: catcher.frame.height - anchor.y)
+        // Well past `SelectionGesture.minimumTravel`, and DOWN-RIGHT in Cocoa y-up
+        // means down-left on screen — direction is irrelevant to the rule, distance
+        // is the whole question.
+        let to = CGPoint(x: from.x + 160, y: from.y - 120)
+        for (type, location) in [(NSEvent.EventType.leftMouseDown, from),
+                                 (.leftMouseDragged, to),
+                                 (.leftMouseUp, to)] {
+            guard let event = NSEvent.mouseEvent(
+                with: type, location: location, modifierFlags: [],
+                timestamp: ProcessInfo.processInfo.systemUptime,
+                windowNumber: catcher.windowNumber, context: nil,
+                eventNumber: 0, clickCount: 1, pressure: type == .leftMouseUp ? 0 : 1
+            ) else {
+                check11(false, "a mouse event could be built for the drag from the pin")
+                return
+            }
+            catcher.sendEvent(event)
+        }
+        print("      FRAME mode: DRAG from pin #1 " +
+              "(\(String(format: "(%.0f, %.0f)", from.x, from.y)) -> \(String(format: "(%.0f, %.0f)", to.x, to.y))) " +
+              "-> editingNoteID=\(session.editingNoteID ?? "nil") selected=\(self.label(session.selected))")
+        check11(session.editingNoteID == nil,
+                "a DRAG that starts on a pin does NOT open its editor — the pin is a click target, never a drag target")
+        session.cancelSelection()
+        session.setTool(.point)
     }
 
     /// Recall: the hover→note mapping, driven through the session exactly as the
@@ -3324,7 +3392,7 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         print("  Phase 8 (selection navigation: round trips, history, component, frame anchor): \(passNav ? "PASS" : "FAIL")")
         print("  Phase 9 (pill + hit-test + scroll on a host hanging off the visible screen): \(passClamp ? "PASS" : "FAIL")")
         print("  Phase 10 (Escape closes the menu): \(passEscape ? "PASS" : "FAIL")")
-        print("  Phase 11 (recallable marks: toolbar pass-through, pins inert in frame mode, hover recall): \(passMarks ? "PASS" : "FAIL")")
+        print("  Phase 11 (recallable marks: toolbar pass-through, pin click-to-edit in both tools, hover recall): \(passMarks ? "PASS" : "FAIL")")
         print("  Phase 12 (the FIRST click on the overlay acts — no click tax): \(passFirstClick ? "PASS" : "FAIL")")
         print("  Phase 13 (the card's keyboard contract: ⏎ saves, ⇧⏎ newlines): \(passKeyboard ? "PASS" : "FAIL")")
         print("\n=== AnnotKitOverlayProbe complete ===")

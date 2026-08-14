@@ -19,20 +19,36 @@ import SwiftUI
 /// The whole overlay stays `accessibilityHidden`, so pins never disturb the AX
 /// point query's see-through.
 ///
-/// IN FRAME MODE THEY ARE INERT. Sitting above the catcher means a press that
-/// starts on a pin never reaches the catcher's drag gesture — and every capture
-/// plants one exactly where the user is most likely to draw the next frame, on the
-/// thing they just annotated. That is the "I selected an element and now I can't
-/// use the frame tool" report. In frame mode the user is drawing, not editing, and
-/// the tool is an explicit choice ("the tool you picked is the outcome you get",
-/// per ``SelectionGesture``), so one condition removes the collision with no
-/// gesture negotiation — the thing `VRT-dp47` learned to stay away from.
+/// IN FRAME MODE THE VIEW IS INERT — the view, not the pin. Sitting above the
+/// catcher means a press that starts on a pin never reaches the catcher's drag
+/// gesture, and every capture plants one exactly where the user is most likely to
+/// draw the next frame, on the thing they just annotated. That is the "I selected
+/// an element and now I can't use the frame tool" report. One condition removes the
+/// collision with no gesture negotiation — the thing `VRT-dp47` learned to stay
+/// away from.
 ///
-/// Recall does NOT ride on the pin's own hover, and that is what makes going inert
-/// affordable: a view with `allowsHitTesting(false)` receives no hover at all.
-/// "Which note's pin is the pointer on?" is answered geometrically by
-/// ``PinAttentionRule``, from the catcher's `onContinuousHover`, which covers the
-/// whole surface and fires in BOTH modes.
+/// WHAT THE PIN STILL DOES THERE is the correction `VRT-u209` made, and it is worth
+/// separating from the sentence above because they were conflated for two releases.
+/// Going hit-test-inert was only ever meant to stop a pin SWALLOWING A DRAG; it also
+/// silently removed the only way to re-open a note, so a comment written with the
+/// frame tool could be read and never edited. Measured, not assumed — the probe's
+/// phase 11c presses a real pin in both tools and reported `editingNoteID=nil` in
+/// frame mode, which is exactly the "I hover the numbers and nothing happens"
+/// report. Both behaviours are now had at once, because neither the click nor the
+/// recall rides on this view any more:
+///
+/// * **Click → edit** is resolved GEOMETRICALLY at the catcher's release, by
+///   ``PinAttentionRule/pressedNote(atWindowPoint:in:)`` via ``SelectionGesture``,
+///   gated on the press not having travelled. So a click on a pin edits it in BOTH
+///   tools, and a drag from a pin still draws its frame.
+/// * **Recall** ("which note's pin is the pointer on?") is answered the same way
+///   from the catcher's `onContinuousHover`, which covers the whole surface and
+///   fires in both tools.
+///
+/// The `Button` below is therefore a point-mode convenience that duplicates a route
+/// that already works, not the mechanism — deliberately kept, because it is the one
+/// path that answers a press on the pin's exact pixels without consulting geometry,
+/// and it costs nothing to leave in agreement with the rule.
 struct AnnotationPins: View {
     @ObservedObject var session: AnnotationSession
 
