@@ -1,5 +1,7 @@
 # AnnotKit
 
+Site: <https://annotkit.gpu-cli.sh>
+
 Native in-app annotation for AI coding agents. Click a UI element in your own
 macOS or iOS app — or drag a frame around it — attach a note, and emit an
 agent-readable, code-locating annotation. The native analogue of the web

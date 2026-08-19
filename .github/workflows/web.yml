@@ -1,0 +1,90 @@
+# Landing page CI. Scoped to web/** so the Swift workflow in ci.yml is
+# untouched — and so a Swift-only PR never waits on npm.
+name: Web
+
+on:
+  push:
+    branches: [main]
+    paths: ["web/**", ".github/workflows/web.yml"]
+  pull_request:
+    paths: ["web/**", ".github/workflows/web.yml"]
+
+defaults:
+  run:
+    working-directory: web
+
+jobs:
+  check:
+    name: Typecheck · test · build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Test
+        run: npm run test
+
+      - name: Token contrast (WCAG AA)
+        run: node scripts/contrast.mjs
+
+      - name: Build
+        run: npm run build
+
+      # The Resend key is a Pages secret and must never reach the client.
+      # This fails loudly if a refactor ever imports it into src/.
+      - name: No secrets in the client bundle
+        run: |
+          if grep -rIl -E 'RESEND_API_KEY|re_[A-Za-z0-9]{16,}' dist; then
+            echo "::error::A Resend key or its variable name reached dist/."
+            exit 1
+          fi
+          echo "dist/ is clean."
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: web/dist
+          retention-days: 7
+
+  browser:
+    name: Lighthouse (≥95 × 4) · responsive floor
+    runs-on: ubuntu-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - run: npm ci
+      - run: npm run build
+
+      # 320/375/414/768/1280 px — fails on horizontal overflow (gate 34) or a
+      # clickable label wrapping to two lines (gate 49).
+      - name: Responsive floor
+        run: npm run responsive
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+
+      - name: Lighthouse CI
+        run: npm run lighthouse
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: lighthouse
+          path: web/.lighthouseci
+          retention-days: 7

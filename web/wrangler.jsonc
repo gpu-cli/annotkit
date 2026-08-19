@@ -1,0 +1,30 @@
+{
+  // Cloudflare Pages project config for the AnnotKit landing page.
+  //
+  // Secrets are NOT here. RESEND_API_KEY is set per environment with
+  //   wrangler pages secret put RESEND_API_KEY
+  // and never appears in this file or in the client bundle (CI greps dist/).
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "annotkit",
+  "compatibility_date": "2026-08-19",
+  "pages_build_output_dir": "dist",
+
+  "vars": {
+    // Preview segment. NOTE: currently the same id as production — create a
+    // separate annotkit-updates-preview segment so test signups stay out of
+    // the real list (epic §8.3), then change this line.
+    "RESEND_SEGMENT_ID": "e41643f7-db6d-483f-a546-e517aa0f9333"
+  },
+
+  "env": {
+    "production": {
+      "vars": {
+        // Production segment (annotkit-updates).
+        "RESEND_SEGMENT_ID": "e41643f7-db6d-483f-a546-e517aa0f9333"
+      }
+      // Uncomment once the rate limiter is wanted in production. The function
+      // treats an absent binding as "limiter off", so this is safe to defer.
+      // "kv_namespaces": [{ "binding": "SUBSCRIBE_RL", "id": "REPLACE_WITH_KV_ID" }]
+    }
+  }
+}

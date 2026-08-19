@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AnnotKit mark. A drawn frame with a bound point at its corner: the two
+     gestures the toolbar offers, in one glyph. Colours mirror the tokens in
+     src/styles/tokens.css (paper / ink / accent) — an SVG in public/ cannot
+     read CSS custom properties, so the resolved sRGB values are inlined here
+     and nowhere else. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" role="img" aria-label="AnnotKit">
+  <rect width="32" height="32" rx="4" fill="#faf6f1"/>
+  <g fill="none" stroke="#221813" stroke-width="2.5" stroke-linecap="square">
+    <path d="M7 12V7h5"/>
+    <path d="M25 20v5h-5"/>
+  </g>
+  <circle cx="12.5" cy="12.5" r="3.5" fill="#a64302"/>
+</svg>

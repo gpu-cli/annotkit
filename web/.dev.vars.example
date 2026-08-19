@@ -1,0 +1,4 @@
+# Local-only secrets for `wrangler pages dev`. Copy to .dev.vars (gitignored).
+# STUB: fill from the Resend dashboard (maintainer action 1–2).
+RESEND_API_KEY=re_xxxxxxxxxxxxxxxxxxxxxxxx
+RESEND_SEGMENT_ID=00000000-0000-0000-0000-000000000000

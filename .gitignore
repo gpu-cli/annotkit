@@ -16,3 +16,8 @@ AGENTATION_NOTES.json
 *.db
 .beads-credential-key
 .beads/proxieddb/
+
+# Local secrets. NEVER commit these — .env carries a live Resend key.
+.env
+.env.*
+!.env.example

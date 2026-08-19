@@ -1,0 +1,13 @@
+[
+  {
+    "date": "2026-08-19",
+    "macrostructure": "Specimen",
+    "theme": "Specimen",
+    "enrichment": "real-capture figure (one muted webm loop + stills; placeholders until L4)",
+    "nav": "N6 Newspaper masthead",
+    "footer": "Ft1 Mast-headed",
+    "genre": "editorial",
+    "brief": "AnnotKit · landing page for a native annotation package for AI coding agents",
+    "notes": "First Hallmark run for this project — no diversification constraint applied. Specimen was named by the maintainer in docs/epic-landing-page.md §6.1, so gate 21 (Specimen fall-through) does not fire. Gate 54 overrode the macrostructure's own left-margin label sketch: section numbers stack above their headings in one column."
+  }
+]

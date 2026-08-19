@@ -51,3 +51,48 @@ tasks:
     desc: Remove Swift build artifacts (.build)
     cmds:
       - swift package clean
+
+  web:dev:
+    desc: Run the landing page dev server (UI only; /api/subscribe is not mounted)
+    cmds:
+      - npm --prefix web run dev
+
+  web:dev:functions:
+    desc: Run the landing page behind wrangler so /api/subscribe works locally
+    cmds:
+      - npm --prefix web run dev:functions
+
+  web:build:
+    desc: Typecheck and build the landing page into web/dist
+    cmds:
+      - npm --prefix web run build
+
+  web:test:
+    desc: Run the landing page test suite (vitest)
+    cmds:
+      - npm --prefix web run test
+
+  web:contrast:
+    desc: Print the WCAG contrast table for the landing page design tokens
+    cmds:
+      - node web/scripts/contrast.mjs
+
+  web:responsive:
+    desc: Check the landing page at 320/375/414/768/1280px (needs web/dist)
+    cmds:
+      - npm --prefix web run responsive
+
+  web:og:
+    desc: Re-render the landing page OpenGraph card (web/public/og.png)
+    cmds:
+      - npm --prefix web run og
+
+  web:deploy:
+    desc: Build and deploy the landing page to Cloudflare Pages PRODUCTION
+    cmds:
+      - npm --prefix web run deploy
+
+  web:deploy:preview:
+    desc: Build and deploy the landing page to a Cloudflare Pages preview URL
+    cmds:
+      - npm --prefix web run deploy:preview

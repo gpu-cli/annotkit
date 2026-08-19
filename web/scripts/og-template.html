@@ -1,0 +1,90 @@
+<!doctype html>
+<!--
+  Source for public/og.png (1200×630).
+
+  Regenerate the card after any copy or palette change:
+
+    npm run og
+
+  which renders this file headlessly at exactly 1200×630. Validate the result
+  with opengraph.xyz before launch (epic §8.6).
+
+  Theme-styled, real type, no drawn browser chrome (gate 47).
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>AnnotKit — OG card source</title>
+    <link rel="stylesheet" href="../src/styles/tokens.css" />
+    <style>
+      body {
+        margin: 0;
+        background: var(--color-paper-3);
+        display: grid;
+        place-items: center;
+        min-height: 100vh;
+      }
+      .og {
+        width: 1200px;
+        height: 630px;
+        box-sizing: border-box;
+        padding: 84px 96px;
+        background: var(--color-paper);
+        color: var(--color-ink);
+        font-family: var(--font-body);
+        display: grid;
+        grid-template-rows: auto 1fr auto;
+        gap: 32px;
+      }
+      .og__dateline {
+        font-family: var(--font-mono);
+        font-size: 20px;
+        letter-spacing: var(--track-label);
+        text-transform: uppercase;
+        color: var(--color-muted);
+        margin: 0;
+      }
+      .og__display {
+        font-family: var(--font-display);
+        font-style: normal;
+        font-weight: 700;
+        font-size: 92px;
+        line-height: 1.02;
+        letter-spacing: var(--track-display);
+        margin: 0;
+        max-width: 16ch;
+      }
+      .og__foot {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        border-top: 2px solid var(--color-ink);
+        padding-top: 24px;
+        font-size: 26px;
+        color: var(--color-ink-2);
+      }
+      .og__wordmark {
+        font-family: var(--font-display);
+        font-weight: 700;
+        font-size: 34px;
+        margin: 0;
+      }
+      .og__rule {
+        color: var(--color-accent);
+        font-family: var(--font-mono);
+        font-size: 24px;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="og">
+      <p class="og__dateline">macOS 15 · iOS 17 · Swift 6 · MIT</p>
+      <h1 class="og__display">Point at the view. Hand the agent the map.</h1>
+      <div class="og__foot">
+        <p class="og__wordmark">AnnotKit</p>
+        <p class="og__rule">annotkit.gpu-cli.sh</p>
+      </div>
+    </div>
+  </body>
+</html>
