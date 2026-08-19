@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "annotkit",
+  "project_id": "fc4170d8-2788-4cdb-b676-e960a37ed087"
+}

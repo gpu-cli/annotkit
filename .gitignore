@@ -10,3 +10,9 @@ Package.resolved
 # Demo/practice artifacts: AnnotKitDemo writes notes into the working directory
 AGENTATION_NOTES.md
 AGENTATION_NOTES.json
+
+# Beads / Dolt files (added by bd init)
+.dolt/
+*.db
+.beads-credential-key
+.beads/proxieddb/
