@@ -6,10 +6,11 @@
  * should be a one-file change, not a grep.
  */
 
+import { DEFAULT_SITE_URL } from "../shared/site";
+
 export const site = {
   name: "AnnotKit",
-  /** STUB — confirm before launch (epic §11, maintainer action 6). */
-  url: import.meta.env.VITE_SITE_URL ?? "https://annotkit.gpu-cli.sh",
+  url: import.meta.env.VITE_SITE_URL ?? DEFAULT_SITE_URL,
   repo: "https://github.com/gpu-cli/annotkit",
   issues: "https://github.com/gpu-cli/annotkit/issues",
   license: "https://github.com/gpu-cli/annotkit/blob/main/LICENSE",

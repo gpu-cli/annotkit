@@ -1,7 +1,7 @@
 import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
-const DEFAULT_SITE_URL = "https://annotkit.gpu-cli.sh";
+import { DEFAULT_SITE_URL } from "./shared/site";
 
 /**
  * Substitutes `%SITE_URL%` in index.html so the canonical and OpenGraph URLs

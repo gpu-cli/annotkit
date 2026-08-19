@@ -189,6 +189,30 @@ at `<branch>.annotkit.pages.dev`.
 Secrets are not part of a deploy. `wrangler pages secret put` writes them once
 per environment (see above), and they persist across deployments.
 
+## Moving to a different domain
+
+Nothing in the build needs to change to *launch* on `annotkit.gpu-cli.sh` —
+that is already the default, so the canonical and OpenGraph tags point at the
+final domain even while the site is served from `*.pages.dev`. That is
+deliberate: it stops the pages.dev URL being indexed as a duplicate.
+
+Changing to a **different** domain later is three edits and a re-render:
+
+1. `shared/site.ts` — `DEFAULT_SITE_URL`. One constant, imported by both
+   `vite.config.ts` (which substitutes `%SITE_URL%` into index.html) and
+   `src/config.ts` (which hands it to the components). They used to hold a
+   copy each, which is exactly how a canonical tag and an OG url end up
+   disagreeing.
+2. `scripts/og-template.html` — the domain is printed as footer text on the
+   card. Change it, then `npm run og` to re-render `public/og.png`.
+3. The root `README.md` backlink, and this file's first line.
+
+Then add the custom domain to the Pages project and point a CNAME at it.
+
+`web/package.json`'s `description` and the request URLs in
+`tests/subscribe.test.ts` also mention the domain; neither is load-bearing
+(the tests only need a well-formed absolute URL to build a `Request`).
+
 ## Design
 
 Hallmark, genre **editorial**: macrostructure **Specimen**, theme **Specimen**,
