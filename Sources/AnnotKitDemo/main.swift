@@ -149,7 +149,36 @@ final class DemoAppDelegate: NSObject, NSApplicationDelegate {
         retryActivationIfNeeded(attemptsRemaining: 5)
 
         // Mount the annotation overlay (dev-only gate is on in a debug build).
-        Annotation.install()
+        //
+        // The destinations come from the environment, so this same binary can be
+        // launched many times side by side, each instance writing its own notes:
+        //
+        //     ANNOTKIT_NOTES_MD=/tmp/ada/notes.md \
+        //     ANNOTKIT_NOTES=/tmp/ada/notes.json \
+        //     ANNOTKIT_EVENTS=/tmp/ada/events.jsonl \
+        //     ANNOTKIT_CONTEXT_PERSONA=ada swift run AnnotKitDemo
+        //
+        // The provider below adds what only the running app can know — the live
+        // appearance and window size — on top of whatever the launcher declared.
+        // That is the whole world-context contract in one call site.
+        Annotation.install(
+            context: { [weak self] in
+                var context = ["appearance": self?.appearanceName ?? "unknown"]
+                if let size = self?.window?.frame.size {
+                    context["window"] = "\(Int(size.width))x\(Int(size.height))"
+                }
+                return context
+            },
+            route: { "Settings" }
+        )
+    }
+
+    /// The live appearance name, re-read per note rather than captured at launch —
+    /// a user who toggles dark mode mid-session and then annotates the contrast is
+    /// annotating the mode they are LOOKING at.
+    private var appearanceName: String {
+        let match = window?.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua])
+        return match == .darkAqua ? "dark" : "light"
     }
 
     /// Full activation sequence for an unbundled `swift run` process.

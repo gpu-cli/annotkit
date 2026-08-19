@@ -74,6 +74,18 @@ let package = Package(
                 .swiftLanguageMode(.v6)
             ]
         ),
+        // One isolated embedding host, configured from its environment alone and
+        // driven in code: mounts via `Annotation.install`, captures a note with
+        // host world context, and exports to whatever destinations the launch env
+        // named. `AgentLoopE2ETests` runs two of these side by side to assert an
+        // agent can reproduce the world, find the notes, and be woken by them.
+        .executableTarget(
+            name: "AnnotKitEnvProbe",
+            dependencies: ["AnnotKit"],
+            swiftSettings: [
+                .swiftLanguageMode(.v6)
+            ]
+        ),
         // Off-screen overlay diagnostic harness. Unlike AnnotKitProbe (which only
         // exercises the IDLE corner panel), this one calls `Annotation.install()`
         // then `Annotation.start()` so the child panel EXPANDS to the full host

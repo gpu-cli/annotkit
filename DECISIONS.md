@@ -424,6 +424,57 @@ selected by their rect's CENTRE falling inside the scroller's viewport, so a fra
 drawn slightly proud of a card still travels with it while chrome outside the
 scroller stays put. macOS-only: `UIScrollView` is not intercepted on iOS.
 
+## The agent-grade embedding loop (annotkit-op6)
+
+An embedding host that launches many isolated instances of one binary — an HMR
+session per branch, a gallery host, an inspect window per persona — cannot express
+"this instance is Ada's dark-mode world and its notes go here" in the app's source.
+There is one binary and N launches. Three decisions follow from that.
+
+**The environment is the configuration surface.** `Annotation.install()` reads
+`ANNOTKIT_NOTES_MD` / `ANNOTKIT_NOTES` / `ANNOTKIT_EVENTS` / `ANNOTKIT_ROUTE` /
+`ANNOTKIT_CONTEXT*` and builds its own sinks, so a launcher configures each
+instance without touching a call site (`docs/embedding.md`). `ANNOTKIT_NOTES` names
+the JSON store rather than the markdown one because `annotkit-mcp` already reads
+that variable for exactly that file: one variable, one file, both halves of the
+product pointed at it by the same env dict. Parsing lives in a pure
+`AnnotationEnvironment` taking the environment as an argument — the process env is
+neither thread-safe to mutate nor reversible between tests.
+
+**World context is opaque and snapshotted per note.** `[String: String]`, host
+vocabulary, no schema: the moment AnnotKit knows what a persona is it stops being
+embeddable in the next host. The provider is registered once at install and called
+once per capture, not once per session — appearance, window size and persona all
+change while a session is open, and a note has to record the world it was made in
+rather than the one the app booted into. Launcher context and provider context are
+merged with **the provider winning**, because it is the newer measurement.
+
+**The snapshot is unwatchable on purpose, so the stream is separate.**
+`NotesFileSink` writes atomically (rename), which is what stops a reader ever
+seeing half a document — and is exactly what makes `tail -f` go silent, since it
+follows the inode it opened. Rather than give that up, `ANNOTKIT_EVENTS` adds an
+append-only JSONL log beside it. Two rules keep the pair honest:
+
+- Events are DERIVED by diffing each flush, not pushed from each capture. Both
+  files are written by the same flush, so a watcher woken by a line always finds
+  the note already in the snapshot — the stream cannot promise something the
+  snapshot has not been given. A note typed but not sent produces no line.
+- The diff compares the ENCODED record, not the struct. The overlay's window-local
+  rects move on every scroll, and a note that merely moved on screen must not read
+  as edited. What the agent can see changed, or nothing changed.
+
+Lines are appended with a single `O_APPEND` `write(2)`, so a fleet of instances can
+share one log without tearing each other's lines and each line names its own
+world's snapshot — one `tail -F` covers the fleet. The stream is never a
+substitute for the snapshot: replayed from the beginning it would double-count
+edits and resurrect deletes, and the `process-agentation-notes` skill still reads
+the markdown.
+
+`AnnotKitEnvProbe` is one such instance with the human taken out — same
+`Annotation.install` path, capture driven in code — and `AgentLoopE2ETests` runs
+two of them at once to assert reproduce/locate/react/isolate from outside the
+processes.
+
 ## IP hygiene (carried into the F7 legal gate)
 
 - Do not copy original Agentation source (PolyForm Shield 1.0.0, non-compete). Only the `AGENTATION_NOTES.md` file format is reused, reimplemented clean-room.

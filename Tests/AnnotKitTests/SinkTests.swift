@@ -200,6 +200,82 @@ final class SinkTests: XCTestCase {
         XCTAssertTrue(contents.contains("## [third]"))
     }
 
+    // MARK: - World context
+
+    /// The whole reason context exists: an agent reading this note has to be able
+    /// to put the world back before it can see what the person saw.
+    func testMarkdownCarriesTheWorldContextInSortedQuotedPairs() {
+        var n = note()
+        n.context = ["persona": "ada", "appearance": "dark", "window": "1280x800"]
+        let md = AnnotationFormatter.markdown([n])
+        XCTAssertTrue(md.contains("**Context**: appearance=\"dark\", persona=\"ada\", window=\"1280x800\""), md)
+        // Directly under the timestamp — when, then which world, then the element.
+        let lines = md.split(separator: "\n").map(String.init)
+        let timestamp = lines.firstIndex { $0.hasPrefix("**Timestamp**") }
+        XCTAssertEqual(lines[timestamp! + 1].hasPrefix("**Context**"), true, md)
+    }
+
+    /// Ordering is not cosmetic here: a dictionary iterates in whatever order it
+    /// likes, and an export whose bytes shuffle between two identical captures
+    /// makes every re-export a diff nobody can review.
+    func testTheContextLineIsStableAcrossRuns() {
+        let context = ["persona": "ada", "appearance": "dark", "build": "hmr-7", "route": "/settings"]
+        let rendered = (0..<20).map { _ in AnnotationFormatter.contextLine(context) }
+        XCTAssertEqual(Set(rendered).count, 1, "same dictionary, same line, every time")
+    }
+
+    func testAContextValueCannotForgeAnExtraEntry() {
+        XCTAssertEqual(
+            AnnotationFormatter.contextLine(["persona": #"Ada, "the countess""#]),
+            #"persona="Ada, \"the countess\"""#,
+            "a comma or a quote in a host string stays inside its value"
+        )
+    }
+
+    func testAHostThatRegistersNoContextProducesTheFileItAlwaysDid() throws {
+        var empty = note()
+        empty.context = [:]
+        XCTAssertNil(empty.context, "an empty snapshot is normalized to absent at the boundary")
+        XCTAssertEqual(AnnotationFormatter.markdown([empty]), AnnotationFormatter.markdown([note()]))
+        XCTAssertFalse(AnnotationFormatter.markdown([note()]).contains("**Context**"))
+        XCTAssertFalse(try AnnotationFormatter.json([note()]).contains("context"))
+    }
+
+    func testContextIsPersistedThroughTheStoreUnlikeTheOverlayGeometry() throws {
+        var n = note()
+        n.context = ["persona": "ada"]
+        XCTAssertTrue(try AnnotationFormatter.json([n]).contains("\"persona\" : \"ada\""))
+        let decoded = try JSONDecoder().decode([AnnotationNote].self, from: JSONEncoder().encode([n]))
+        XCTAssertEqual(decoded[0].context, ["persona": "ada"],
+                       "reproducing the world a note was made in has to survive the process")
+    }
+
+    // MARK: - JSON store
+
+    /// The session re-flushes its WHOLE retained set on every export, so appending
+    /// turned a second press of Export into a second copy of every note — and the
+    /// agent read each one twice.
+    func testTheJSONStoreUpsertsByIDInsteadOfAccumulatingCopies() throws {
+        let path = NSTemporaryDirectory() + "annotkit-store-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        let sink = JSONFileSink(path: path)
+
+        try sink.flush([note(id: "first"), note(id: "second")])
+        try sink.flush([note(id: "first"), note(id: "second")])
+        var stored = try JSONDecoder().decode(
+            [AnnotationNote].self, from: Data(contentsOf: URL(fileURLWithPath: path))
+        )
+        XCTAssertEqual(stored.map(\.id), ["first", "second"], "a re-export duplicates nothing")
+
+        // An edited comment lands where the note already was, keeping order stable.
+        try sink.flush([note(id: "first", comment: "actually the spacing")])
+        stored = try JSONDecoder().decode(
+            [AnnotationNote].self, from: Data(contentsOf: URL(fileURLWithPath: path))
+        )
+        XCTAssertEqual(stored.map(\.id), ["first", "second"])
+        XCTAssertEqual(stored[0].comment, "actually the spacing")
+    }
+
     func testEmptyFlushIsNoop() throws {
         let path = NSTemporaryDirectory() + "annotkit-empty-\(UUID().uuidString).md"
         defer { try? FileManager.default.removeItem(atPath: path) }

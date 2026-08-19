@@ -28,6 +28,20 @@ tasks:
     cmds:
       - swift run AnnotKitProbe
 
+  envprobe:
+    desc: Run one env-configured embedding host end to end (writes into .build/envprobe)
+    cmds:
+      - mkdir -p .build/envprobe
+      - >-
+        ANNOTKIT_NOTES_MD=.build/envprobe/notes.md
+        ANNOTKIT_NOTES=.build/envprobe/notes.json
+        ANNOTKIT_EVENTS=.build/envprobe/events.jsonl
+        ANNOTKIT_ROUTE=Settings/Models
+        ANNOTKIT_CONTEXT_PERSONA=ada
+        ANNOTKIT_CONTEXT="appearance=dark,build=local"
+        swift run AnnotKitEnvProbe
+      - cat .build/envprobe/notes.md
+
   mcp:
     desc: Run the MCP server over a notes file — `task mcp -- path/to/AGENTATION_NOTES.json`
     cmds:

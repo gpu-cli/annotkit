@@ -8,6 +8,7 @@ import Foundation
 ///
 ///     ## [<id>] <route> - <selector>
 ///     **Timestamp**: <iso8601>
+///     **Context**: key="value", key="value"   (omitted when the host registers none)
 ///     **Element Path**: <path>
 ///     **Selected Text**: "<text>"   (omitted when absent)
 ///
@@ -28,6 +29,12 @@ public enum AnnotationFormatter {
         let route = note.route ?? ""
         lines.append("## [\(note.id)] \(route) - \(note.selector)")
         lines.append("**Timestamp**: \(note.timestamp)")
+        // Directly under the timestamp: the two together answer "when, and in which
+        // world" before a single word about the element, which is the order an agent
+        // has to reconstruct things in — relaunch the world, then find the view.
+        if let context = contextLine(note.context) {
+            lines.append("**Context**: \(context)")
+        }
         lines.append("**Element Path**: \(note.elementPath)")
         if let component = note.component, !component.isEmpty {
             lines.append("**Component**: #\(component)")
@@ -58,11 +65,30 @@ public enum AnnotationFormatter {
         return lines.joined(separator: "\n")
     }
 
+    /// `key="value"` pairs in KEY ORDER, or nil for an absent/empty snapshot.
+    ///
+    /// Sorted, because a dictionary's iteration order is not stable across runs and
+    /// an export whose bytes shuffle between two identical captures is a diff no
+    /// reviewer can read. Quoted and backslash-escaped, because these are host
+    /// strings — a persona named `Ada, "the countess"` must not silently become two
+    /// context entries in whatever parses this line.
+    static func contextLine(_ context: [String: String]?) -> String? {
+        guard let context, !context.isEmpty else { return nil }
+        return context.keys.sorted().map { key in
+            let value = context[key]!
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return "\(key)=\"\(value)\""
+        }.joined(separator: ", ")
+    }
+
     /// Pretty-printed JSON array of notes. The raw screenshot bytes are omitted
     /// (only the pixel dimensions are kept) so the payload stays small.
     public static func json(_ notes: [AnnotationNote]) throws -> String {
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        // `withoutEscapingSlashes`: routes and context values are full of paths,
+        // and `Settings\/Models` is noise in a payload whose whole job is to be read.
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         let data = try encoder.encode(notes.map(NoteDTO.init))
         return String(decoding: data, as: UTF8.self)
     }
@@ -79,6 +105,7 @@ public enum AnnotationFormatter {
         let selectedText: String?
         let comment: String
         let timestamp: String
+        let context: [String: String]?
         let regionOffsetX: Int?
         let regionOffsetY: Int?
         let regionRectX: Int?
@@ -100,6 +127,9 @@ public enum AnnotationFormatter {
             selectedText = note.selectedText
             comment = note.comment
             timestamp = note.timestamp
+            // Also normalized here, because a decoded note bypasses the property
+            // observer that normally keeps an empty snapshot from existing.
+            context = (note.context?.isEmpty == true) ? nil : note.context
             regionOffsetX = note.regionOffset.map { Int($0.x) }
             regionOffsetY = note.regionOffset.map { Int($0.y) }
             regionRectX = note.regionRect.map { Int($0.minX) }

@@ -225,6 +225,11 @@ public final class AnnotationSession: ObservableObject {
     private let source: ElementSource
     private let sink: AnnotationSink
     private let route: () -> String?
+    /// The host's world-context provider. Called ONCE PER CAPTURE, not once at
+    /// install: the values it reports (appearance, window size, whichever persona
+    /// is loaded) can change while the session is open, and a note has to record
+    /// the world it was made in rather than the one the app booted into.
+    private let context: () -> [String: String]
     private let timestamp: () -> String
     private let makeID: () -> String
 
@@ -238,12 +243,14 @@ public final class AnnotationSession: ObservableObject {
         source: ElementSource,
         sink: AnnotationSink,
         route: @escaping () -> String? = { nil },
+        context: @escaping () -> [String: String] = { [:] },
         timestamp: @escaping () -> String = { ISO8601DateFormatter().string(from: Date()) },
         makeID: @escaping () -> String = { String(UUID().uuidString.prefix(6)).lowercased() }
     ) {
         self.source = source
         self.sink = sink
         self.route = route
+        self.context = context
         self.timestamp = timestamp
         self.makeID = makeID
     }
@@ -751,7 +758,8 @@ public final class AnnotationSession: ObservableObject {
             anchorRect: windowLocal(selectionAnchorFrame ?? element.frame),
             drawnRect: selectedMarqueeRect.map(windowLocal),
             regionOffset: selectedRegionOffset,
-            regionRect: regionRect
+            regionRect: regionRect,
+            context: context()
         )
         pending.append(note)
         selected = nil

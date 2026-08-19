@@ -25,7 +25,7 @@ public struct FileNotesStore: NoteProvider {
         var notes = try pending()
         notes.removeAll { $0.id == id }
         let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
         try encoder.encode(notes).write(to: URL(fileURLWithPath: path))
     }
 }
@@ -103,7 +103,7 @@ public struct MCPDispatcher {
         [
             [
                 "name": "annotation_get_pending",
-                "description": "List pending UI annotations (selector, element path, comment).",
+                "description": "List pending UI annotations (selector, element path, comment, and the host world context each was captured in).",
                 "inputSchema": ["type": "object", "properties": [String: Any]()]
             ],
             [
@@ -114,8 +114,19 @@ public struct MCPDispatcher {
         ]
     }
 
+    /// One line per note, plus a second line for the world it was captured in.
+    ///
+    /// The context goes on its OWN line rather than into the first one: an agent
+    /// reading this decides two separate things — which view to change, and which
+    /// world to relaunch to see it — and a single line that ran them together made
+    /// the note's actual text the hardest part to find.
     static func describe(_ note: AnnotationNote) -> String {
-        "[\(note.id)] \(note.selector) (\(note.elementPath)): \(note.comment)"
+        var line = "[\(note.id)] \(note.selector) (\(note.elementPath)): \(note.comment)"
+        if let context = note.context, !context.isEmpty {
+            let pairs = context.keys.sorted().map { "\($0)=\(context[$0]!)" }.joined(separator: " ")
+            line += "\n    context: \(pairs)"
+        }
+        return line
     }
 
     private func result(_ id: Any, _ value: [String: Any]) -> String {

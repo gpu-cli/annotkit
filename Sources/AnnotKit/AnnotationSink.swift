@@ -103,6 +103,31 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     /// a note carries the point locator or the frame locator, never both. Optional,
     /// so click notes serialize unchanged and old files decode (nil).
     public var regionRect: CGRect?
+    /// WORLD CONTEXT: an opaque snapshot of the host's state at the moment of
+    /// capture — persona, route, appearance, window size, whatever the embedding
+    /// host decides identifies the world the person was looking at. Registered
+    /// once at install time as a provider and evaluated PER NOTE, so a value that
+    /// changes mid-session (the user toggles dark mode) is recorded as it was when
+    /// the note was made, not as it is when the file is read.
+    ///
+    /// `[String: String]` and nothing richer, deliberately: AnnotKit knows nothing
+    /// about personas or routes or design systems, and the moment it does it stops
+    /// being embeddable in the next host. The keys are the host's vocabulary; the
+    /// agent reading the note is the one that understands them.
+    ///
+    /// PERSISTED (unlike the window-local rects) — reproducing the world a note was
+    /// made in is the whole point, and that survives the process. nil, never an
+    /// empty dictionary: an empty snapshot must serialize to nothing at all so a
+    /// host that registers no provider produces byte-for-byte the file it always
+    /// did, and notes captured before this field existed decode unchanged.
+    public var context: [String: String]? {
+        // Normalized on EVERY assignment, not just at init: the property is
+        // public and settable, so `note.context = [:]` from a host would
+        // otherwise put a `"context": {}` into the store and break the
+        // "no provider changes no byte" guarantee from the far side.
+        // (Re-assigning inside `didSet` does not re-enter it.)
+        didSet { if context?.isEmpty == true { context = nil } }
+    }
 
     /// Explicit keys that OMIT ``anchorRect`` and ``drawnRect``: `JSONFileSink`
     /// and the MCP `FileNotesStore` encode/decode `[AnnotationNote]` directly, so a
@@ -113,7 +138,7 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
     private enum CodingKeys: String, CodingKey {
         case id, route, selector, elementPath, selectedText, comment, screenshot, timestamp
         case component, elementRole, elementText, unseeded
-        case regionOffset, regionRect
+        case regionOffset, regionRect, context
     }
 
     public init(
@@ -132,7 +157,8 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         anchorRect: CGRect? = nil,
         drawnRect: CGRect? = nil,
         regionOffset: CGPoint? = nil,
-        regionRect: CGRect? = nil
+        regionRect: CGRect? = nil,
+        context: [String: String]? = nil
     ) {
         self.id = id
         self.route = route
@@ -150,5 +176,9 @@ public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
         self.drawnRect = drawnRect
         self.regionOffset = regionOffset
         self.regionRect = regionRect
+        // Normalize empty -> nil at the boundary rather than trusting every caller
+        // to: the "no provider registered changes no byte of output" guarantee is
+        // only worth as much as the one place that can enforce it.
+        self.context = (context?.isEmpty == true) ? nil : context
     }
 }

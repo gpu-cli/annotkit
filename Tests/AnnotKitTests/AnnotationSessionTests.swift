@@ -969,6 +969,39 @@ final class AnnotationSessionTests: XCTestCase {
         XCTAssertEqual(note?.elementRole, "AXStaticText")
     }
 
+    /// The context provider is called PER CAPTURE, not once at install: a value
+    /// that changes while the session is open (the user toggles dark mode, resizes
+    /// the window, switches persona) has to be recorded as it was when the note was
+    /// written. A snapshot taken at install would file every note under the world
+    /// the app happened to boot into — the one case where a wrong answer looks
+    /// exactly like a right one.
+    func testEachNoteSnapshotsTheWorldItWasCapturedIn() {
+        var appearance = "light"
+        var calls = 0
+        let session = AnnotationSession(
+            source: StubSource(makeElement()),
+            sink: NotesFileSink(path: "/dev/null"),
+            context: { calls += 1; return ["appearance": appearance, "persona": "ada"] }
+        )
+        session.start()
+        capture(session, comment: "before")
+        appearance = "dark"
+        capture(session, comment: "after")
+
+        XCTAssertEqual(calls, 2, "once per note, not once per session")
+        XCTAssertEqual(session.pending[0].context, ["appearance": "light", "persona": "ada"])
+        XCTAssertEqual(session.pending[1].context, ["appearance": "dark", "persona": "ada"],
+                       "the second note records the mode the user was looking at")
+    }
+
+    /// A host that registers nothing gets exactly the notes it always got.
+    func testNoProviderMeansNoContextRatherThanAnEmptyOne() {
+        let session = AnnotationSession(source: StubSource(makeElement()), sink: NotesFileSink(path: "/dev/null"))
+        session.start()
+        capture(session, comment: "c")
+        XCTAssertNil(session.pending[0].context)
+    }
+
     /// A session whose ids auto-increment (id1, id2, ...) so a captured set is
     /// distinguishable in the exported file.
     private func makeSession(path: String) -> AnnotationSession {
