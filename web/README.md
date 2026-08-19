@@ -13,7 +13,7 @@ Run from the repo root (go-task), or with `npm --prefix web run <script>`.
 | Task | What it does |
 |---|---|
 | `task web:dev` | Vite dev server on :5173. UI only — `/api/subscribe` 404s. |
-| `task web:dev:functions` | `wrangler pages dev` in front of Vite, so the subscribe function runs locally. Needs `web/.dev.vars`. |
+| `task web:dev:functions` | Builds, then serves `dist` through `wrangler pages dev` so `/api/subscribe` actually runs. No HMR. Needs `web/.dev.vars`. |
 | `task web:build` | Sync fonts → typecheck → `vite build` into `web/dist`. |
 | `task web:test` | Vitest — the subscribe contract and the email-validator parity. |
 | `task web:contrast` | Prints the WCAG table for every token pair the page renders. Exits non-zero on a fail. |
@@ -55,6 +55,49 @@ Copy `.env.example` → `.env` for the client-side build vars, and
 | `VITE_POSTHOG_KEY` | Build env | PostHog **project** key. Public by design. Empty → analytics inert. |
 | `VITE_POSTHOG_HOST` | Build env | Region host, e.g. `https://eu.i.posthog.com`. |
 | `VITE_SITE_URL` | Build env | Canonical origin. Defaults to the production URL. |
+
+## Running it locally
+
+Two modes, and the difference matters.
+
+**Building the page** — the one you want almost always:
+
+```sh
+task web:dev          # http://localhost:5173
+```
+
+Vite dev server, hot module replacement, instant feedback. `/api/subscribe`
+returns 404 here because there is no Workers runtime in front of it — the
+form will report the network error and that is expected, not a bug.
+
+**Exercising the subscribe function** — when you are changing
+`functions/api/subscribe.ts` or the form's error handling:
+
+```sh
+cp .dev.vars.example .dev.vars   # first time; fill in the real values
+task web:dev:functions           # http://localhost:8788
+```
+
+This builds and then serves `dist` through `wrangler pages dev`, which runs
+`functions/` on the real Workers runtime with `.dev.vars` as its environment.
+There is no HMR — rebuild to see a change.
+
+`.dev.vars` is gitignored and holds the live Resend key, so it never leaves
+your machine. Without it the function answers `502 upstream` and logs which
+variable is missing.
+
+**Probing the endpoint without polluting the list.** A valid address creates a
+real contact in whichever segment `.dev.vars` points at. These three exercise
+the contract and never reach Resend:
+
+```sh
+curl -i localhost:8788/api/subscribe                                   # 405
+curl -i -XPOST localhost:8788/api/subscribe \
+  -H 'content-type: application/json' -d '{"email":"nope"}'            # 400 invalid_email
+curl -i -XPOST localhost:8788/api/subscribe \
+  -H 'content-type: application/json' \
+  -d '{"email":"dev@example.com","url":"x"}'                           # 200, honeypot, no upstream call
+```
 
 ## Cloudflare Pages setup
 
