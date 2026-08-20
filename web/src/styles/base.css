@@ -13,14 +13,21 @@
   box-sizing: border-box;
 }
 
+/* Both axes, not just the horizontal. `overflow-x: clip` beside an implied
+ * `overflow-y: visible` computes the vertical axis to `auto`, which left the
+ * DOCUMENT scrollable behind the ScrollArea — a second scroll container the
+ * page does not want and a second scrollbar on platforms that draw them.
+ * Clip, never hidden: gate 34 wants the overflow gone, not scrollable-but-
+ * unreachable. */
 html {
-  overflow-x: clip; /* gate 34 — clip, never hidden */
+  overflow: clip;
   -webkit-text-size-adjust: 100%;
-  scroll-behavior: smooth;
+  height: 100%;
 }
 
 body {
-  overflow-x: clip;
+  overflow: clip;
+  height: 100%;
   margin: 0;
   background: var(--color-paper);
   color: var(--color-ink);
@@ -35,8 +42,224 @@ body {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html {
+  .page__viewport {
     scroll-behavior: auto;
+  }
+}
+
+/* The mount point has to carry the height down from <body>, or the ScrollArea
+ * sizes to its content and the DOCUMENT goes on scrolling behind it — two
+ * scrollbars, one of them the platform's, which is the thing this replaced. */
+#root {
+  height: 100%;
+}
+
+/* ══ Backdrop — the app's marquee, at rest ═══════════════════════════════
+ * The argument for this existing at all is in src/components/Backdrop.tsx.
+ * The argument for it being SAFE is here: it is fixed behind the viewport, it
+ * clips its own overflow so a drifting frame can never widen the page (gate
+ * 34), it animates `transform` and `opacity` only (gate 14), and it takes no
+ * pointer events. */
+.backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.backdrop__frame {
+  position: absolute;
+  border: var(--rule-hair) solid var(--tint-frame);
+  border-radius: var(--radius-lg);
+  /* Two animations on incommensurate periods, so what you see is never the
+   * same combination twice: the frame travels on one clock and surfaces and
+   * fades on another 1.618× longer. One animation could only ever fade a
+   * frame in at the start of its journey and out at the end, which is what
+   * this used to do — and a frame that is only visible while it is easing
+   * into or out of a stop is a frame you never catch moving.
+   *
+   * The drift `alternate`s rather than snapping home: a rectangle that jumps
+   * back to its origin every cycle is a loop you can spot, even at a tenth
+   * of the accent's ink.
+   * The round trip is 2× `--frame-cycle`. */
+  animation:
+    frame-drift var(--frame-cycle) var(--ease-drift) var(--frame-offset) infinite alternate,
+    frame-breathe calc(var(--frame-cycle) * 1.618) var(--ease-in-out) var(--frame-offset) infinite;
+  will-change: transform, opacity;
+}
+
+/* Seven frames, each with its own size, corner, period and phase. The periods
+ * are near-primes so their least common multiple is longer than any session:
+ * two frames never come back into step, which is what keeps it from reading
+ * as a loop. */
+.backdrop__frame:nth-child(1) {
+  inset-block-start: 8%;
+  inset-inline-start: 6%;
+  width: 18rem;
+  height: 11rem;
+  --frame-cycle: 17s;
+  --frame-offset: -4s;
+  --frame-shift: 104px;
+  --frame-rise: -72px;
+  --frame-turn: 0.9deg;
+}
+
+.backdrop__frame:nth-child(2) {
+  inset-block-start: 22%;
+  inset-inline-end: 9%;
+  width: 24rem;
+  height: 15rem;
+  --frame-cycle: 23s;
+  --frame-offset: -19s;
+  --frame-shift: -134px;
+  --frame-rise: 88px;
+  --frame-turn: -0.7deg;
+}
+
+.backdrop__frame:nth-child(3) {
+  inset-block-start: 54%;
+  inset-inline-start: 14%;
+  width: 13rem;
+  height: 9rem;
+  --frame-cycle: 19s;
+  --frame-offset: -31s;
+  --frame-shift: 88px;
+  --frame-rise: 118px;
+  --frame-turn: 1.3deg;
+}
+
+.backdrop__frame:nth-child(4) {
+  inset-block-end: 12%;
+  inset-inline-end: 18%;
+  width: 20rem;
+  height: 12rem;
+  --frame-cycle: 29s;
+  --frame-offset: -7s;
+  --frame-shift: -112px;
+  --frame-rise: -96px;
+  --frame-turn: -1.1deg;
+}
+
+.backdrop__frame:nth-child(5) {
+  inset-block-start: 38%;
+  inset-inline-start: 44%;
+  width: 15rem;
+  height: 22rem;
+  --frame-cycle: 31s;
+  --frame-offset: -44s;
+  --frame-shift: 76px;
+  --frame-rise: -128px;
+  --frame-turn: 0.6deg;
+}
+
+.backdrop__frame:nth-child(6) {
+  inset-block-end: 26%;
+  inset-inline-start: 2%;
+  width: 26rem;
+  height: 10rem;
+  --frame-cycle: 37s;
+  --frame-offset: -12s;
+  --frame-shift: 146px;
+  --frame-rise: 64px;
+  --frame-turn: -0.5deg;
+}
+
+.backdrop__frame:nth-child(7) {
+  inset-block-start: 4%;
+  inset-inline-end: 32%;
+  width: 11rem;
+  height: 17rem;
+  --frame-cycle: 41s;
+  --frame-offset: -58s;
+  --frame-shift: -92px;
+  --frame-rise: 106px;
+  --frame-turn: 1.5deg;
+}
+
+/* The travel. Each frame is offset half its distance one way at the start and
+ * half the other way at the end, so its declared inset stays the centre of
+ * the journey rather than one end of it — the composition above is what the
+ * frames average out to. The rotation is under 1.5°: enough that the drift
+ * does not read as a rigid slide, small enough that nothing looks tilted. */
+@keyframes frame-drift {
+  from {
+    transform: translate3d(
+        calc(var(--frame-shift) / -2),
+        calc(var(--frame-rise) / -2),
+        0
+      )
+      rotate(calc(var(--frame-turn) * -1)) scale(0.94);
+  }
+
+  to {
+    transform: translate3d(calc(var(--frame-shift) / 2), calc(var(--frame-rise) / 2), 0)
+      rotate(var(--frame-turn)) scale(1.06);
+  }
+}
+
+/* Peak opacity is 1 against a stroke that is already only a tenth of the
+ * accent. A frame surfaces, holds, and sinks back to a third of itself; it
+ * never goes fully out, because a frame that vanishes has to reappear, and
+ * something appearing from nothing catches the eye far harder than something
+ * that was always there getting slowly brighter. */
+@keyframes frame-breathe {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+
+  50% {
+    opacity: 1;
+  }
+}
+
+/* gate 27 — the composition stays, the motion goes. Holding the frames still
+ * at their resting opacity is a truer fallback than removing them: someone
+ * who asked for less motion asked for less motion, not a different page. */
+@media (prefers-reduced-motion: reduce) {
+  .backdrop__frame {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* ══ The page's own scroll container ═════════════════════════════════════
+ * The document does not scroll; this does. `100dvh` rather than `100vh` so
+ * the mobile URL bar's own height changes do not leave a strip of dead page
+ * below the fold. */
+.page {
+  height: 100dvh;
+}
+
+.page__viewport {
+  position: relative;
+  z-index: 1; /* above .backdrop, which is absolutely placed behind it */
+  width: 100%;
+  height: 100%;
+  scroll-behavior: smooth; /* moved off `html`, which no longer scrolls */
+}
+
+/* Wider than the code blocks' bar: this one is the whole page's position
+ * indicator and has to be findable, not discreet. */
+.page__scrollbar {
+  display: flex;
+  width: var(--space-sm);
+  padding: var(--space-3xs);
+  touch-action: none;
+  user-select: none;
+}
+
+.page__thumb {
+  flex: 1;
+  background: var(--color-rule-2);
+  border-radius: var(--radius-pill);
+  transition: background var(--dur-short) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .page__thumb:hover {
+    background: var(--color-muted);
   }
 }
 
@@ -100,6 +323,56 @@ pre {
   font-family: var(--font-mono);
   font-size: 0.875em;
   font-variant-numeric: normal;
+}
+
+/* Inline machine text: a filename, a call, a selector, sitting in a line of
+ * serif prose. Mono alone is not quite enough at 0.875 em against Newsreader
+ * — the two faces are close in colour and a reader skimming does not register
+ * the switch — so it gets a wash and a hairline as well, which is the same
+ * pair the code plates use one size up.
+ *
+ * The wash is a translucent ink rather than a paper step, so a chip reads
+ * correctly on the page, on a figure's pending plate and inside a code
+ * block's caption without any of them needing a rule of their own.
+ *
+ * Scoped away from `pre`: a plate's whole point is that it is already a
+ * block of machine text, and chipping every line inside one would be
+ * decoration on top of decoration. */
+:not(pre) > code {
+  padding: 0.15em 0.35em;
+  border: var(--rule-hair) solid var(--tint-hairline);
+  border-radius: var(--radius-sm);
+  background: var(--tint-code);
+  /* A selector or a path has no spaces to break at and is long enough to
+   * matter at 320 px (gate 51). */
+  overflow-wrap: anywhere;
+  /* And when one does break, both halves get the full chip. The default
+   * `slice` leaves the first fragment with no right edge and the second with
+   * no left, which reads as a rendering fault rather than a wrapped word. */
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+/* Where the surrounding text is ALREADY machine text, the chip stands down.
+ * The term lists, the code-block captions, the figure captions and the
+ * pending plate's label are all mono to begin with; a chip inside one of them
+ * is a second treatment saying what the face has already said, and the nested
+ * 0.875 em would leave the identifier smaller than the line it sits in.
+ *
+ * `text-transform: none` is the one thing these contexts gain rather than
+ * lose. `.u-label` uppercases its whole line, which turns `AnnotationFormatter`
+ * into ANNOTATIONFORMATTER and throws away the casing that made it an
+ * identifier. Marking it as code is precisely a claim that its spelling is
+ * literal, so the mark now defends it: it stays mixed case, and it becomes
+ * the only mixed-case run in the row. */
+.u-label code,
+.figure figcaption code,
+.sink-list dfn > code {
+  padding: 0;
+  border: 0;
+  background: none;
+  font-size: inherit;
+  text-transform: none;
 }
 
 :focus {
@@ -198,9 +471,25 @@ pre {
   font-size: var(--text-md);
 }
 
-.link__arrow {
-  font-family: var(--font-mono);
-  line-height: 1;
+/* Every icon on the page. One size: 1 em of the type it sits in, exactly as
+ * the ↗ and ↓ characters it replaced were sized. The five places this lands
+ * want five different pixel values and the same relationship to their label,
+ * which is what 1 em is for. See src/components/Icon.tsx.
+ *
+ * The size lives here rather than on the component because Lucide's `size`
+ * prop only writes width and height attributes, which these rules would
+ * override in any case.
+ *
+ * `flex: none` is the load-bearing line — an icon in a flex row beside a long
+ * label is otherwise the first thing to be squashed, and a squashed arrow is
+ * an ellipse. */
+.icon {
+  flex: none;
+  width: 1em;
+  height: 1em;
+  /* Optical, not metric: an arrow's mass sits above the baseline and the
+   * cap-height of the label is what the eye lines it up against. */
+  margin-block-start: -0.08em;
 }
 
 @media (hover: hover) and (pointer: fine) {
@@ -240,12 +529,18 @@ pre {
 /* ══ N6 · Newspaper masthead ═════════════════════════════════════════════ */
 
 .mast {
-  padding-block: var(--space-lg) 0;
+  /* The corner row above already opens the page; the mast picks up from it. */
+  padding-block: var(--space-md) 0;
 }
 
+/* The three mast rows — dateline, wordmark, nav — are three separate
+ * statements, not one stacked block, so they are set apart rather than
+ * bunched. --space-lg is the ceiling: --space-xl floats the nav free of the
+ * wordmark it belongs to, and pushes the hero CTAs 84 px down the fold
+ * budget gate 44b measures at 1280 × 800. */
 .mast__inner {
   display: grid;
-  gap: var(--space-sm);
+  gap: var(--space-lg);
   justify-items: center;
   text-align: center;
 }
@@ -271,17 +566,57 @@ pre {
   gap: var(--space-md) var(--space-lg);
 }
 
-.mast__nav a {
+.mast__nav a,
+.theme {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   letter-spacing: 0.04em;
   white-space: nowrap;
 }
 
+/* The nav and the theme control on one line, centred as a unit. The button is
+ * 44 px and the links are ~20, so the row centres them on each other and the
+ * mast's own row gap keeps its distance from the wordmark. The button's own
+ * padding is most of the gap on its side already, hence --space-md here
+ * rather than the nav's --space-lg: measured edge to edge they match. */
+.mast__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center; /* gate 36 */
+  justify-content: center;
+  gap: var(--space-md);
+}
+
+/* It carries `.link` for its geometry — the inline-flex row, the gap, the
+ * padding and the accent rule — and only overrides what a <button> brings
+ * with it that a link does not. The border shorthand is NOT reset here: that
+ * would take the underline with it. */
+.theme {
+  background: none;
+  border-block-start: 0;
+  border-inline: 0;
+  cursor: pointer;
+}
+
+/* Both words occupy this cell, so it is as wide as the wider of the two and
+ * the rule under it never moves when the mode flips. */
+.theme__label {
+  display: grid;
+}
+
+.theme__word {
+  grid-area: 1 / 1;
+  visibility: hidden;
+}
+
+.theme__word[data-shown] {
+  visibility: visible;
+}
+
 .mast__rule {
   border: 0;
-  border-block-start: var(--rule-hair) solid var(--color-rule);
-  border-block-end: var(--rule-hair) solid var(--color-rule);
+  border-block-start: var(--rule-hair) solid var(--color-accent);
+  border-block-end: var(--rule-hair) solid var(--color-accent);
   height: 4px;
   margin-block-start: var(--space-md);
   width: 100%;
@@ -322,12 +657,18 @@ pre {
 }
 
 /* The rule that opens each section. It draws itself in once, on first
- * intersection — the page's second motion primitive. */
+ * intersection — the page's second motion primitive. The page's separators
+ * are the accent's structural job: the masthead's double rule, these, and the
+ * footer's top edge all carry it, so the accent reads as the thing that
+ * divides the page rather than as decoration sprinkled on it. */
 .section__rule {
+  border-block-start-color: var(--color-accent);
   margin-block-end: var(--space-xl);
 }
 
-/* Rhythm is uneven on purpose — §02 carries the lead figure and breathes. */
+/* Rhythm is uneven on purpose — §02 carries the lead figure and breathes.
+ * §04 leans the other way and closes tight; because that depends on the
+ * asymmetric spans being active, `.section--mcp` lives with them below. */
 .section--annotate {
   padding-block: var(--space-3xl) var(--space-2xl);
 }
@@ -349,6 +690,7 @@ pre {
 
 .section__number {
   color: var(--color-accent);
+  font-weight: var(--weight-body-strong); /* the real mono 600, not a faux */
 }
 
 .section__title {
@@ -379,6 +721,37 @@ pre {
   .section__body--7-5 {
     grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
   }
+
+  /* §04 carries the page's shortest body — one command beside two tools, 125 px
+   * of it. At the standard close (4rem) that body was followed by §05's heavier
+   * open (6rem), so the WIDEST gap on the page sat under the THINNEST section
+   * and read as one that had run out of content. Closing tight makes §04 the
+   * page's tightest transition instead: compact on purpose, and it runs the
+   * reader into the CTA. Scoped to the span breakpoint because below it the
+   * body stacks and §04 is no shorter than its neighbours. */
+  .section--mcp {
+    padding-block-end: var(--space-lg);
+  }
+}
+
+/* §01's narrow column carries a snippet that cannot wrap and cannot shrink:
+ * `Annotation.install(sink: ClipboardSink(format: .json))` needs 447 px at
+ * --text-sm, and a 5/12 share stops covering that above about 1400 px.
+ *
+ * The reason is counter-intuitive enough to write down: the shell's content
+ * box gets NARROWER as the viewport widens past `--page-max`, because the max
+ * width stops growing at 78 rem while `--page-gutter` keeps climbing to 5 rem
+ * and eats the difference. So the plate fits at 1280 and overflows at 1600.
+ *
+ * Fixed by giving the track a floor rather than by re-tuning the ratio — the
+ * constraint is a fixed width, so a fixed width is the honest way to state
+ * it. The wide column still clears its own longest line (562 px) with room
+ * to spare, and `minmax(0, …)` on that track keeps gate 34 safe if it ever
+ * does not. Scoped to where the problem starts; below this the 7:5 fits. */
+@media (min-width: 85rem) {
+  .section--install .section__body--7-5 {
+    grid-template-columns: minmax(0, 7fr) minmax(29rem, 5fr);
+  }
 }
 
 .stack {
@@ -399,27 +772,50 @@ pre {
   min-width: 0;
 }
 
+/* No rule under the caption. A straight hairline running the full width and
+ * then butting into the plate's 10 px corners reads as a broken frame — the
+ * line promises a box the plate does not draw. The caption is held to the
+ * block by proximity instead, which is what the gap is for. */
 .code__bar {
   display: flex;
   align-items: center; /* gate 36 */
   justify-content: space-between;
   gap: var(--space-md);
   padding-block-end: var(--space-2xs);
-  border-block-end: var(--rule-hair) solid var(--color-rule);
 }
 
 .code__caption {
   color: var(--color-muted);
 }
 
+/* The plate. The `<pre>` no longer scrolls itself — a Radix ScrollArea owns
+ * the overflow, so the bar can be drawn in the page's own ink rather than the
+ * platform's. Radix hides the native bar on the viewport for us. Still no
+ * window chrome: this is a rule that moves, not a title bar (gate 47). */
+.code__plate {
+  /* A grid item's automatic minimum is its CONTENT's width, and the content
+   * here is an un-wrapped snippet. The old `<pre>` escaped that by scrolling
+   * itself — `overflow` other than `visible` zeroes the automatic minimum —
+   * and the root does not, so it has to say so or a long line drags the whole
+   * page sideways at 375 px (gate 34). */
+  min-width: 0;
+  background: var(--color-paper-2);
+  border: var(--rule-hair) solid var(--color-accent);
+  border-radius: var(--radius-lg);
+  /* Deliberately no `overflow: hidden` — it would clip the viewport's focus
+   * ring. The viewport repeats the radius, which keeps the content inside the
+   * corners without clipping anything that sits outside them. */
+}
+
+.code__viewport {
+  width: 100%;
+  border-radius: var(--radius-lg);
+}
+
 .code__pre {
   margin: 0;
   padding: var(--space-md);
-  background: var(--color-paper-2);
   color: var(--color-ink);
-  border: var(--rule-hair) solid var(--color-rule);
-  border-radius: var(--radius-lg);
-  overflow-x: auto;
   font-size: var(--text-sm);
   line-height: 1.7;
   tab-size: 2;
@@ -429,31 +825,72 @@ pre {
   font-size: inherit;
 }
 
-/* Copy button — 8 states, all visibly distinct. */
+/* Horizontal only — code overflows sideways, never down. `type="auto"` means
+ * the bar exists only while there is something to scroll to. */
+.code__scrollbar {
+  display: flex;
+  height: var(--space-xs);
+  padding: var(--space-3xs);
+  touch-action: none;
+  user-select: none;
+}
+
+/* The thumb is an interactive control, so it owes WCAG 1.4.11's 3:1 against
+ * the plate it sits ON — not against the page. `rule-2` is the obvious pick
+ * and it fails there: 3.04:1 on paper, 2.78:1 on paper-2. `muted` is the
+ * caption's own grey, already verified at 4.5:1 on the plate, so the bar
+ * reads as one more piece of the block's machine text. */
+.code__thumb {
+  flex: 1;
+  background: var(--color-muted);
+  border-radius: var(--radius-pill);
+  transition: background var(--dur-short) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .code__thumb:hover {
+    background: var(--color-ink-2);
+  }
+}
+
+/* Copy button — 8 states, all visibly distinct. A bare glyph rather than the
+ * word COPY.
+ *
+ * It sets `--text-xs`, which is the caption's own size, and its icon is
+ * `inline` — so the mark is drawn at exactly the scale of the words across
+ * the row from it. It had been a fixed 20 px, which made it the largest thing
+ * in a row of 11 px machine text and read as a button dropped onto a caption.
+ * The 44 px target survives that: the box keeps `--control-height` and the
+ * glyph is centred in it, so what shrank is the drawing, not the thing you
+ * have to hit. The negative end margin pulls that target's padding back out
+ * to the row's edge, so the glyph lines up with the plate below it. */
 .copy {
   border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
-  gap: var(--space-2xs);
-  min-height: var(--control-height);
-  padding-inline: var(--space-xs);
+  justify-content: center;
+  width: var(--control-height);
+  height: var(--control-height);
   margin-inline-end: calc(var(--space-xs) * -1);
+  padding: 0;
   background: none;
   border: 0;
   cursor: pointer;
-  white-space: nowrap;
-  font-family: var(--font-mono);
   font-size: var(--text-xs);
-  letter-spacing: var(--track-label);
-  text-transform: uppercase;
   color: var(--color-muted);
   transition:
     color var(--dur-short) var(--ease-out),
     transform var(--dur-micro) var(--ease-out);
 }
 
+/* `:not([data-state])` is load-bearing, not tidiness. You press this button
+ * with the pointer on it and it stays there while the outcome shows, and
+ * `.copy:hover:not(:disabled)` is (0,3,0) against `.copy[data-state="copied"]`
+ * at (0,2,0) — so hover won, and every successful copy reported itself in
+ * plain ink instead of the accent. A control that is busy telling you what
+ * happened is not in its hover state; it is in its outcome state. */
 @media (hover: hover) and (pointer: fine) {
-  .copy:hover:not(:disabled) {
+  .copy:hover:not(:disabled):not([data-state]) {
     color: var(--color-ink);
   }
 }
@@ -467,6 +904,8 @@ pre {
   cursor: not-allowed;
 }
 
+/* The glyph itself changes with the state (Copy → Check → X), so colour is
+ * confirming what the shape already said rather than carrying it alone. */
 .copy[data-state="copied"] {
   color: var(--color-accent);
 }
@@ -484,8 +923,15 @@ pre {
   min-width: 0;
 }
 
+/* A standard UI boundary, not the accent. The accent is the page's structural
+ * ink — the masthead's double rule, the section rules, the footer's top edge —
+ * and every one of those separates the page from itself. A figure frame is not
+ * a separator; it is the edge of a picture, and drawing it in the same ink put
+ * an orange box around the one element that is meant to be looked at rather
+ * than read. `rule-2` is the token that already means "UI boundary" here, and
+ * it is the same edge the email field draws. */
 .figure__frame {
-  border: var(--rule-hair) solid var(--color-rule);
+  border: var(--rule-hair) solid var(--color-rule-2);
   border-radius: var(--radius-lg);
   background: var(--color-paper-2);
   overflow: hidden; /* so a capture's square corners cannot poke through */
@@ -591,7 +1037,7 @@ pre {
   font-family: var(--font-body);
   font-size: var(--text-base);
   border: var(--rule-hair) solid var(--color-rule-2); /* 1px in EVERY state */
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-lg);
   outline: var(--rule-thick) solid transparent; /* reserved ring slot */
   outline-offset: 1px;
   transition: background-color var(--dur-short) var(--ease-out);
@@ -655,7 +1101,11 @@ pre {
   font-size: var(--text-base);
   font-weight: var(--weight-body-strong);
   border: var(--rule-hair) solid var(--color-accent);
-  border-radius: var(--radius-pill);
+  /* One radius across every boxed thing on the page — plates, the field, and
+   * this. It was a Capsule, lifted from the overlay's one accent button, but
+   * the app's parity is not worth the button being the only shape on the page
+   * that rounds differently from the control it sits beside. */
+  border-radius: var(--radius-lg);
   cursor: pointer;
   transition:
     background-color var(--dur-short) var(--ease-out),
@@ -719,33 +1169,65 @@ pre {
 /* ══ Ft1 · Mast-headed footer ═══════════════════════════════════════════ */
 
 .foot {
-  border-block-start: var(--rule-thick) solid var(--color-ink);
-  padding-block: var(--space-xl) var(--space-2xl);
+  border-block-start: var(--rule-thick) solid var(--color-accent);
   margin-block-start: var(--space-2xl);
 }
 
+.foot__main {
+  padding-block: var(--space-xl);
+}
+
+/* The band is the footer's masthead: the identity block hard left, the links
+ * hard right, so the footer occupies the page's full measure instead of
+ * hanging in its left half. `align-items: baseline` puts the links on the
+ * wordmark's own baseline rather than on the top of its box — the identity
+ * block is three lines tall and the links are one, and aligning the boxes
+ * would leave the links floating a few pixels above the name they sit beside.
+ *
+ * Below 48 rem it is one column and the links follow the tagline, which is
+ * the same reading order the two-column form has. */
 .foot__band {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  gap: var(--space-md);
+  gap: var(--space-lg);
   align-items: baseline;
 }
 
 @media (min-width: 48rem) {
   .foot__band {
-    grid-template-columns: minmax(0, auto) minmax(0, 1fr);
+    /* Both tracks are `auto`, so a long wordmark or tagline takes what it
+     * needs and `space-between` absorbs the difference. */
+    grid-template-columns: minmax(0, auto) minmax(0, auto);
+    justify-content: space-between;
     column-gap: var(--space-xl);
   }
 }
 
-.foot__mark {
+/* The name and what it is, stacked. The gap is tighter than the band's,
+ * because these two are one statement and the links are another. */
+.foot__identity {
   display: grid;
-  gap: var(--space-2xs);
-  justify-items: start;
+  gap: var(--space-sm);
 }
 
-/* Powered by — the org line. Quiet, but a real link, not a signature. */
-.foot__powered {
+/* The org line, in its own band under the footer proper: one short centred
+ * line answering "who ships this" without competing with the product's own
+ * wordmark two rows above it.
+ *
+ * The band is filled with the accent at the maintainer's request, which makes
+ * it the page's second accent-filled surface and by far its largest. Two
+ * consequences are handled rather than discovered: the ink flips to
+ * `--color-accent-ink`, the token that exists for exactly this ground and is
+ * measured against it in both themes; and the hairline above it goes, because
+ * a rule separating a filled band from the paper above it is drawing a line
+ * where there is already an edge. The cost to gate 23 is recorded there. */
+.subfoot {
+  background: var(--color-accent);
+  padding-block: var(--space-md);
+  text-align: center;
+}
+
+.subfoot__link {
   display: inline-flex;
   align-items: center;
   gap: var(--space-2xs);
@@ -754,17 +1236,36 @@ pre {
   font-size: var(--text-xs);
   letter-spacing: 0.06em;
   text-transform: uppercase;
-  color: var(--color-muted);
+  color: var(--color-accent-ink);
   text-decoration: none;
   border-block-end: var(--rule-hair) solid transparent;
   transition: color var(--dur-short) var(--ease-out);
 }
 
+/* `--color-focus` is a darkened accent, which is invisible ON the accent.
+ * The ring takes the band's own ink instead, where it carries 5.7:1 in light
+ * and 7.2:1 in dark against a 3:1 requirement. */
+.subfoot__link:focus-visible {
+  outline-color: var(--color-accent-ink);
+}
+
+/* The one link on the page pointing away from this product, so on hover it
+ * takes the destination's colour rather than AnnotKit's accent. See the note
+ * on --color-gpu in tokens.css for why the two themes carry different values
+ * of the same green. */
 @media (hover: hover) and (pointer: fine) {
-  .foot__powered:hover {
-    color: var(--color-accent);
-    border-block-end-color: var(--color-accent);
+  .subfoot__link:hover {
+    color: var(--color-gpu);
+    border-block-end-color: var(--color-gpu);
   }
+}
+
+/* Touch has no hover, so the brand colour would never appear there. Keyboard
+ * focus is the equivalent moment: the link is singled out, and it should be
+ * singled out in the same ink. The ring above is drawn in the band's ink, so
+ * focus stays locatable whatever the text does. */
+.subfoot__link:focus-visible {
+  color: var(--color-gpu);
 }
 
 .foot__wordmark {
@@ -781,27 +1282,26 @@ pre {
   max-width: var(--measure-narrow);
 }
 
+/* One sentence per line — see the note on `footer.tagline` in copy.ts. Each
+ * sentence still wraps inside the measure at the narrow widths; what this
+ * fixes is a line that opens mid-clause when both would fit on two. */
+.foot__tagline span {
+  display: block;
+}
+
+/* No top margin any more: it is a grid item of the band now, and the band's
+ * own gap is what holds it off the tagline when the two columns stack. */
 .foot__links {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: var(--space-md) var(--space-lg);
-  margin-block-start: var(--space-lg);
 }
 
 .foot__links a {
   font-family: var(--font-mono);
   font-size: var(--text-sm);
   white-space: nowrap;
-}
-
-.foot__colophon {
-  margin-block-start: var(--space-lg);
-  padding-block-start: var(--space-md);
-  border-block-start: var(--rule-hair) solid var(--color-rule);
-  color: var(--color-muted);
-  font-size: var(--text-sm);
-  max-width: var(--measure);
 }
 
 /* ══ Motion — three primitives, all reduced-motion safe ═════════════════
@@ -869,7 +1369,11 @@ pre {
 @media (pointer: coarse) {
   .link,
   .mast__nav a,
-  .foot__links a {
+  .foot__links a,
+  /* Not for the target, which is already 44 px — for the rule. The links open
+   * their padding here, which drops their underline; the control's has to
+   * drop with it or the row stops sharing a line. */
+  .theme__mark {
     padding-block: var(--space-xs);
   }
 }

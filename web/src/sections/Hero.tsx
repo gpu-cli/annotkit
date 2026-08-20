@@ -1,3 +1,5 @@
+import { ArrowDown, ArrowUpRight } from "lucide-react";
+import { Icon } from "../components/Icon";
 import { hero } from "../copy";
 import { site } from "../config";
 import { track } from "../analytics";
@@ -26,9 +28,7 @@ export function Hero() {
               onClick={() => track({ name: "cta_github_clicked", props: { placement: "hero" } })}
             >
               {hero.ctaPrimary}
-              <span className="link__arrow" aria-hidden="true">
-                ↗
-              </span>
+              <Icon as={ArrowUpRight} />
             </a>
           ) : (
             <span className="link link--lead" aria-disabled="true">
@@ -41,9 +41,7 @@ export function Hero() {
             onClick={() => track({ name: "cta_updates_clicked", props: { placement: "hero" } })}
           >
             {hero.ctaSecondary}
-            <span className="link__arrow" aria-hidden="true">
-              ↓
-            </span>
+            <Icon as={ArrowDown} />
           </a>
         </div>
       </div>

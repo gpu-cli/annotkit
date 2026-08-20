@@ -58,9 +58,19 @@
   --measure-narrow: 52ch;
 
   /* ── Colour ───────────────────────────────────────────────────────────────
-   * Warm paper, warm ink, one warm accent at 45°. Light only — a dark
-   * variant is a later, deliberate redesign, not a toggle (epic §6.3).
-   * Verified: node scripts/contrast.mjs → 14/14.
+   * Warm paper, warm ink, one warm accent at 45°.
+   *
+   * Two themes. The epic (§6.3) called a dark variant "a later, deliberate
+   * redesign, not a toggle" — this IS that redesign, asked for by the
+   * maintainer, and it is built the way the epic wanted rather than by
+   * inverting lightness: the dark palette keeps the same warm hue family and
+   * the same chroma floor (≥ 0.010, gate 22), and every pair is re-derived
+   * and re-measured rather than flipped. `scripts/contrast.mjs` checks BOTH
+   * palettes; neither ships until both pass.
+   *
+   * The accent darkens in light and lightens in dark, because it has to hold
+   * 4.5:1 against whatever paper it sits on and carry `--color-accent-ink` on
+   * top of itself when it is a fill.
    */
   --color-paper: oklch(96.5% 0.010 78);
   --color-paper-2: oklch(93.5% 0.012 78);
@@ -76,9 +86,46 @@
   --color-focus: oklch(45% 0.160 45);
   --color-error: oklch(47% 0.180 25);
 
+  /* GPU CLI's brand green, and the page's one borrowed colour. It exists so
+   * the subfoot link hovers into the org's own ink rather than AnnotKit's,
+   * which is the only place on the page that is pointing AWAY from this
+   * product. It is a hover and focus state on one link and nothing else:
+   * never a fill, never a rule, never a second accent.
+   *
+   * #19DC6A exactly, in both themes, at the maintainer's instruction. It is
+   * the one token on the page written as a hex rather than an oklch, and that
+   * is deliberate: it is not a colour derived from this palette's own hue and
+   * lightness scheme, it is a value handed over from outside, and rounding it
+   * through oklch does not survive the trip. An oklch fitted to it painted
+   * #18DC6A in Chrome — a unit of red out — because the conversion matrix in
+   * `scripts/contrast.mjs` and the browser's own do not agree to the last
+   * step. A borrowed constant should be stored as the constant. The contrast
+   * script reads hex as well as oklch for exactly this reason.
+   *
+   * Read the contrast table before changing what sits behind it. The band is
+   * accent-filled now, and this green carries 3.35:1 on the light accent and
+   * 1.42:1 on the dark one. Both are below the 4.5:1 a label this size wants;
+   * the dark one is below the 3:1 that would make it a visible change at all.
+   * That is a known, instructed exception and it is written up at gate 40 —
+   * it is not an oversight, and it is not something to "fix" by quietly
+   * altering the green. */
+  --color-gpu: #19dc6a;
+
   /* Alpha modifiers — overlays and hairlines, never palette entries. */
   --tint-hairline: color-mix(in oklch, var(--color-ink) 12%, transparent);
   --tint-mark: color-mix(in oklch, var(--color-accent) 18%, transparent);
+  /* The wash behind inline `<code>`. A translucent ink rather than a paper
+   * step, so a chip reads the same whether it sits on the page, on a figure's
+   * pending plate (`paper-3`) or on a code plate (`paper-2`) — a fixed paper
+   * value would go the wrong way against one of them in one of the themes. */
+  --tint-code: color-mix(in oklch, var(--color-ink) 7%, transparent);
+  /* The backdrop's drifting frames. Dark carries a little more of the accent
+   * because the dark accent is lighter and a thin stroke on near-black all
+   * but vanishes. Raised from 6 %: a stroke you cannot quite see cannot be
+   * seen to move either, and the drift is the whole point of the thing. */
+  --tint-frame: color-mix(in oklch, var(--color-accent) 10%, transparent);
+
+
 
   /* ── Space ────────────────────────────────────────────────────────────── */
   --space-3xs: 0.125rem;
@@ -113,6 +160,12 @@
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  /* Near-linear through the middle, soft at both ends. The backdrop's frames
+   * travel on this: `--ease-in-out` spends most of a cycle at rest and then
+   * lunges, which is exactly the shape that reads as static-then-startling.
+   * This one keeps a roughly constant speed for the length of the drift and
+   * only eases where it turns around. */
+  --ease-drift: cubic-bezier(0.37, 0.15, 0.63, 0.85);
 
   --dur-micro: 120ms;
   --dur-short: 220ms;
@@ -125,6 +178,45 @@
   --z-sticky-nav: 300;
 
   --control-height: 2.75rem; /* 44 px — one height for inputs and buttons */
+
+  /* The light palette is the default; the dark block below overrides it.
+   * Declared here so form controls and scrollbars follow the theme. */
+  color-scheme: light;
+}
+
+/* ── Dark ────────────────────────────────────────────────────────────────────
+ * Ink and paper trade places, but nothing is a straight inversion. Dark paper
+ * sits at 19–26 % L so the plates can still step apart from the page; the
+ * accent moves UP to 68 % L, because at the light theme's 51 % it fails
+ * against a dark ground; and `--color-accent-ink` flips to the darkest ink on
+ * the page, since the accent is now a light fill. Chroma stays ≥ 0.010 on
+ * every neutral (gate 22) and the hue band stays warm.
+ *
+ * Applied by an explicit `data-theme`, so the toggle can override the system
+ * preference in both directions rather than only one.
+ */
+:root[data-theme="dark"] {
+  --color-paper: oklch(19% 0.014 60);
+  --color-paper-2: oklch(23% 0.015 60);
+  --color-paper-3: oklch(26% 0.016 60);
+  --color-rule: oklch(34% 0.014 62); /* decorative hairlines */
+  --color-rule-2: oklch(56% 0.016 66); /* UI boundaries */
+  --color-neutral: oklch(62% 0.016 70);
+  --color-muted: oklch(74% 0.017 74);
+  --color-ink-2: oklch(86% 0.014 78);
+  --color-ink: oklch(94% 0.011 80);
+  --color-accent: oklch(72% 0.135 52);
+  --color-accent-ink: oklch(19% 0.014 60); /* text on an accent fill */
+  --color-focus: oklch(78% 0.130 55);
+  --color-error: oklch(72% 0.150 25);
+  --color-gpu: #19dc6a; /* the same brand value — see the light block */
+
+  --tint-hairline: color-mix(in oklch, var(--color-ink) 14%, transparent);
+  --tint-mark: color-mix(in oklch, var(--color-accent) 24%, transparent);
+  --tint-code: color-mix(in oklch, var(--color-ink) 10%, transparent);
+  --tint-frame: color-mix(in oklch, var(--color-accent) 12%, transparent);
+
+  color-scheme: dark;
 }
 
 /* ── Faces ─────────────────────────────────────────────────────────────────
@@ -157,6 +249,17 @@
   font-family: "IBM Plex Mono";
   src: url("/fonts/ibm-plex-mono-latin-400-normal.woff2") format("woff2");
   font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,
+    U+02DC, U+2000-206F, U+2074, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215,
+    U+FEFF, U+FFFD;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/fonts/ibm-plex-mono-latin-600-normal.woff2") format("woff2");
+  font-weight: 600;
   font-style: normal;
   font-display: swap;
   unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA,

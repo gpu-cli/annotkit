@@ -1,5 +1,6 @@
 import { Section } from "../components/Section";
 import { Figure } from "../components/Figure";
+import { TermList } from "../components/TermList";
 import { annotate } from "../copy";
 import { annotateLoop, annotatePin } from "../captures";
 
@@ -20,14 +21,7 @@ export function Annotate() {
         <Figure capture={annotateLoop} />
         <div className="section__body section__body--5-7">
           <Figure capture={annotatePin} />
-          <ul className="sink-list">
-            {annotate.points.map((point) => (
-              <li key={point.term}>
-                <dfn>{point.term}</dfn>
-                <p>{point.body}</p>
-              </li>
-            ))}
-          </ul>
+          <TermList terms={annotate.points} />
         </div>
       </div>
     </Section>

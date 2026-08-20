@@ -20,6 +20,8 @@
     "deploy:preview": "npm run build && wrangler pages deploy dist --project-name annotkit --branch preview"
   },
   "dependencies": {
+    "@radix-ui/react-scroll-area": "^1.2.18",
+    "lucide-react": "^1.33.0",
     "posthog-js-lite": "^3.0.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",

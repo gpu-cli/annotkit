@@ -4,14 +4,37 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 
-    <title>AnnotKit — native annotation for AI coding agents</title>
+    <title>AnnotKit: native annotation for AI coding agents</title>
     <meta
       name="description"
       content="Click a view in your own macOS or iOS app, type a note, and hand your coding agent a selector it can trace back to code. MIT, Swift 6, pre-1.0."
     />
     <link rel="canonical" href="%SITE_URL%/" />
     <meta name="robots" content="index, follow" />
-    <meta name="color-scheme" content="light" />
+    <meta name="color-scheme" content="light dark" />
+
+    <!--
+      Theme, resolved before first paint. This has to be inline and blocking:
+      any deferred resolution paints light paper first and then repaints dark,
+      which is a flash straight into the visitor's eyes on a dark-preferring
+      machine. Kept deliberately tiny, and it duplicates two constants from
+      src/theme.ts — the storage key and the attribute. If you change either,
+      change it in both; there is no build step tying them together.
+    -->
+    <script>
+      (function () {
+        try {
+          var stored = localStorage.getItem("annotkit-theme");
+          var choice = stored === "light" || stored === "dark" ? stored : null;
+          var dark = choice
+            ? choice === "dark"
+            : window.matchMedia("(prefers-color-scheme: dark)").matches;
+          document.documentElement.setAttribute("data-theme", dark ? "dark" : "light");
+        } catch (e) {
+          document.documentElement.setAttribute("data-theme", "light");
+        }
+      })();
+    </script>
 
     <!-- The display face is the LCP text; preload it so the swap never shows. -->
     <link
@@ -26,7 +49,7 @@
 
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="AnnotKit" />
-    <meta property="og:title" content="AnnotKit — native annotation for AI coding agents" />
+    <meta property="og:title" content="AnnotKit: native annotation for AI coding agents" />
     <meta
       property="og:description"
       content="Click a view in your own macOS or iOS app, type a note, and hand your coding agent a selector it can trace back to code."

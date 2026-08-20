@@ -13,6 +13,9 @@ export default defineConfig({
           name: "node",
           environment: "node",
           include: ["tests/**/*.test.ts"],
+          // `*.dom.test.ts` belongs to the DOM project below. Without this
+          // exclude it would match here first and fail on `window`.
+          exclude: ["tests/**/*.dom.test.ts"],
         },
       },
       {
@@ -20,7 +23,7 @@ export default defineConfig({
         test: {
           name: "dom",
           environment: "jsdom",
-          include: ["tests/**/*.dom.test.tsx"],
+          include: ["tests/**/*.dom.test.ts", "tests/**/*.dom.test.tsx"],
           setupFiles: ["tests/setup.dom.ts"],
         },
       },

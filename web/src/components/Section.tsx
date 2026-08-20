@@ -1,5 +1,6 @@
 import { useRef, type ReactNode } from "react";
 import { useDrawOnce } from "../hooks";
+import { withCode } from "../markup";
 
 /**
  * The section shell.
@@ -35,7 +36,7 @@ export function Section({
         <header className="section__head">
           <p className="u-label section__number">{number}</p>
           <h2 className="section__title">{title}</h2>
-          {lead ? <p className="section__lead">{lead}</p> : null}
+          {lead ? <p className="section__lead">{withCode(lead)}</p> : null}
         </header>
         {children}
       </div>

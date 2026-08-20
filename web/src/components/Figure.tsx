@@ -1,5 +1,6 @@
 import type { Capture } from "../captures";
 import { usePrefersReducedMotion } from "../hooks";
+import { withCode } from "../markup";
 
 /**
  * A capture in a bare frame — a hairline border and a caption, nothing else.
@@ -20,9 +21,9 @@ export function Figure({ capture }: { capture: Capture }) {
           <div className="figure__pending">
             <p className="u-label">Capture pending · L4</p>
             <p>
-              <b>{capture.shot}</b>
+              <b>{withCode(capture.shot)}</b>
             </p>
-            <p>{capture.direction}</p>
+            <p>{withCode(capture.direction)}</p>
           </div>
         ) : capture.kind === "loop" ? (
           // Reduced motion gets the poster frame and a control to start it,
@@ -53,7 +54,7 @@ export function Figure({ capture }: { capture: Capture }) {
         )}
       </div>
       <figcaption>
-        {capture.caption}
+        {withCode(capture.caption)}
         {capture.buildHash ? ` · captured at ${capture.buildHash}` : ""}
       </figcaption>
     </figure>

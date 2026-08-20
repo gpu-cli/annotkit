@@ -1,6 +1,7 @@
 import { Section } from "../components/Section";
 import { CodeBlock } from "../components/CodeBlock";
 import { Figure } from "../components/Figure";
+import { TermList } from "../components/TermList";
 import { agentNotes } from "../copy";
 import { notesFile } from "../captures";
 
@@ -22,14 +23,7 @@ export function AgentNotes() {
           />
           <Figure capture={notesFile} />
         </div>
-        <ul className="sink-list">
-          {agentNotes.sinks.map((sink) => (
-            <li key={sink.term}>
-              <dfn>{sink.term}</dfn>
-              <p>{sink.body}</p>
-            </li>
-          ))}
-        </ul>
+        <TermList terms={agentNotes.sinks} />
       </div>
     </Section>
   );

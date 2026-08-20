@@ -2,7 +2,7 @@
  * Drives headless Chrome over the DevTools protocol to verify the responsive
  * floor the epic sets (§6.4) and Hallmark gates 34, 49, and 50 enforce:
  *
- *   34 · the document never scrolls horizontally
+ *   34 · neither the document nor the page's scroll viewport scrolls sideways
  *   49 · no button, nav link, or CTA label wraps to two lines
  *   50 · no image-bearing grid track pushes the layout past the viewport
  *
@@ -27,7 +27,8 @@ const AFFORDANCES = [
   ".link",
   ".mast__nav a",
   ".foot__links a",
-  ".foot__powered",
+  ".subfoot__link",
+  ".theme",
   ".submit",
   ".copy",
   ".skip",
@@ -85,7 +86,16 @@ async function serveDist() {
 
 const PROBE = (selector) => `(() => {
   const doc = document.documentElement;
-  const overflow = Math.max(doc.scrollWidth, document.body.scrollWidth) - window.innerWidth;
+
+  // The page scrolls through a ScrollArea viewport, not the document. A
+  // document that cannot overflow always reports 0, so measuring only it
+  // would turn gate 34 into a gate that passes by construction. The viewport
+  // is measured alongside it and the worse number wins.
+  const viewport = document.querySelector(".page__viewport");
+  const docOverflow = Math.max(doc.scrollWidth, document.body.scrollWidth) - window.innerWidth;
+  const viewOverflow = viewport ? viewport.scrollWidth - viewport.clientWidth : 0;
+  const overflow = Math.max(docOverflow, viewOverflow);
+  if (!viewport) throw new Error("responsive-check: .page__viewport is gone — gate 34 is blind");
 
   const widest = [...document.querySelectorAll("body *")]
     .map((node) => ({ node, right: node.getBoundingClientRect().right }))
@@ -112,7 +122,7 @@ const PROBE = (selector) => `(() => {
     })
     .map((node) => node.textContent.trim().slice(0, 40));
 
-  return JSON.stringify({ overflow, widest, wrapped });
+  return JSON.stringify({ overflow, docOverflow, viewOverflow, widest, wrapped });
 })()`;
 
 // ── run ──────────────────────────────────────────────────────────────────────
@@ -152,7 +162,10 @@ for (const width of WIDTHS) {
 
   const problems = [];
   if (report.overflow > 0) {
-    problems.push(`horizontal overflow of ${report.overflow}px (gate 34)`);
+    problems.push(
+      `horizontal overflow of ${report.overflow}px (gate 34)` +
+        ` — document ${report.docOverflow}px, scroll viewport ${report.viewOverflow}px`,
+    );
     if (report.widest.length) problems.push(`  widest: ${report.widest.join(", ")}`);
   }
   if (report.wrapped.length > 0) {

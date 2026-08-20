@@ -5,6 +5,10 @@
  * that the page renders as a labelled empty plate — or `ready`, pointing at a
  * real file under `public/captures/`.
  *
+ * Prose fields here (`caption`, `shot`, `direction`) run through the same
+ * backtick convention the rest of the copy uses: text between backticks is
+ * rendered as `<code>`. See src/markup.tsx.
+ *
  * To land a capture: record it from `task demo`, drop the file in
  * `public/captures/`, and flip the entry from the pending shape to the ready
  * shape (fill `src`, `alt`, `width`, `height`, and the `buildHash` of the
@@ -52,10 +56,10 @@ export type Capture = Pending | ReadyStill | ReadyLoop;
 /** §02 lead — the one muted webm loop on the page (≤ ~1.5 MB, epic §8.5). */
 export const annotateLoop: Capture = {
   status: "pending",
-  caption: "AnnotKitDemo — click a control, type a note, note written.",
+  caption: "AnnotKitDemo: click a control, type a note, note written.",
   shot: "Screen recording · AnnotKitDemo settings screen",
   direction:
-    "task demo → click Save → composer opens → type a note → submit. Muted webm, ≤ 1.5 MB, with a poster frame. One loop, no cuts.",
+    "`task demo` → click Save → composer opens → type a note → submit. Muted webm, ≤ 1.5 MB, with a poster frame. One loop, no cuts.",
 };
 
 /** §02 support still — the pin and the composer, close in. */
@@ -64,14 +68,14 @@ export const annotatePin: Capture = {
   caption: "The pin and the composer, drawn over the app being annotated.",
   shot: "Still · pin + composer detail",
   direction:
-    "task demo → place a pin on Settings.Profile.Save → screenshot the composer with the resolved selector visible.",
+    "`task demo` → place a pin on `Settings.Profile.Save` → screenshot the composer with the resolved selector visible.",
 };
 
 /** §03 support still — the notes file the run produced. */
 export const notesFile: Capture = {
   status: "pending",
-  caption: "The ANNOTKIT_NOTES.md the run above wrote.",
-  shot: "Still · ANNOTKIT_NOTES.md in an editor",
+  caption: "The `ANNOTKIT_NOTES.md` the run above wrote.",
+  shot: "Still · `ANNOTKIT_NOTES.md` in an editor",
   direction:
-    "Open the ANNOTKIT_NOTES.md written by the demo run and screenshot it. Plain editor, no window chrome in the crop.",
+    "Open the `ANNOTKIT_NOTES.md` written by the demo run and screenshot it. Plain editor, no window chrome in the crop.",
 };

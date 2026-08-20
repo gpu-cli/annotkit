@@ -15,3 +15,16 @@ if (typeof window !== "undefined" && typeof window.matchMedia !== "function") {
     dispatchEvent: () => false,
   })) as unknown as typeof window.matchMedia;
 }
+
+/**
+ * jsdom ships no `ResizeObserver`, and Radix's ScrollArea measures its
+ * viewport with one. Nothing under test asserts on a resize, so the stub is
+ * inert — it exists so the code blocks mount at all.
+ */
+if (typeof globalThis.ResizeObserver === "undefined") {
+  globalThis.ResizeObserver = class {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  } as unknown as typeof ResizeObserver;
+}

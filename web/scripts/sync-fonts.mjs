@@ -2,7 +2,7 @@
 // public/fonts/ under stable, unhashed names so index.html can preload them
 // and tokens.css can declare @font-face against a path we control.
 //
-// Three files, latin subset only, roman only (italic display is banned —
+// Four files, latin subset only, roman only (italic display is banned —
 // Hallmark gate 38a). Run by `npm run build`; safe to re-run.
 import { copyFileSync, mkdirSync, existsSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -24,6 +24,13 @@ const FACES = [
   {
     from: "node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-400-normal.woff2",
     to: "ibm-plex-mono-latin-400-normal.woff2",
+  },
+  // The §-numbers are set in mono at 600. Without the real face the browser
+  // would synthesise one by smearing the 400 — on a page this typographically
+  // deliberate, a faux bold is worse than no bold.
+  {
+    from: "node_modules/@fontsource/ibm-plex-mono/files/ibm-plex-mono-latin-600-normal.woff2",
+    to: "ibm-plex-mono-latin-600-normal.woff2",
   },
 ];
 
