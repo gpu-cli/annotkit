@@ -1,6 +1,9 @@
 # Slop test — AnnotKit landing page
 
-Run against the built page at 320 / 375 / 414 / 768 / 1280 px, 2026-08-19.
+Run against the built page at 320 / 375 / 414 / 768 / 1280 px. First run
+2026-08-19; re-run 2026-08-20 after three changes — corner radii lifted from
+the overlay, §05 widened from an AnnotKit list to the GPU CLI list, and the
+notes file renamed to `ANNOTKIT_NOTES.md`.
 Every gate must answer **no**. Where a gate is answered with a justification
 rather than a plain no, the justification is written out — a silent pass on a
 gate that fired is the thing this file exists to prevent.
@@ -54,8 +57,8 @@ Automated backing:
 ## Implementation · 22–27
 
 22. **Zero-chroma neutral?** No. Lowest chroma on the page is 0.010.
-23. **Accent over ~5 % of a viewport?** No. The accent fills exactly one surface — the submit button — plus hairline underlines, the §-numbers, and the focus ring. Measured well under 3 % at every width.
-24. **Off-scale spacing?** No. Every gap, pad, and margin comes from `--space-*`; the only bare values are the 4 px double-rule height and 1 px hairlines, both tokenised as `--rule-*`.
+23. **Accent over ~5 % of a viewport?** No. The accent fills exactly one surface — the submit button — plus hairline underlines, the §-numbers, the footer's powered-by hover, and the focus ring. Measured well under 3 % at every width. The submit is a capsule because the overlay fills its one accent button with `Capsule()`; editorial bans a pill with a GRADIENT fill, not a pill, and this fill is flat.
+24. **Off-scale spacing?** No. Every gap, pad, and margin comes from `--space-*`; the only bare values are the 4 px double-rule height and 1 px hairlines, both tokenised as `--rule-*`. Radii are `--radius-sm/lg/pill`, lifted from the overlay (`RoundedRectangle(cornerRadius: 3)`, `cornerRadius: 10`, `Capsule()`) rather than invented, so the page rounds the way the app does.
 25. **Measure outside 45–75 ch?** No. `--measure: 66ch`, `--measure-narrow: 52ch`.
 26. **Interactive element missing focus-visible / active / disabled?** No. The copy button, the input, and the submit each ship all eight states; typographic links ship default, hover, focus-visible, active, and a disabled variant used when the repo is private.
 27. **Motion without a reduced-motion fallback?** No. The hero reveal collapses to a 150 ms opacity fade, the rule draw collapses to an opacity fade, and the §02 loop renders its poster with controls instead of autoplaying.
@@ -102,7 +105,7 @@ Automated backing:
 
 ## Honest copy · 46
 
-46. **Invented metric?** No. The page carries no numbers except the platform facts from `Package.swift` (macOS 15, iOS 17, Swift 6) and the version posture from `DECISIONS.md` (0.x, MIT). No testimonials, no logos, no proof bar. Where proof would normally sit, the page shows the code, the note format, and the captures.
+46. **Invented metric?** No. The page carries no numbers except the platform facts from `Package.swift` (macOS 15, iOS 17, Swift 6) and the version posture from `DECISIONS.md` (0.x, MIT). No testimonials, no logos, no proof bar. Where proof would normally sit, the page shows the code, the note format, and the captures. §05's claims about the GPU CLI list are traceable to gpu-cli.sh's own tagline ("Run cloud GPUs from your terminal"); nothing is promised about cadence or subscriber count. The §03 claim that a named third-party skill consumes the output was REMOVED at the rename rather than restated, because it could not be verified (annotkit-6l8).
 
 ## Re-drawn chrome · 47
 
@@ -144,4 +147,4 @@ No axis scored below 3; no revision pass was required on the scores.
 Neither is a gate failure; both are recorded so they are not mistaken for finished work.
 
 - **Captures are placeholders.** The §02 loop and the two stills are `pending` in `src/captures.ts` and render labelled plates. L4 records them from `task demo`.
-- **Initial JS is 67.4 KB gzip against the epic's ~60 KB budget** (§8.5). React 19 + react-dom is 65 KB of that; the app itself is under 3 KB. Lighthouse still scores 100 for performance (LCP 0.4 s, TBT 0 ms), so this is a budget-line question, not a user-facing one. Aliasing `react`/`react-dom` to `preact/compat` was measured at **14.5 KB gzip** — a 53 KB saving with no source changes — but the epic locks React, so the swap is the maintainer's call, not a silent substitution.
+- **Initial JS is 67.6 KB gzip against the epic's ~60 KB budget** (§8.5). React 19 + react-dom is 65 KB of that; the app itself is under 3 KB. Lighthouse still scores 100 for performance (LCP 0.4 s, TBT 0 ms), so this is a budget-line question, not a user-facing one. Aliasing `react`/`react-dom` to `preact/compat` was measured at **14.5 KB gzip** — a 53 KB saving with no source changes — but the epic locks React, so the swap is the maintainer's call, not a silent substitution.

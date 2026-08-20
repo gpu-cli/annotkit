@@ -109,7 +109,9 @@ pre {
 :focus-visible {
   outline: var(--rule-thick) solid var(--color-focus);
   outline-offset: 2px;
-  border-radius: 1px;
+  /* No border-radius here. The outline already follows the element's own
+   * corners, and declaring one would REPLACE that radius with the parent's —
+   * squaring the capsule submit off the moment it takes keyboard focus. */
 }
 
 ::selection {
@@ -156,6 +158,7 @@ pre {
 }
 
 .skip {
+  border-radius: var(--radius-sm);
   position: absolute;
   inset-block-start: var(--space-xs);
   inset-inline-start: var(--space-xs);
@@ -414,7 +417,8 @@ pre {
   padding: var(--space-md);
   background: var(--color-paper-2);
   color: var(--color-ink);
-  border-block-end: var(--rule-hair) solid var(--color-rule);
+  border: var(--rule-hair) solid var(--color-rule);
+  border-radius: var(--radius-lg);
   overflow-x: auto;
   font-size: var(--text-sm);
   line-height: 1.7;
@@ -427,6 +431,7 @@ pre {
 
 /* Copy button — 8 states, all visibly distinct. */
 .copy {
+  border-radius: var(--radius-sm);
   display: inline-flex;
   align-items: center;
   gap: var(--space-2xs);
@@ -481,7 +486,9 @@ pre {
 
 .figure__frame {
   border: var(--rule-hair) solid var(--color-rule);
+  border-radius: var(--radius-lg);
   background: var(--color-paper-2);
+  overflow: hidden; /* so a capture's square corners cannot poke through */
   min-width: 0;
 }
 
@@ -504,6 +511,7 @@ pre {
  * Not a drawn mockup, not a stand-in screenshot — an empty plate with the
  * shot list printed on it. Replaced by the real capture in L4. */
 .figure__pending {
+  border-radius: var(--radius-lg);
   display: grid;
   gap: var(--space-xs);
   align-content: center;
@@ -583,7 +591,7 @@ pre {
   font-family: var(--font-body);
   font-size: var(--text-base);
   border: var(--rule-hair) solid var(--color-rule-2); /* 1px in EVERY state */
-  border-radius: 0;
+  border-radius: var(--radius-sm);
   outline: var(--rule-thick) solid transparent; /* reserved ring slot */
   outline-offset: 1px;
   transition: background-color var(--dur-short) var(--ease-out);
@@ -647,7 +655,7 @@ pre {
   font-size: var(--text-base);
   font-weight: var(--weight-body-strong);
   border: var(--rule-hair) solid var(--color-accent);
-  border-radius: 0;
+  border-radius: var(--radius-pill);
   cursor: pointer;
   transition:
     background-color var(--dur-short) var(--ease-out),
@@ -727,6 +735,35 @@ pre {
   .foot__band {
     grid-template-columns: minmax(0, auto) minmax(0, 1fr);
     column-gap: var(--space-xl);
+  }
+}
+
+.foot__mark {
+  display: grid;
+  gap: var(--space-2xs);
+  justify-items: start;
+}
+
+/* Powered by — the org line. Quiet, but a real link, not a signature. */
+.foot__powered {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2xs);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-muted);
+  text-decoration: none;
+  border-block-end: var(--rule-hair) solid transparent;
+  transition: color var(--dur-short) var(--ease-out);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .foot__powered:hover {
+    color: var(--color-accent);
+    border-block-end-color: var(--color-accent);
   }
 }
 

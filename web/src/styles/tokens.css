@@ -99,6 +99,16 @@
   --rule-hair: 1px;
   --rule-thick: 2px;
 
+  /* ── Radii ────────────────────────────────────────────────────────────────
+   * Lifted from the overlay rather than invented, so the page and the app
+   * round the same way: RoundedRectangle(cornerRadius: 3) on marks and small
+   * chrome, cornerRadius: 10 on the composer panel, and Capsule() on the one
+   * accent-filled button. Three values, no in-between steps.
+   */
+  --radius-sm: 3px;
+  --radius-lg: 10px;
+  --radius-pill: 999px;
+
   /* ── Motion ───────────────────────────────────────────────────────────── */
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
   --ease-in: cubic-bezier(0.7, 0, 0.84, 0);

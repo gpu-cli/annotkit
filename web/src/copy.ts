@@ -130,7 +130,7 @@ export const mcpBridge = {
 export const signup = {
   number: "§05",
   title: "One email when it’s worth reading.",
-  lead: "Releases, design notes, and the 1.0 call. No digest, no drip campaign — AnnotKit is 0.x and honest about it.",
+  lead: "The GPU CLI list: releases and design notes for AnnotKit, for the CLI that runs cloud GPUs from your terminal, and for whatever ships next. No digest, no drip campaign.",
   label: "Email address",
   placeholder: "you@example.com",
   submit: "Get release notes",
@@ -146,11 +146,12 @@ export const signup = {
     network: "That didn’t reach us. Check your connection and try again.",
   },
   privacy:
-    "Your address goes to Resend and nowhere else. Every email carries an unsubscribe link.",
+    "One list for everything GPU CLI ships, AnnotKit included. Your address goes to Resend and nowhere else, and every email carries an unsubscribe link.",
 } as const;
 
 export const footer = {
   wordmark: "AnnotKit",
+  poweredBy: "Powered by GPU CLI",
   tagline:
     "The native analogue of the web Agentation tool. Pre-1.0 — the API may shift before 1.0.",
   links: [
@@ -159,7 +160,7 @@ export const footer = {
     { label: "License", href: "license" },
   ],
   colophon:
-    "MIT licensed. The note format is a clean-room reimplementation of Agentation's; this project contains no Agentation source. Set in Fraunces, Newsreader & IBM Plex Mono.",
+    "MIT licensed. The note format is a clean-room reimplementation of Agentation’s; this project contains no Agentation source. Set in Fraunces, Newsreader & IBM Plex Mono.",
 } as const;
 
 export const codeBlock = {

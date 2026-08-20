@@ -23,7 +23,15 @@ const WIDTHS = [320, 375, 414, 768, 1280];
 const HEIGHT = 900;
 
 /** Affordances that must read as one line at every width. */
-const AFFORDANCES = ".link, .mast__nav a, .foot__links a, .submit, .copy, .skip";
+const AFFORDANCES = [
+  ".link",
+  ".mast__nav a",
+  ".foot__links a",
+  ".foot__powered",
+  ".submit",
+  ".copy",
+  ".skip",
+].join(", ");
 
 const MIME = {
   ".html": "text/html; charset=utf-8",

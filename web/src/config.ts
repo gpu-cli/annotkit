@@ -11,6 +11,8 @@ import { DEFAULT_SITE_URL } from "../shared/site";
 export const site = {
   name: "AnnotKit",
   url: import.meta.env.VITE_SITE_URL ?? DEFAULT_SITE_URL,
+  /** The organisation behind AnnotKit; the updates list is theirs, not ours. */
+  org: "https://gpu-cli.sh",
   repo: "https://github.com/gpu-cli/annotkit",
   issues: "https://github.com/gpu-cli/annotkit/issues",
   license: "https://github.com/gpu-cli/annotkit/blob/main/LICENSE",

@@ -79,12 +79,28 @@ describe("typography discipline", () => {
     }
   });
 
-  it("uses typographic punctuation, never straight quotes or double hyphens", () => {
-    const strings = [hero.standfirst, signup.lead, signup.privacy, signup.successNew];
+  it("uses typographic punctuation, never straight quotes or double hyphens", async () => {
+    // Walk every exported string rather than a hand-picked few. The earlier
+    // spot-check only looked for a quote after whitespace, so the straight
+    // apostrophe in "Agentation's" sat in the footer colophon undetected.
+    const copy: Record<string, unknown> = await import("../src/copy");
+
+    const strings: string[] = [];
+    const walk = (value: unknown) => {
+      if (typeof value === "string") strings.push(value);
+      else if (Array.isArray(value)) value.forEach(walk);
+      else if (value && typeof value === "object") Object.values(value).forEach(walk);
+    };
+    walk(copy);
+
+    expect(strings.length).toBeGreaterThan(30);
     for (const value of strings) {
-      expect(value).not.toMatch(/--/);
-      expect(value).not.toMatch(/\.\.\./);
-      expect(value).not.toMatch(/(^|\s)'/);
+      // Code samples legitimately contain straight quotes and dashes.
+      if (/\n/.test(value)) continue;
+      expect(value, value).not.toMatch(/--/);
+      expect(value, value).not.toMatch(/\.\.\./);
+      expect(value, value).not.toMatch(/'/);
+      expect(value, value).not.toMatch(/"/);
     }
   });
 });

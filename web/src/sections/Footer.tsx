@@ -10,7 +10,15 @@ export function Footer() {
     <footer className="foot">
       <div className="u-shell">
         <div className="foot__band">
-          <p className="foot__wordmark">{footer.wordmark}</p>
+          <div className="foot__mark">
+            <p className="foot__wordmark">{footer.wordmark}</p>
+            <a className="foot__powered" href={site.org}>
+              {footer.poweredBy}
+              <span className="link__arrow" aria-hidden="true">
+                ↗
+              </span>
+            </a>
+          </div>
           <p className="foot__tagline">{footer.tagline}</p>
         </div>
         <nav className="foot__links" aria-label="Elsewhere">
