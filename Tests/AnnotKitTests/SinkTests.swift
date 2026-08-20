@@ -20,7 +20,7 @@ final class SinkTests: XCTestCase {
 
     func testMarkdownBlockMatchesAgentationFormat() {
         let md = AnnotationFormatter.markdown([note(selectedText: "Upgrade to Pro")])
-        XCTAssertTrue(md.hasPrefix("# Agentation Notes"))
+        XCTAssertTrue(md.hasPrefix("# AnnotKit Notes"))
         XCTAssertTrue(md.contains("\n---\n"))
         XCTAssertTrue(md.contains("## [abc123] Settings/Models - #SaveButton"))
         XCTAssertTrue(md.contains("**Timestamp**: 2026-06-29T10:25:00Z"))
@@ -175,16 +175,16 @@ final class SinkTests: XCTestCase {
         // Writing the full set produces the document under a single header.
         try sink.flush([note(id: "first"), note(id: "second")])
         var contents = try String(contentsOfFile: path, encoding: .utf8)
-        XCTAssertTrue(contents.contains("# Agentation Notes"))
+        XCTAssertTrue(contents.contains("# AnnotKit Notes"))
         XCTAssertTrue(contents.contains("## [first]"))
         XCTAssertTrue(contents.contains("## [second]"))
-        XCTAssertEqual(contents.components(separatedBy: "# Agentation Notes").count, 2)
+        XCTAssertEqual(contents.components(separatedBy: "# AnnotKit Notes").count, 2)
 
         // Re-writing the SAME set overwrites (idempotent) — no duplication.
         try sink.flush([note(id: "first"), note(id: "second")])
         contents = try String(contentsOfFile: path, encoding: .utf8)
         XCTAssertEqual(contents.components(separatedBy: "## [first]").count, 2, "first appears exactly once")
-        XCTAssertEqual(contents.components(separatedBy: "# Agentation Notes").count, 2, "single header")
+        XCTAssertEqual(contents.components(separatedBy: "# AnnotKit Notes").count, 2, "single header")
 
         // Writing a superset replaces the file with the full current set, and the
         // earlier notes are still present exactly once.

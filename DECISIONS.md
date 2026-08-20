@@ -477,5 +477,5 @@ processes.
 
 ## IP hygiene (carried into the F7 legal gate)
 
-- Do not copy original Agentation source (PolyForm Shield 1.0.0, non-compete). Only the `AGENTATION_NOTES.md` file format is reused, reimplemented clean-room.
+- Do not copy original Agentation source (PolyForm Shield 1.0.0, non-compete). Only the shape of Agentation's `AGENTATION_NOTES.md` format is reused, reimplemented clean-room. Our output carries our own name — `ANNOTKIT_NOTES.md`, headed `# AnnotKit Notes` — so no Agentation mark appears in anything the package writes (2026-08-20; see the F7 legal gate).
 - The iOS adapter is a clean-room UIKit view-tree walker (`IOSElementSource`), not a vendored dependency. It reuses the shared selector engine, consistent with the one-engine / no-fork design, and carries no third-party code or license obligations.

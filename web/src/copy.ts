@@ -55,7 +55,7 @@ Annotation.install()   // floating toolbar; click a view, type a note
     #endif`,
   },
   sinkNote:
-    "install() defaults to the platform accessibility source and writes notes to AGENTATION_NOTES.md. Pass a different sink to override:",
+    "install() defaults to the platform accessibility source and writes notes to ANNOTKIT_NOTES.md. Pass a different sink to override:",
   sink: {
     caption: "Override the sink",
     code: `Annotation.install(sink: ClipboardSink(format: .json))`,
@@ -85,7 +85,7 @@ export const annotate = {
 export const agentNotes = {
   number: "§03",
   title: "Hand it to the agent",
-  lead: "Notes land in AGENTATION_NOTES.md — the format the process-agentation-notes skill consumes — or on the clipboard, or as JSON.",
+  lead: "Notes land in ANNOTKIT_NOTES.md — one markdown block per note, headed by the selector that located it — or on the clipboard, or as JSON.",
   sample: {
     caption: "The block AnnotationFormatter writes, one per note",
     code: `## [n-3f9c] /settings - #Settings.Profile >> @Save
@@ -100,7 +100,7 @@ is non-empty. Right now it saves an empty profile.`,
   sinks: [
     {
       term: "NotesFileSink",
-      body: "Appends to AGENTATION_NOTES.md in the working directory. The default.",
+      body: "Appends to ANNOTKIT_NOTES.md in the working directory. The default.",
     },
     {
       term: "ClipboardSink",
@@ -108,7 +108,7 @@ is non-empty. Right now it saves an empty profile.`,
     },
     {
       term: "JSONFileSink",
-      body: "Writes AGENTATION_NOTES.json — the input the MCP bridge reads.",
+      body: "Writes ANNOTKIT_NOTES.json — the input the MCP bridge reads.",
     },
   ],
 } as const;
@@ -119,7 +119,7 @@ export const mcpBridge = {
   lead: "Run the optional bridge and let the agent ask what’s pending.",
   command: {
     caption: "Run it beside your app",
-    code: `swift run annotkit-mcp path/to/AGENTATION_NOTES.json`,
+    code: `swift run annotkit-mcp path/to/ANNOTKIT_NOTES.json`,
   },
   tools: [
     { term: "annotation_get_pending", body: "Every note the agent hasn’t resolved yet." },
@@ -159,7 +159,7 @@ export const footer = {
     { label: "License", href: "license" },
   ],
   colophon:
-    "MIT licensed. Reimplements the AGENTATION_NOTES.md format clean-room; contains no Agentation source. Set in Fraunces, Newsreader & IBM Plex Mono.",
+    "MIT licensed. The note format is a clean-room reimplementation of Agentation's; this project contains no Agentation source. Set in Fraunces, Newsreader & IBM Plex Mono.",
 } as const;
 
 export const codeBlock = {

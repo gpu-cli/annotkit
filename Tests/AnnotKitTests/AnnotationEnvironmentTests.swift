@@ -10,7 +10,7 @@ import XCTest
 final class AnnotationEnvironmentTests: XCTestCase {
     func testAnEmptyEnvironmentIsTheOldDefaults() {
         let environment = AnnotationEnvironment([:])
-        XCTAssertEqual(environment.notesPath, "AGENTATION_NOTES.md")
+        XCTAssertEqual(environment.notesPath, "ANNOTKIT_NOTES.md")
         XCTAssertNil(environment.storePath, "the JSON store is opt-in — no second file appears unasked")
         XCTAssertNil(environment.eventsPath, "and so is the event stream")
         XCTAssertNil(environment.route)
@@ -35,7 +35,7 @@ final class AnnotationEnvironmentTests: XCTestCase {
     func testAnnotkitNotesNamesTheJSONStoreTheMCPServerReads() {
         let environment = AnnotationEnvironment(["ANNOTKIT_NOTES": "/w/ada/notes.json"])
         XCTAssertEqual(environment.storePath, "/w/ada/notes.json")
-        XCTAssertEqual(environment.notesPath, "AGENTATION_NOTES.md", "and it does NOT move the markdown")
+        XCTAssertEqual(environment.notesPath, "ANNOTKIT_NOTES.md", "and it does NOT move the markdown")
     }
 
     func testAnEmptyValueMeansUnsetRatherThanAPathCalledEmptyString() {
@@ -102,7 +102,7 @@ final class AnnotationEnvironmentTests: XCTestCase {
     func testTheDefaultInstallWritesOnlyTheMarkdownSnapshot() {
         let sink = Annotation.sink(for: AnnotationEnvironment([:]))
         let notes = try? XCTUnwrap(sink as? NotesFileSink)
-        XCTAssertEqual(notes?.path, "AGENTATION_NOTES.md")
+        XCTAssertEqual(notes?.path, "ANNOTKIT_NOTES.md")
         XCTAssertNil(sink as? MultiSink, "no fan-out until the environment asks for one")
     }
 

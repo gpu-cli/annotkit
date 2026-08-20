@@ -6,7 +6,7 @@ import SwiftUI
 // A tiny host app for trying AnnotKit by hand — and for recording demos. Run
 // it (`swift run AnnotKitDemo`), use the "Annotate" toolbar (bottom-right),
 // click any control below, type a note, and Save. Notes are written to
-// AGENTATION_NOTES.md in the current working directory.
+// ANNOTKIT_NOTES.md in the current working directory.
 //
 // The screen is a small, realistic settings page so both gestures demo well:
 // click a control (deepest actionable wins) or drag a frame around one of the
@@ -52,7 +52,7 @@ struct DemoView: View {
                 Text("Acme Settings")
                     .font(.largeTitle).bold()
                     .accessibilityIdentifier("Settings.Title")
-                Text("Click 'Annotate' (bottom-right), then click a control — or drag a frame around a card — type a note, and Save. Notes land in AGENTATION_NOTES.md in your working directory.")
+                Text("Click 'Annotate' (bottom-right), then click a control — or drag a frame around a card — type a note, and Save. Notes land in ANNOTKIT_NOTES.md in your working directory.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)

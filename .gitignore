@@ -8,8 +8,8 @@ DerivedData/
 Package.resolved
 
 # Demo/practice artifacts: AnnotKitDemo writes notes into the working directory
-AGENTATION_NOTES.md
-AGENTATION_NOTES.json
+ANNOTKIT_NOTES.md
+ANNOTKIT_NOTES.json
 
 # Beads / Dolt files (added by bd init)
 .dolt/

@@ -1081,7 +1081,7 @@ final class AnnotationSessionTests: XCTestCase {
         try session.export()
         var contents = try String(contentsOfFile: path, encoding: .utf8)
         XCTAssertEqual(contents.components(separatedBy: "## [id1]").count, 2, "note appears exactly once after double export")
-        XCTAssertEqual(contents.components(separatedBy: "# Agentation Notes").count, 2, "single header")
+        XCTAssertEqual(contents.components(separatedBy: "# AnnotKit Notes").count, 2, "single header")
 
         // Capturing more then re-exporting yields the FULL set, first note still once.
         capture(session, comment: "two")
@@ -1089,7 +1089,7 @@ final class AnnotationSessionTests: XCTestCase {
         contents = try String(contentsOfFile: path, encoding: .utf8)
         XCTAssertEqual(contents.components(separatedBy: "## [id1]").count, 2, "first note still appears once")
         XCTAssertTrue(contents.contains("## [id2]") && contents.contains("two"))
-        XCTAssertEqual(contents.components(separatedBy: "# Agentation Notes").count, 2, "still a single header")
+        XCTAssertEqual(contents.components(separatedBy: "# AnnotKit Notes").count, 2, "still a single header")
     }
 
     // MARK: - Recallable marks: the note remembers the rect it was made on

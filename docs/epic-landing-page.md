@@ -111,7 +111,7 @@ locked in L4, derived only from facts in `README.md`, `DECISIONS.md`, and
    AnnotKitDemo (click → composer → note) in a bare `<figure>` — the first
    visual on the page, sitting just under the hero fold — with a still figure
    (pin + composer detail) supporting the copy.
-5. **§03 Hand it to the agent** — `AGENTATION_NOTES.md` sample excerpt
+5. **§03 Hand it to the agent** — `ANNOTKIT_NOTES.md` sample excerpt
    (backed by a still capture of the written notes file), the sink story
    (file / clipboard / JSON), the `process-agentation-notes` skill mention.
 6. **§04 Ask over MCP** — optional bridge: `swift run annotkit-mcp`, the two
@@ -120,7 +120,7 @@ locked in L4, derived only from facts in `README.md`, `DECISIONS.md`, and
    cadence, privacy microcopy.
 8. **Footer** — wordmark + tagline + links (GitHub, Issues, License) + a
    colophon line (typefaces, license, clean-room note re: the
-   `AGENTATION_NOTES.md` format).
+   `ANNOTKIT_NOTES.md` format).
 
 Every section gets a numbered left-margin label (Specimen macrostructure
 signature): `§01 … §05`.
@@ -486,7 +486,7 @@ once the maintainer actions below are done.
    **Resolved 2026-08-19:** **a mix.** One muted screen-recording loop leads
    the how-it-works run (§02's lead figure, first thing below the hero fold);
    stills carry the sections further down (pin/composer detail in §02, the
-   written `AGENTATION_NOTES.md` in §03). Hero stays typography-only.
+   written `ANNOTKIT_NOTES.md` in §03). Hero stays typography-only.
 
 ---
 
@@ -519,7 +519,7 @@ the largest element the frame surrounds wins. One rule, both platforms — the
 selector anchors itself to the nearest `accessibilityIdentifier`, so it
 round-trips back to code."
 
-**§03 Hand it to the agent — lead:** "Notes land in `AGENTATION_NOTES.md` —
+**§03 Hand it to the agent — lead:** "Notes land in `ANNOTKIT_NOTES.md` —
 the format the `process-agentation-notes` skill consumes — or on the
 clipboard, or as JSON."
 
@@ -540,7 +540,7 @@ what's pending: `annotation_get_pending`, `annotation_resolve`."
 - Privacy line: `Your address goes to Resend and nowhere else. Every email
   carries an unsubscribe link.`
 
-**Footer colophon:** "MIT licensed. Reimplements the `AGENTATION_NOTES.md`
+**Footer colophon:** "MIT licensed. Reimplements the `ANNOTKIT_NOTES.md`
 format clean-room; contains no Agentation source. Set in Fraunces,
 Newsreader & IBM Plex Mono."
 

@@ -33,7 +33,7 @@ struct OverlayView: View {
     /// Copy the retained notes to the pasteboard as markdown (host wires
     /// ``ClipboardSink``). Non-clearing.
     let onCopy: () -> Void
-    /// Export the retained notes to `AGENTATION_NOTES.md` (host wires
+    /// Export the retained notes to `ANNOTKIT_NOTES.md` (host wires
     /// ``NotesFileSink``). Non-clearing and idempotent.
     let onExport: () -> Void
     /// Make the host panel key so the composer's text field accepts keystrokes.
@@ -851,7 +851,7 @@ private struct AnnotationCard<Footer: View>: View {
 ///
 /// RIGHT of the divider: what you then do with the notes, left to right — two
 /// DISTINCT persist actions (Copy to the clipboard as markdown, and Export to
-/// `AGENTATION_NOTES.md`), a destructive clear, and the X that leaves the mode.
+/// `ANNOTKIT_NOTES.md`), a destructive clear, and the X that leaves the mode.
 /// The X sits FAR RIGHT because that is where a "close this mode"
 /// control is looked for, and it is drawn as a plain action rather than a lit-up
 /// toggle — the expanded pill and the live catcher already say annotate mode is
@@ -920,7 +920,7 @@ struct ToolbarView: View {
                 IconButton(
                     icon: .download,
                     isDisabled: !hasNotes,
-                    tooltip: "Export to AGENTATION_NOTES.md",
+                    tooltip: "Export to ANNOTKIT_NOTES.md",
                     action: onExport
                 )
                 IconButton(icon: .trash, isDestructive: true, isDisabled: !hasNotes, tooltip: "Clear notes") {

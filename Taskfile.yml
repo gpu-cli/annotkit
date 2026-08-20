@@ -43,9 +43,9 @@ tasks:
       - cat .build/envprobe/notes.md
 
   mcp:
-    desc: Run the MCP server over a notes file — `task mcp -- path/to/AGENTATION_NOTES.json`
+    desc: Run the MCP server over a notes file — `task mcp -- path/to/ANNOTKIT_NOTES.json`
     cmds:
-      - swift run annotkit-mcp {{.CLI_ARGS | default "./AGENTATION_NOTES.json"}}
+      - swift run annotkit-mcp {{.CLI_ARGS | default "./ANNOTKIT_NOTES.json"}}
 
   clean:
     desc: Remove Swift build artifacts (.build)

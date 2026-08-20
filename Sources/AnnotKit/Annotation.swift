@@ -12,7 +12,7 @@ import AppKit
 ///
 /// SwiftUI iOS hosts can use `.installAnnotation()` instead. On macOS this mounts
 /// the overlay with the AX element source; on iOS, the UIKit view-tree source.
-/// Both default to the `AGENTATION_NOTES.md` file sink.
+/// Both default to the `ANNOTKIT_NOTES.md` file sink.
 @MainActor
 public enum Annotation {
     /// True once the overlay has actually mounted.
@@ -81,7 +81,7 @@ public enum Annotation {
     #endif
 
     /// Mount the toolbar with the platform-default source and the destinations the
-    /// environment asks for (`AGENTATION_NOTES.md` and nothing else, by default).
+    /// environment asks for (`ANNOTKIT_NOTES.md` and nothing else, by default).
     ///
     /// - Parameters:
     ///   - context: the host's WORLD-CONTEXT provider, called once per captured

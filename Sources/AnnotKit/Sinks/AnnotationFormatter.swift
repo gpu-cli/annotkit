@@ -1,6 +1,6 @@
 import Foundation
 
-/// Serializes notes to the `AGENTATION_NOTES.md` markdown format that the
+/// Serializes notes to the `ANNOTKIT_NOTES.md` markdown format that the
 /// `process-agentation-notes` skill consumes, and to JSON. Pure and
 /// platform-independent so it is unit-testable without any IO or UI.
 ///
@@ -14,9 +14,9 @@ import Foundation
 ///
 ///     <comment>
 public enum AnnotationFormatter {
-    /// A full `AGENTATION_NOTES.md` document: header plus every note block.
+    /// A full `ANNOTKIT_NOTES.md` document: header plus every note block.
     public static func markdown(_ notes: [AnnotationNote]) -> String {
-        var out = "# Agentation Notes\n"
+        var out = "# AnnotKit Notes\n"
         for note in notes {
             out += "\n---\n\n" + markdownBlock(note) + "\n"
         }

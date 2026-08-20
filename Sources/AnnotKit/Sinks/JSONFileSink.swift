@@ -14,7 +14,7 @@ import Foundation
 public struct JSONFileSink: AnnotationSink {
     public let path: String
 
-    public init(path: String = "AGENTATION_NOTES.json") {
+    public init(path: String = "ANNOTKIT_NOTES.json") {
         self.path = path
     }
 

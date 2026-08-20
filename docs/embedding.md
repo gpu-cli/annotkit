@@ -24,7 +24,7 @@ from the environment.
 |---|---|
 | `ANNOTKIT_ENABLE` | mount the overlay even in a release build |
 | `ANNOTKIT_DISABLE` | never mount, whatever the build (wins over `ANNOTKIT_ENABLE`) |
-| `ANNOTKIT_NOTES_MD` | markdown snapshot path (default `AGENTATION_NOTES.md`) |
+| `ANNOTKIT_NOTES_MD` | markdown snapshot path (default `ANNOTKIT_NOTES.md`) |
 | `ANNOTKIT_NOTES` | JSON store path — the file `annotkit-mcp` serves |
 | `ANNOTKIT_EVENTS` | append-only JSONL event stream |
 | `ANNOTKIT_ROUTE` | the note's `route` when the host supplies none |

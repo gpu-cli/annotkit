@@ -65,7 +65,7 @@ let package = Package(
         // Interactive macOS demo: a small settings screen of identified
         // controls with the annotation overlay mounted. `swift run
         // AnnotKitDemo`, click Annotate, click a control (or drag a frame
-        // around a stat card), type a note, Save. Writes AGENTATION_NOTES.md
+        // around a stat card), type a note, Save. Writes ANNOTKIT_NOTES.md
         // in the working directory. Also serves as the on-camera demo app.
         .executableTarget(
             name: "AnnotKitDemo",

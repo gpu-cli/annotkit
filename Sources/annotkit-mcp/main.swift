@@ -3,10 +3,10 @@ import Foundation
 
 // Thin stdio MCP server: read one JSON-RPC request per line, dispatch, and write
 // the response line. The note store path comes from the first argument or
-// ANNOTKIT_NOTES, defaulting to AGENTATION_NOTES.json (written by JSONFileSink).
+// ANNOTKIT_NOTES, defaulting to ANNOTKIT_NOTES.json (written by JSONFileSink).
 let path = CommandLine.arguments.dropFirst().first
     ?? ProcessInfo.processInfo.environment["ANNOTKIT_NOTES"]
-    ?? "AGENTATION_NOTES.json"
+    ?? "ANNOTKIT_NOTES.json"
 
 let dispatcher = MCPDispatcher(provider: FileNotesStore(path: path))
 

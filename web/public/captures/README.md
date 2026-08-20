@@ -14,7 +14,7 @@ is honest, a fake screenshot is not.
 |---|---|---|
 | `annotate-loop.webm` + `annotate-loop.png` | §02 lead — click a control, composer opens, note submitted | Muted, ≤ ~1.5 MB, one take, no cuts. The `.png` is the poster frame. |
 | `annotate-pin.avif` / `.webp` / `.png` | §02 — pin + composer detail, resolved selector visible | Crop tight; no window chrome in frame. |
-| `agentation-notes.avif` / `.webp` / `.png` | §03 — the `AGENTATION_NOTES.md` the run wrote | Plain editor, no chrome in the crop. |
+| `annotkit-notes.avif` / `.webp` / `.png` | §03 — the `ANNOTKIT_NOTES.md` the run wrote | Plain editor, no chrome in the crop. |
 
 ## Landing a capture
 

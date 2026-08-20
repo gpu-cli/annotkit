@@ -27,7 +27,8 @@ The package builds under Swift 6 strict concurrency and must stay warning-free
   `ElementSource` and `AnnotationSink` protocols.
 - No em dashes in prose.
 - Do not add any code derived from the PolyForm-licensed Agentation project. Only
-  the `AGENTATION_NOTES.md` file format is reused, reimplemented independently.
+  the shape of Agentation's `AGENTATION_NOTES.md` format is reused, reimplemented
+  independently and written to our own `ANNOTKIT_NOTES.md`.
 
 ## Scope
 

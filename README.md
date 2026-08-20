@@ -33,7 +33,7 @@ ContentView()
 ```
 
 `install()` defaults to the platform AX/view source and writes notes to
-`AGENTATION_NOTES.md`. Pass a different sink to override:
+`ANNOTKIT_NOTES.md`. Pass a different sink to override:
 
 ```swift
 Annotation.install(sink: ClipboardSink(format: .json))
@@ -65,7 +65,7 @@ Annotation.install(
   and the labels inside it do not. A frame drawn *inside* something binds to the
   tightest element enclosing it, and the drawn rect rides along on the note.
   Saves hunting for the one pixel that hit-tests to a composite component.
-- Notes are written in the `AGENTATION_NOTES.md` format that the
+- Notes are written in the `ANNOTKIT_NOTES.md` format that the
   `process-agentation-notes` skill consumes, or copied to the clipboard.
 
 ## Agent bridge (optional)
@@ -74,7 +74,7 @@ Write notes as JSON (`JSONFileSink`) and run the MCP server so an agent can quer
 pending annotations over the Model Context Protocol:
 
 ```sh
-swift run annotkit-mcp path/to/AGENTATION_NOTES.json
+swift run annotkit-mcp path/to/ANNOTKIT_NOTES.json
 ```
 
 Tools: `annotation_get_pending`, `annotation_resolve`.
@@ -119,5 +119,6 @@ Swift 6 (strict concurrency), macOS 15+, iOS 17+.
 
 ## License
 
-MIT. See `LICENSE`. Reuses the `AGENTATION_NOTES.md` file format (reimplemented
-clean-room); contains no Agentation source.
+MIT. See `LICENSE`. The note format is a clean-room reimplementation of
+Agentation's `AGENTATION_NOTES.md`, written to `ANNOTKIT_NOTES.md`; this
+project contains no Agentation source.

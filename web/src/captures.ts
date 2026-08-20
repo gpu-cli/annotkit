@@ -70,8 +70,8 @@ export const annotatePin: Capture = {
 /** §03 support still — the notes file the run produced. */
 export const notesFile: Capture = {
   status: "pending",
-  caption: "The AGENTATION_NOTES.md the run above wrote.",
-  shot: "Still · AGENTATION_NOTES.md in an editor",
+  caption: "The ANNOTKIT_NOTES.md the run above wrote.",
+  shot: "Still · ANNOTKIT_NOTES.md in an editor",
   direction:
-    "Open the AGENTATION_NOTES.md written by the demo run and screenshot it. Plain editor, no window chrome in the crop.",
+    "Open the ANNOTKIT_NOTES.md written by the demo run and screenshot it. Plain editor, no window chrome in the crop.",
 };

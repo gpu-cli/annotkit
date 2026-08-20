@@ -1120,8 +1120,8 @@ final class OverlayProbeDelegate: NSObject, NSApplicationDelegate {
         try? session.export()
         let afterExport = (try? String(contentsOfFile: notesPath, encoding: .utf8)) ?? ""
         check1(session.pending.count == 2, "export does NOT clear (pending still 2)")
-        check1(afterExport.components(separatedBy: "## [").count - 1 == 2, "AGENTATION_NOTES.md holds exactly 2 note blocks after double export (no dupes)")
-        check1(afterExport.components(separatedBy: "# Agentation Notes").count == 2, "exported file has a single header")
+        check1(afterExport.components(separatedBy: "## [").count - 1 == 2, "ANNOTKIT_NOTES.md holds exactly 2 note blocks after double export (no dupes)")
+        check1(afterExport.components(separatedBy: "# AnnotKit Notes").count == 2, "exported file has a single header")
         check1(afterExport.contains("issue-1 note A") && afterExport.contains("issue-1 note B"), "exported file contains BOTH note comments")
 
         // Copy renders the full retained set and must not clear it.

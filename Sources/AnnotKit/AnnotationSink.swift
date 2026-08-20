@@ -9,7 +9,7 @@ public enum OutputFormat: Sendable, Hashable {
 
 /// Where captured notes go. Implementations land in F4:
 ///
-/// - `NotesFileSink` writes the `AGENTATION_NOTES.md` format that the
+/// - `NotesFileSink` writes the `ANNOTKIT_NOTES.md` format that the
 ///   `process-agentation-notes` skill already consumes (with the native
 ///   source-location adaptation), and
 /// - `ClipboardSink` copies markdown or JSON for a zero-config paste.
@@ -23,7 +23,7 @@ public protocol AnnotationSink: Sendable {
 }
 
 /// One captured annotation. This is the record the agent ultimately reads; the
-/// field names map onto the `AGENTATION_NOTES.md` format:
+/// field names map onto the `ANNOTKIT_NOTES.md` format:
 /// `id`, `pathname` (here ``route``), `element` (here ``selector``),
 /// `Element Path`, `Selected Text`, and the comment.
 public struct AnnotationNote: Sendable, Hashable, Identifiable, Codable {
