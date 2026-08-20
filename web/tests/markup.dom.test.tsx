@@ -3,6 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { App } from "../src/App";
 import { withCode } from "../src/markup";
 import { agentNotes, codeBlock, install, masthead, theme } from "../src/copy";
+import { site } from "../src/config";
 
 /**
  * The backtick convention and what it renders to.
@@ -125,7 +126,10 @@ describe("icons", () => {
     const nav = screen.getByRole("navigation", { name: /primary/i });
 
     expect(screen.getByRole("link", { name: masthead.links.updates })).toBeTruthy();
-    expect(nav.textContent).toBe(`${masthead.links.github}${masthead.links.updates}`);
+    // The GitHub label follows the repo's visibility flag; the icon must stay
+    // out of the text in either state.
+    const github = site.repoIsPublic ? masthead.links.github : masthead.links.githubUnavailable;
+    expect(nav.textContent).toBe(`${github}${masthead.links.updates}`);
   });
 });
 

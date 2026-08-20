@@ -2,28 +2,82 @@
 
 Site: <https://annotkit.gpu-cli.sh>
 
-Native in-app annotation for AI coding agents. Click a UI element in your own
-macOS or iOS app — or drag a frame around it — attach a note, and emit an
-agent-readable, code-locating annotation. The native analogue of the web
-Agentation tool.
+A Swift package for native in-app annotation, built for AI coding agents. Click
+a UI element in your own macOS or iOS app, or drag a frame around it, attach a
+note, and emit an agent-readable, code-locating annotation. The native analogue
+of the web Agentation tool.
 
-The gesture becomes a stable selector, an element path, a screenshot, and your
-comment, so an AI coding agent can locate the exact view instead of guessing
-from a verbal description.
+The gesture becomes a stable selector, an element path, the element's role and
+text, and your comment, so an AI coding agent can locate the exact view instead
+of guessing from a verbal description.
 
-## Install
+**Requirements:** Swift 6.1 toolchain (Xcode 16.3 or later), macOS 15+ or
+iOS 17+. The package is Swift 6 language mode with strict concurrency. It has no
+dependencies.
 
-Add the package, then mount the toolbar (dev builds only).
+## Add it to an existing Swift app
+
+### 1. Add the package
+
+**Xcode:** File ▸ Add Package Dependencies…, paste
+`https://github.com/gpu-cli/annotkit`, choose the version rule **Up to Next
+Major** from `0.8.0`, and add the `AnnotKit` library to your app target. Leave
+`AnnotKitMCP` unchecked unless you want the [agent bridge](#agent-bridge-optional);
+the toolbar does not need it.
+
+**Package.swift:**
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/gpu-cli/annotkit", from: "0.8.0")
+],
+targets: [
+    .executableTarget(
+        name: "MyApp",
+        dependencies: [.product(name: "AnnotKit", package: "annotkit")]
+    )
+]
+```
+
+### 2. Mount the toolbar once the app has a window
+
+**AppKit (macOS):** in `applicationDidFinishLaunching`, after your main window
+is up:
 
 ```swift
 import AnnotKit
 
-#if DEBUG
-Annotation.install()   // floating toolbar; click a view, type a note
-#endif
+func applicationDidFinishLaunching(_ notification: Notification) {
+    // ... make and show your window ...
+    #if DEBUG
+    Annotation.install()   // floating toolbar; click a view, type a note
+    #endif
+}
 ```
 
-SwiftUI iOS hosts can attach it to a view instead:
+If several windows are open at launch, name the one to annotate instead of
+letting AnnotKit pick: `Annotation.install(on: window)`.
+
+**SwiftUI (macOS):** call it from the root view's `.onAppear` or from an
+`NSApplicationDelegateAdaptor`:
+
+```swift
+@main
+struct MyApp: App {
+    var body: some Scene {
+        WindowGroup {
+            ContentView()
+                .onAppear {
+                    #if DEBUG
+                    Annotation.install()
+                    #endif
+                }
+        }
+    }
+}
+```
+
+**SwiftUI (iOS):** attach it to the root view:
 
 ```swift
 ContentView()
@@ -32,12 +86,45 @@ ContentView()
     #endif
 ```
 
-`install()` defaults to the platform AX/view source and writes notes to
-`ANNOTKIT_NOTES.md`. Pass a different sink to override:
+UIKit iOS hosts call `Annotation.install()` from the scene delegate once the
+window is key.
+
+`install()` is a no-op in release builds unless the `ANNOTKIT_ENABLE`
+environment variable is set, and a no-op in debug builds when `ANNOTKIT_DISABLE`
+is set, so the `#if DEBUG` above is belt and braces: the toolbar never appears
+in a normal shipping build either way.
+
+### 3. Decide where the notes go
+
+By default notes are written to `ANNOTKIT_NOTES.md` in the process's **current
+working directory**. For an app launched from Xcode that is usually *not* your
+project folder. Either set the working directory in the scheme
+(Edit Scheme ▸ Run ▸ Options ▸ Working Directory), point the path at the repo
+through the scheme's environment variables (`ANNOTKIT_NOTES_MD=/path/to/repo/ANNOTKIT_NOTES.md`),
+or pass a sink with an explicit path:
+
+```swift
+Annotation.install(sink: NotesFileSink(path: "/path/to/repo/ANNOTKIT_NOTES.md"))
+```
+
+Other sinks: `ClipboardSink(format: .markdown | .json)` copies instead of writing,
+`JSONFileSink` writes the JSON store the MCP bridge reads, and `MultiSink` fans
+out to several.
 
 ```swift
 Annotation.install(sink: ClipboardSink(format: .json))
 ```
+
+### 4. Seed identifiers where it matters
+
+Selectors anchor to the nearest `accessibilityIdentifier`
+(`#Settings.Models >> @Save`). Views with no identifier anywhere above them
+still get a resolvable selector, but it is built from roles and indices and is
+fragile across layout changes. Put `.accessibilityIdentifier("Settings.Models")`
+on the components you expect to annotate and the notes will point an agent
+straight at that code.
+
+### Optional: world context
 
 Register a **world-context provider** and every captured note snapshots it, so an
 agent can put back the world the note was made in instead of guessing:
@@ -47,6 +134,13 @@ Annotation.install(
     context: { ["persona": currentPersona, "appearance": appearanceName] }
 )
 ```
+
+### Then use it
+
+Press **Annotate** on the floating pill, click a control (or switch to the frame
+tool and drag around a card), type a note, and save. Export writes every pending
+note through the sink. Run `swift run AnnotKitDemo` in this repo to try the whole
+loop in a sample app first.
 
 ## How it works
 
@@ -66,7 +160,18 @@ Annotation.install(
   tightest element enclosing it, and the drawn rect rides along on the note.
   Saves hunting for the one pixel that hit-tests to a composite component.
 - Notes are written in the `ANNOTKIT_NOTES.md` format that the
-  `process-agentation-notes` skill consumes, or copied to the clipboard.
+  `process-agentation-notes` skill consumes, or copied to the clipboard. The
+  file is rewritten with the full set of notes on every export, so it never
+  holds duplicates or stale entries. A screenshot of the element is captured
+  in memory on request (`AnnotationSession.screenshotSelected()`) but is not
+  part of the exported note; the markdown and JSON carry only pixel
+  dimensions.
+- **Platform coverage is uneven.** The selector engine, target rules, session
+  and sinks are shared and unit-tested on both platforms, and CI cross-compiles
+  for the iOS simulator. The live macOS path is additionally exercised by
+  on-device probes and an end-to-end test; the iOS adapter's live behaviour is
+  covered by unit tests over the pure rules only. See `PARITY.md` for the
+  per-capability matrix.
 
 ## Agent bridge (optional)
 
@@ -115,7 +220,8 @@ swift run AnnotKitDemo      # interactive demo app (overlay mounted; good for re
 swift run AnnotKitEnvProbe  # one env-configured embedding host, driven in code
 ```
 
-Swift 6 (strict concurrency), macOS 15+, iOS 17+.
+Swift 6 (strict concurrency), macOS 15+, iOS 17+. Cross-compile for the iOS
+simulator with the command in `CONTRIBUTING.md`.
 
 ## License
 

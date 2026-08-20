@@ -20,11 +20,11 @@
 export const meta = {
   title: "AnnotKit: native annotation for AI coding agents",
   description:
-    "Click a view in your own macOS or iOS app, type a note, and hand your coding agent a selector it can trace back to code. MIT, Swift 6, pre-1.0.",
+    "A Swift package for macOS and iOS apps. Click a view in your own dev build, type a note, and hand your coding agent a selector it can trace back to code. MIT, Swift 6, pre-1.0.",
 } as const;
 
 export const masthead = {
-  dateline: "Native annotation for AI coding agents",
+  dateline: "A Swift package: native annotation for AI coding agents",
   facts: ["macOS 15", "iOS 17", "Swift 6", "MIT"],
   wordmark: "AnnotKit",
   /**
@@ -43,7 +43,7 @@ export const masthead = {
 export const hero = {
   display: "Point at the view. Hand the agent the map.",
   standfirst:
-    "AnnotKit mounts a floating toolbar in your dev build. Click a control, or draw a frame around a whole card, then type a note. It writes an agent-readable annotation: a stable selector, an element path, a screenshot, and your words. Your coding agent stops guessing.",
+    "AnnotKit is a Swift package that mounts a floating toolbar in the dev build of your macOS or iOS app. Click a control, or draw a frame around a whole card, then type a note. It writes an agent-readable annotation: a stable selector, an element path, the element’s role and text, and your words. Your coding agent stops guessing.",
   ctaPrimary: "Read the README",
   ctaSecondary: "Get release notes",
 } as const;
@@ -51,7 +51,7 @@ export const hero = {
 export const install = {
   number: "§01",
   title: "Install",
-  lead: "Add the package. Mount the toolbar. Two lines, dev builds only.",
+  lead: "Add the Swift package. Mount the toolbar. Two lines, dev builds only.",
   appKit: {
     caption: "AppKit / SwiftUI on macOS",
     code: `import AnnotKit
@@ -68,7 +68,7 @@ Annotation.install()   // floating toolbar; click a view, type a note
     #endif`,
   },
   sinkNote:
-    "`install()` defaults to the platform accessibility source and writes notes to `ANNOTKIT_NOTES.md`. Pass a different sink to override:",
+    "`install()` reads the accessibility tree on macOS and walks the view hierarchy on iOS, and writes notes to `ANNOTKIT_NOTES.md` in the working directory. Pass a different sink to override:",
   sink: {
     caption: "Override the sink",
     code: `Annotation.install(sink: ClipboardSink(format: .json))`,
@@ -99,12 +99,18 @@ export const agentNotes = {
   number: "§03",
   title: "Hand it to the agent",
   lead: "Notes land in `ANNOTKIT_NOTES.md`, one markdown block per note, headed by the selector that located it. They can go to the clipboard instead, or out as JSON.",
+  /**
+   * Verbatim `AnnotationFormatter` output for a SEEDED button. Seeded on
+   * purpose: an unseeded target adds a 150-character `**Unseeded**` hint line,
+   * and the plate scrolls rather than wraps, so that one line would push the
+   * whole sample off the page.
+   */
   sample: {
     caption: "The block `AnnotationFormatter` writes, one per note",
-    code: `## [n-3f9c] /settings - #Settings.Profile >> @Save
+    code: `## [3f9c1a] Settings - #Settings.Profile.Save
 **Timestamp**: 2026-08-19T09:14:02Z
-**Element Path**: Window > Settings > Profile > Save
-**Component**: #Settings.Profile
+**Element Path**: AXWindow[0] > #Settings.Profile > #Settings.Profile.Save
+**Component**: #Settings.Profile.Save
 **Element**: AXButton "Save"
 
 This button should stay disabled until the name field
@@ -113,7 +119,7 @@ is non-empty. Right now it saves an empty profile.`,
   sinks: [
     {
       term: "`NotesFileSink`",
-      body: "Appends to `ANNOTKIT_NOTES.md` in the working directory. The default.",
+      body: "Rewrites `ANNOTKIT_NOTES.md` with the full set of notes on every save. The default.",
     },
     {
       term: "`ClipboardSink`",
