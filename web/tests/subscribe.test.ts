@@ -141,7 +141,6 @@ describe("Resend", () => {
       email: "dev@example.com",
       unsubscribed: false,
       segments: [{ id: SEGMENT }],
-      properties: { source: "landing-page" },
     });
     expect(sent).not.toHaveProperty("audience_id");
   });

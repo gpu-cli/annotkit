@@ -117,7 +117,6 @@ async function subscribeToResend(email: string, env: Env): Promise<Response> {
         email,
         unsubscribed: false,
         segments: [{ id: env.RESEND_SEGMENT_ID }],
-        properties: { source: "landing-page" },
       }),
     });
   } catch (error) {
