@@ -43,22 +43,45 @@ export const masthead = {
 export const hero = {
   display: "Point at the view. Hand the agent the map.",
   standfirst:
-    "AnnotKit is a Swift package that mounts a floating toolbar in the dev build of your macOS or iOS app. Click a control, or draw a frame around a whole card, then type a note. It writes an agent-readable annotation: a stable selector, an element path, the element’s role and text, and your words. Your coding agent stops guessing.",
-  ctaPrimary: "Read the README",
-  ctaSecondary: "Get release notes",
+    "AnnotKit mounts a floating toolbar in your macOS or iOS dev build. Click a control, or draw a frame around a card, then type a note. The note carries a selector that locates that control in code. Your coding agent stops guessing.",
+  ctaPrimary: "Install it",
+  ctaSecondary: "Read the README",
 } as const;
 
 export const install = {
   number: "§01",
   title: "Install",
-  lead: "Add the package, mount the toolbar in your dev build. The README walks through AppKit, SwiftUI and iOS.",
+  lead: "Add the package, then mount the toolbar once your dev build has a window.",
+  /**
+   * Both halves of the dependency, not just the first. The `.package` line
+   * alone is what people copy and it does not build on its own: the product
+   * has to reach the app target too, and that is the line that gets forgotten.
+   *
+   * The call is broken across its arguments to cut what the plate has to
+   * scroll on a phone: 121 px at 375 rather than 214, and eight of its eleven
+   * lines read whole there, where the old single line read as far as
+   * `gpu-cli` and stopped. The URL cannot be made to fit at a phone width in
+   * any formatting: the quoted string alone measures 289 px at --text-sm and
+   * the 320 px column leaves 246 for it. So the plate keeps its scroll area
+   * for that line, which is what the scroll area is for.
+   */
   package: {
-    caption: "Add the dependency, or File ▸ Add Package Dependencies… in Xcode",
+    caption: "Package.swift",
     language: "swift",
-    code: `.package(url: "https://github.com/gpu-cli/annotkit", from: "0.8.0")`,
+    code: `dependencies: [
+    .package(
+        url: "https://github.com/gpu-cli/annotkit",
+        from: "0.8.0"
+    )
+],
+targets: [
+    .executableTarget(name: "MyApp", dependencies: [
+        .product(name: "AnnotKit", package: "annotkit")
+    ])
+]`,
   },
   mount: {
-    caption: "Mount it once the app has a window",
+    caption: "Mount the toolbar",
     language: "swift",
     code: `import AnnotKit
 
@@ -66,15 +89,22 @@ export const install = {
 Annotation.install()   // floating toolbar; click a view, type a note
 #endif`,
   },
-  note: "`install()` mounts the floating toolbar and writes notes to `ANNOTKIT_NOTES.md` in the working directory. SwiftUI on iOS attaches it with `.installAnnotation()` instead.",
-  more: "Where to call it from AppKit, SwiftUI and UIKit, how to point the notes file at your repo, other sinks, and world context: all in the README.",
+  /** Beside the first plate: the route most app projects actually take. */
+  xcode:
+    "An Xcode project does it through File ▸ Add Package Dependencies… instead: paste the URL there, then add the AnnotKit library to your app target.",
+  /**
+   * Beside the second. It opens on what the snippet does NOT say rather than
+   * restating it, and the working-directory line is the one thing a reader
+   * loses a morning to if the page leaves it out (README §3).
+   */
+  note: "SwiftUI on iOS attaches the toolbar to the root view with `.installAnnotation()` instead. Either way the notes land in `ANNOTKIT_NOTES.md` in the working directory, which is usually not your repo when Xcode launches the app. Set that in the scheme, or hand `install()` a sink with a path of its own.",
   readme: "Setup guide in the README",
 } as const;
 
 export const annotate = {
   number: "§02",
   title: "Annotate",
-  lead: "A click means this exact spot: AnnotKit descends to the deepest actionable control. A drawn frame means this whole thing: the largest element the frame surrounds wins. One rule, both platforms. The selector anchors itself to the nearest `accessibilityIdentifier`, so it round-trips back to code.",
+  lead: "One rule, both platforms: what you point at is what the note binds to.",
   points: [
     {
       term: "Click",
@@ -86,7 +116,7 @@ export const annotate = {
     },
     {
       term: "Anchor",
-      body: "An unidentified target is anchored to its nearest seeded identifier (`#Settings.Profile >> @Save`), so the selector points an agent at the right component’s code.",
+      body: "An unidentified target is anchored to the nearest `accessibilityIdentifier` above it (`#Settings.Profile >> @Save`), so the selector points an agent at the right component’s code.",
     },
   ],
 } as const;
@@ -102,7 +132,7 @@ export const agentNotes = {
    * whole sample off the page.
    */
   sample: {
-    caption: "The block `AnnotationFormatter` writes, one per note",
+    caption: "`AnnotationFormatter` output",
     language: "markdown",
     code: `## [3f9c1a] Settings - #Settings.Profile.Save
 **Timestamp**: 2026-08-19T09:14:02Z
@@ -147,7 +177,7 @@ export const mcpBridge = {
 export const signup = {
   number: "§05",
   title: "One email when it’s worth reading.",
-  lead: "The GPU CLI list: releases and design notes for AnnotKit, for the CLI that runs cloud GPUs from your terminal, and for whatever ships next. No digest, no drip campaign.",
+  lead: "Releases and design notes for AnnotKit. No digest, no drip campaign.",
   label: "Email address",
   placeholder: "you@example.com",
   submit: "Get release notes",

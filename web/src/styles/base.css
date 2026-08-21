@@ -776,26 +776,6 @@ pre {
   }
 }
 
-/* §01's narrow column carries a snippet that cannot wrap and cannot shrink:
- * `Annotation.install(sink: ClipboardSink(format: .json))` needs 447 px at
- * --text-sm, and a 5/12 share stops covering that above about 1400 px.
- *
- * The reason is counter-intuitive enough to write down: the shell's content
- * box gets NARROWER as the viewport widens past `--page-max`, because the max
- * width stops growing at 78 rem while `--page-gutter` keeps climbing to 5 rem
- * and eats the difference. So the plate fits at 1280 and overflows at 1600.
- *
- * Fixed by giving the track a floor rather than by re-tuning the ratio — the
- * constraint is a fixed width, so a fixed width is the honest way to state
- * it. The wide column still clears its own longest line (562 px) with room
- * to spare, and `minmax(0, …)` on that track keeps gate 34 safe if it ever
- * does not. Scoped to where the problem starts; below this the 7:5 fits. */
-@media (min-width: 85rem) {
-  .section--install .section__body--7-5 {
-    grid-template-columns: minmax(0, 7fr) minmax(29rem, 5fr);
-  }
-}
-
 .stack {
   display: grid;
   gap: var(--space-md);

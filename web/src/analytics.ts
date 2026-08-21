@@ -23,6 +23,7 @@ export type AnalyticsEvent =
   | { name: "landing_view" }
   | { name: "cta_github_clicked"; props: { placement: "masthead" | "hero" | "install" | "footer" } }
   | { name: "cta_updates_clicked"; props: { placement: "masthead" | "hero" } }
+  | { name: "cta_install_clicked"; props: { placement: "hero" } }
   | { name: "signup_submitted" }
   | { name: "signup_succeeded"; props: { status: "subscribed" | "already_subscribed" } }
   | { name: "signup_failed"; props: { kind: SignupFailureKind } };

@@ -36,9 +36,9 @@ describe("withCode", () => {
     const { container } = render(<p>{withCode(install.note)}</p>);
 
     expect([...container.querySelectorAll("code")].map((mark) => mark.textContent)).toEqual([
-      "install()",
-      "ANNOTKIT_NOTES.md",
       ".installAnnotation()",
+      "ANNOTKIT_NOTES.md",
+      "install()",
     ]);
   });
 

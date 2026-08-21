@@ -35,29 +35,34 @@ export function Hero() {
         <p className="hero__standfirst reveal" style={{ "--i": 1 } as React.CSSProperties}>
           {hero.standfirst}
         </p>
+        {/* The primary sends the reader one section down rather than off the
+          * site: §01 is the next thing on the page and it already ends with
+          * the README link. The repo-visibility branch moved with the README
+          * onto the secondary, which is where it was always aimed — an anchor
+          * into this same document has nothing to be unavailable about. */}
         <div className="hero__ctas reveal" style={{ "--i": 2 } as React.CSSProperties}>
+          <a
+            className="link link--lead"
+            href="#install"
+            onClick={() => track({ name: "cta_install_clicked", props: { placement: "hero" } })}
+          >
+            {hero.ctaPrimary}
+            <Icon as={ArrowDown} />
+          </a>
           {site.repoIsPublic ? (
             <a
               className="link link--lead"
               href={site.repo}
               onClick={() => track({ name: "cta_github_clicked", props: { placement: "hero" } })}
             >
-              {hero.ctaPrimary}
+              {hero.ctaSecondary}
               <Icon as={ArrowUpRight} />
             </a>
           ) : (
             <span className="link link--lead" aria-disabled="true">
-              {hero.ctaPrimary}
+              {hero.ctaSecondary}
             </span>
           )}
-          <a
-            className="link link--lead"
-            href="#updates"
-            onClick={() => track({ name: "cta_updates_clicked", props: { placement: "hero" } })}
-          >
-            {hero.ctaSecondary}
-            <Icon as={ArrowDown} />
-          </a>
         </div>
         </div>
         <div className="hero__figure reveal" style={{ "--i": 3 } as React.CSSProperties}>

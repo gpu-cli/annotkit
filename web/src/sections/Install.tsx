@@ -8,10 +8,14 @@ import { withCode } from "../markup";
 import { track } from "../analytics";
 
 /**
- * §01 — two snippets: the dependency line and the mount. Everything the
- * README covers beyond that (AppKit vs SwiftUI vs UIKit call sites, the
- * working-directory gotcha, sinks, world context) is one link away rather
- * than repeated here; the page sells the loop, the README installs it.
+ * §01 — two snippets, and one paragraph beside each: the Xcode route beside
+ * the dependency, the notes path beside the mount. The paragraph that used to
+ * sit here listing what else the README covers was a table of contents, not
+ * copy, and it pointed at the README a third time in four lines.
+ *
+ * Everything past these two moves (call sites per framework, sinks, seeded
+ * identifiers, world context) is one link away; the page sells the loop, the
+ * README installs it.
  */
 export function Install() {
   return (
@@ -28,8 +32,8 @@ export function Install() {
           <CodeBlock {...install.mount} />
         </div>
         <div className="stack">
+          <p>{withCode(install.xcode)}</p>
           <p>{withCode(install.note)}</p>
-          <p>{withCode(install.more)}</p>
           <a
             className="link link--lead"
             href={site.setup}

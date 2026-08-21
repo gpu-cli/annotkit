@@ -49,9 +49,12 @@ describe("the highlighter", () => {
     expect(colour(html, ".install\\(\\)   ")).toBe("var(--color-ink)");
     expect(html).toMatch(/color:var\(--color-muted\)">\/\/ floating/);
 
+    // The dependency snippet is both halves of the install now, so both are
+    // pinned: the URL on the package line and the product on the target line.
     const dep = render(hl, install.package);
     expect(colour(dep, '"https://github.com/gpu-cli/annotkit"')).toBe("var(--color-syntax-string)");
-    expect(colour(dep, "\\.package\\(url: ")).toBe("var(--color-ink)");
+    expect(colour(dep, '"AnnotKit"')).toBe("var(--color-syntax-string)");
+    expect(colour(dep, "        \\.product\\(name: ")).toBe("var(--color-ink)");
   });
 
   it("sets the note block's heading and labels as labels", () => {
