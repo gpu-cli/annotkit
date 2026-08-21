@@ -16,11 +16,7 @@ export function AgentNotes() {
     >
       <div className="section__body section__body--7-5">
         <div className="stack stack--lg">
-          <CodeBlock
-            caption={agentNotes.sample.caption}
-            code={agentNotes.sample.code}
-            language="markdown"
-          />
+          <CodeBlock {...agentNotes.sample} />
           <Figure capture={notesFile} />
         </div>
         <TermList terms={agentNotes.sinks} />

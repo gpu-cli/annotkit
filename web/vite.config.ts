@@ -2,6 +2,7 @@ import { defineConfig, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 
 import { DEFAULT_SITE_URL } from "./shared/site";
+import { highlight } from "./plugins/highlight";
 
 /**
  * Substitutes `%SITE_URL%` in index.html so the canonical and OpenGraph URLs
@@ -20,7 +21,7 @@ function siteUrl(url: string): Plugin {
 export default defineConfig(({ mode }) => {
   const url = process.env.VITE_SITE_URL ?? DEFAULT_SITE_URL;
   return {
-    plugins: [react(), siteUrl(url)],
+    plugins: [react(), siteUrl(url), highlight()],
     build: {
       target: "es2022",
       cssCodeSplit: false,

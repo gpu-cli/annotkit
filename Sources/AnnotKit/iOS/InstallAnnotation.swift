@@ -5,9 +5,9 @@ import SwiftUI
 /// tree. Dev-gated like ``Annotation/install(source:sink:)``.
 ///
 ///     ContentView()
-///         #if DEBUG
+///     #if DEBUG
 ///         .installAnnotation()
-///         #endif
+///     #endif
 public extension View {
     func installAnnotation(sink: AnnotationSink? = nil) -> some View {
         onAppear { Annotation.install(sink: sink) }

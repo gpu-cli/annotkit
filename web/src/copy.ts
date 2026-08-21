@@ -54,23 +54,31 @@ export const install = {
   lead: "Add the Swift package. Mount the toolbar. Two lines, dev builds only.",
   appKit: {
     caption: "AppKit / SwiftUI on macOS",
+    language: "swift",
     code: `import AnnotKit
 
 #if DEBUG
 Annotation.install()   // floating toolbar; click a view, type a note
 #endif`,
   },
+  /**
+   * `#if` sits flush with the expression and the modifier is indented inside
+   * it. That is the form in SE-0308, the proposal that made postfix `#if`
+   * legal, and what Xcode's indenter produces.
+   */
   swiftUI: {
     caption: "SwiftUI on iOS: attach it to a view",
+    language: "swift",
     code: `ContentView()
-    #if DEBUG
+#if DEBUG
     .installAnnotation()
-    #endif`,
+#endif`,
   },
   sinkNote:
     "`install()` reads the accessibility tree on macOS and walks the view hierarchy on iOS, and writes notes to `ANNOTKIT_NOTES.md` in the working directory. Pass a different sink to override:",
   sink: {
     caption: "Override the sink",
+    language: "swift",
     code: `Annotation.install(sink: ClipboardSink(format: .json))`,
   },
 } as const;
@@ -107,6 +115,7 @@ export const agentNotes = {
    */
   sample: {
     caption: "The block `AnnotationFormatter` writes, one per note",
+    language: "markdown",
     code: `## [3f9c1a] Settings - #Settings.Profile.Save
 **Timestamp**: 2026-08-19T09:14:02Z
 **Element Path**: AXWindow[0] > #Settings.Profile > #Settings.Profile.Save
@@ -138,6 +147,7 @@ export const mcpBridge = {
   lead: "Run the optional bridge and let the agent ask what’s pending.",
   command: {
     caption: "Run it beside your app",
+    language: "sh",
     code: `swift run annotkit-mcp path/to/ANNOTKIT_NOTES.json`,
   },
   tools: [
@@ -233,3 +243,17 @@ export const codeBlock = {
 } as const;
 
 export const skipLink = "Skip to content";
+
+/**
+ * Every code sample on the page, for the build-time highlighter
+ * (`plugins/highlight.ts`). A snippet missing from this list still renders,
+ * as plain text; the DOM test checks that none is.
+ */
+export type Snippet = { readonly caption: string; readonly language: string; readonly code: string };
+export const snippets: readonly Snippet[] = [
+  install.appKit,
+  install.swiftUI,
+  install.sink,
+  agentNotes.sample,
+  mcpBridge.command,
+];

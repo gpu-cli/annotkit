@@ -9,3 +9,9 @@ interface ImportMetaEnv {
 interface ImportMeta {
   readonly env: ImportMetaEnv;
 }
+
+declare module "virtual:highlighted" {
+  /** `plugins/highlight.ts`: snippet key → Shiki inline HTML. */
+  const highlighted: Record<string, string>;
+  export default highlighted;
+}

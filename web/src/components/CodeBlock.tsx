@@ -4,7 +4,8 @@ import { Check, Copy, X } from "lucide-react";
 import { Icon } from "./Icon";
 import { codeBlock } from "../copy";
 import { withCode } from "../markup";
-import { tokenize } from "../highlight";
+import highlighted from "virtual:highlighted";
+import { snippetKey } from "../../plugins/highlight";
 
 /**
  * A code sample in a typographic frame — a caption row above a hairline
@@ -36,12 +37,13 @@ type CopyState = "idle" | "copying" | "copied" | "failed";
 export function CodeBlock({
   caption,
   code,
-  language = "swift",
+  language,
 }: {
   caption: string;
   code: string;
-  language?: string;
+  language: string;
 }) {
+  const html = highlighted[snippetKey(language, code)];
   const [state, setState] = useState<CopyState>("idle");
   const timer = useRef<number | undefined>(undefined);
 
@@ -95,19 +97,15 @@ export function CodeBlock({
       <ScrollArea.Root className="code__plate" type="auto">
         <ScrollArea.Viewport className="code__viewport" tabIndex={0}>
           <pre className="code__pre">
-            <code data-language={language}>
-              {/* Paint only: plain tokens stay bare text, so the string the
-               * tree exposes is exactly the one the copy button writes. */}
-              {tokenize(code, language).map((token, i) =>
-                token.kind === "plain" ? (
-                  token.text
-                ) : (
-                  <span key={i} className={`tok tok--${token.kind}`}>
-                    {token.text}
-                  </span>
-                ),
-              )}
-            </code>
+            {/* Highlighted at build time (plugins/highlight.ts). The markup is
+             * Shiki's, generated from this same `code` string, so what the
+             * copy button writes and what the page shows cannot diverge. A
+             * snippet the build did not see renders as plain text. */}
+            {html ? (
+              <code data-language={language} dangerouslySetInnerHTML={{ __html: html }} />
+            ) : (
+              <code data-language={language}>{code}</code>
+            )}
           </pre>
         </ScrollArea.Viewport>
         <ScrollArea.Scrollbar className="code__scrollbar" orientation="horizontal">

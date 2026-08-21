@@ -14,11 +14,7 @@ export function McpBridge() {
       modifier="section--mcp"
     >
       <div className="section__body section__body--7-5">
-        <CodeBlock
-          caption={mcpBridge.command.caption}
-          code={mcpBridge.command.code}
-          language="sh"
-        />
+        <CodeBlock {...mcpBridge.command} />
         <TermList terms={mcpBridge.tools} />
       </div>
     </Section>

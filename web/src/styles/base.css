@@ -825,30 +825,14 @@ pre {
   font-size: inherit;
 }
 
-/* Syntax. Keywords take the accent the plate's border already wears, comments
- * step back to the muted ink, and strings and types get the two inks added
- * for them. Fields in the note block are bold ink rather than a colour: they
- * are labels, and the eye should read across them to the value. */
-.tok--keyword,
-.tok--heading {
-  color: var(--color-accent);
-}
-
-.tok--heading,
-.tok--field {
-  font-weight: var(--weight-body-strong);
-}
-
-.tok--comment {
-  color: var(--color-muted);
-}
-
-.tok--string {
-  color: var(--color-syntax-string);
-}
-
-.tok--type {
-  color: var(--color-syntax-type);
+/* Syntax. Shiki paints each token at build time with the page's own theme
+ * (plugins/theme.ts), whose colours are the palette's CSS variables, so the
+ * plates follow the theme with no colours of their own. Bold comes through as
+ * an inline font style, which is what lets the note block's heading and
+ * `**Field**` labels read as labels. */
+.code__pre code > span {
+  /* Shiki emits `<br>` between lines in inline mode; nothing to style. */
+  white-space: pre;
 }
 
 /* Horizontal only — code overflows sideways, never down. `type="auto"` means

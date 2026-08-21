@@ -15,12 +15,12 @@ export function Install() {
     >
       <div className="section__body section__body--7-5">
         <div className="stack stack--lg">
-          <CodeBlock caption={install.appKit.caption} code={install.appKit.code} />
-          <CodeBlock caption={install.swiftUI.caption} code={install.swiftUI.code} />
+          <CodeBlock {...install.appKit} />
+          <CodeBlock {...install.swiftUI} />
         </div>
         <div className="stack">
           <p>{withCode(install.sinkNote)}</p>
-          <CodeBlock caption={install.sink.caption} code={install.sink.code} />
+          <CodeBlock {...install.sink} />
         </div>
       </div>
     </Section>

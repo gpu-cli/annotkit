@@ -81,9 +81,9 @@ struct MyApp: App {
 
 ```swift
 ContentView()
-    #if DEBUG
+#if DEBUG
     .installAnnotation()
-    #endif
+#endif
 ```
 
 UIKit iOS hosts call `Annotation.install()` from the scene delegate once the
