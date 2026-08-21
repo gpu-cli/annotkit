@@ -635,8 +635,22 @@ pre {
 .hero__display {
   font-size: var(--text-display-s);
   line-height: var(--lh-display);
-  max-width: 18ch;
+  /* 22ch, not 18: `ch` is the width of Fraunces's zero, and its bold
+   * lowercase runs wider than that. 18ch broke "Point at the view." before
+   * the full stop; 22ch holds the sentence on one line. */
+  max-width: 22ch;
   margin-block-end: var(--space-lg);
+}
+
+/* Two sentences, two lines. `text-wrap: balance` could not be relied on:
+ * "…view. Hand / the agent…" and "…view. / Hand the agent…" are equally
+ * balanced, and the browser kept the first. So the sentences are spans that
+ * do not wrap inside themselves. Only from the span breakpoint: at 320 px a
+ * 23-character no-wrap line at the display size would run off the page. */
+@media (min-width: 60rem) {
+  .hero__sentence {
+    white-space: nowrap;
+  }
 }
 
 .hero__standfirst {
@@ -666,8 +680,10 @@ pre {
 
 @media (min-width: 60rem) {
   .hero__grid {
-    /* An even split: the copy lost a display step, the loop gains the width. */
-    grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* A fraction past even, towards the copy: the display's first sentence
+     * wants one line, and 55 % is where it gets it without the loop shrinking
+     * back to where it was. */
+    grid-template-columns: minmax(0, 11fr) minmax(0, 9fr);
     gap: var(--space-2xl);
   }
 }

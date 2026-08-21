@@ -1,3 +1,4 @@
+import { Fragment } from "react";
 import { ArrowDown, ArrowUpRight } from "lucide-react";
 import { Icon } from "../components/Icon";
 import { hero } from "../copy";
@@ -19,7 +20,17 @@ export function Hero() {
       <div className="u-shell hero__grid">
         <div className="hero__copy">
         <h1 className="hero__display reveal" id="hero-display" style={{ "--i": 0 } as React.CSSProperties}>
-          {hero.display}
+          {/* One sentence per line from the span breakpoint up. Each sentence
+           * is a no-wrap span, so the only place the line can break is
+           * between them; the text content is the one string, unchanged. */}
+          {hero.display.split(/(?<=\.) /).map((sentence, i) => (
+            <Fragment key={sentence}>
+              {/* The space sits BETWEEN the spans: inside a no-wrap span it
+               * would be a space the line cannot break at. */}
+              {i > 0 ? " " : null}
+              <span className="hero__sentence">{sentence}</span>
+            </Fragment>
+          ))}
         </h1>
         <p className="hero__standfirst reveal" style={{ "--i": 1 } as React.CSSProperties}>
           {hero.standfirst}
