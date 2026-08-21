@@ -4,6 +4,7 @@ import { Check, Copy, X } from "lucide-react";
 import { Icon } from "./Icon";
 import { codeBlock } from "../copy";
 import { withCode } from "../markup";
+import { tokenize } from "../highlight";
 
 /**
  * A code sample in a typographic frame — a caption row above a hairline
@@ -94,7 +95,19 @@ export function CodeBlock({
       <ScrollArea.Root className="code__plate" type="auto">
         <ScrollArea.Viewport className="code__viewport" tabIndex={0}>
           <pre className="code__pre">
-            <code data-language={language}>{code}</code>
+            <code data-language={language}>
+              {/* Paint only: plain tokens stay bare text, so the string the
+               * tree exposes is exactly the one the copy button writes. */}
+              {tokenize(code, language).map((token, i) =>
+                token.kind === "plain" ? (
+                  token.text
+                ) : (
+                  <span key={i} className={`tok tok--${token.kind}`}>
+                    {token.text}
+                  </span>
+                ),
+              )}
+            </code>
           </pre>
         </ScrollArea.Viewport>
         <ScrollArea.Scrollbar className="code__scrollbar" orientation="horizontal">

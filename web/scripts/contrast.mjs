@@ -117,6 +117,8 @@ const PAIRS = [
   ["neutral", "paper", 3.0, "hairline labels (large/decorative only)"],
   ["accent", "paper", 4.5, "section numbers, link underlines, error-free marks"],
   ["accent", "paper-2", 4.5, "accent inside the code block"],
+  ["syntax-string", "paper-2", 4.5, "string literals in the code block"],
+  ["syntax-type", "paper-2", 4.5, "type names in the code block"],
   ["accent-ink", "accent", 4.5, "the submit, and the sub-footer band"],
   ["focus", "paper", 3.0, "focus ring against the page"],
   ["focus", "paper-2", 3.0, "focus ring against a tinted field"],

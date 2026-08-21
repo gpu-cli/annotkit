@@ -825,6 +825,32 @@ pre {
   font-size: inherit;
 }
 
+/* Syntax. Keywords take the accent the plate's border already wears, comments
+ * step back to the muted ink, and strings and types get the two inks added
+ * for them. Fields in the note block are bold ink rather than a colour: they
+ * are labels, and the eye should read across them to the value. */
+.tok--keyword,
+.tok--heading {
+  color: var(--color-accent);
+}
+
+.tok--heading,
+.tok--field {
+  font-weight: var(--weight-body-strong);
+}
+
+.tok--comment {
+  color: var(--color-muted);
+}
+
+.tok--string {
+  color: var(--color-syntax-string);
+}
+
+.tok--type {
+  color: var(--color-syntax-type);
+}
+
 /* Horizontal only — code overflows sideways, never down. `type="auto"` means
  * the bar exists only while there is something to scroll to. */
 .code__scrollbar {

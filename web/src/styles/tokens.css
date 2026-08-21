@@ -85,6 +85,13 @@
   --color-accent-ink: oklch(97.5% 0.008 78); /* text on an accent fill */
   --color-focus: oklch(45% 0.160 45);
   --color-error: oklch(47% 0.180 25);
+  /* Syntax inks for the code plates. Two, not a rainbow: the accent already
+   * carries keywords and the muted ink carries comments, so the only colours
+   * the grammar needs that the palette lacks are a string and a type. Both
+   * sit at the ink's weight, one cool and one green, and both clear 4.5:1 on
+   * paper-2 in each theme (see scripts/contrast.mjs). */
+  --color-syntax-string: oklch(42% 0.090 160);
+  --color-syntax-type: oklch(40% 0.100 250);
 
   /* GPU CLI's brand green, and the page's one borrowed colour. It exists so
    * the subfoot link hovers into the org's own ink rather than AnnotKit's,
@@ -209,6 +216,8 @@
   --color-accent-ink: oklch(19% 0.014 60); /* text on an accent fill */
   --color-focus: oklch(78% 0.130 55);
   --color-error: oklch(72% 0.150 25);
+  --color-syntax-string: oklch(80% 0.100 160);
+  --color-syntax-type: oklch(80% 0.085 240);
   --color-gpu: #19dc6a; /* the same brand value — see the light block */
 
   --tint-hairline: color-mix(in oklch, var(--color-ink) 14%, transparent);
