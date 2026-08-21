@@ -3,8 +3,10 @@ import { usePrefersReducedMotion } from "../hooks";
 import { withCode } from "../markup";
 
 /**
- * A capture in a bare frame — a hairline border and a caption, nothing else.
- * No drawn browser chrome, no drawn device frame (Hallmark gate 47).
+ * A capture in a bare frame — a hairline border, nothing else. No caption:
+ * the prose beside each figure says what it shows, and the alt text carries
+ * it for a screen reader. No drawn browser chrome, no drawn device frame
+ * (Hallmark gate 47).
  *
  * Until L4 records the real captures from `task demo`, a figure renders an
  * honest placeholder: an empty plate that names the shot it is waiting for.
@@ -53,9 +55,6 @@ export function Figure({ capture }: { capture: Capture }) {
           />
         )}
       </div>
-      {/* The build hash stays in the manifest, for whoever re-shoots; it is
-       * not printed. A caption is for the reader, and says what to look at. */}
-      <figcaption>{withCode(capture.caption)}</figcaption>
     </figure>
   );
 }

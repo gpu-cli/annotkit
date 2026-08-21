@@ -51,9 +51,14 @@ export const hero = {
 export const install = {
   number: "§01",
   title: "Install",
-  lead: "Add the Swift package. Mount the toolbar. Two lines, dev builds only.",
-  appKit: {
-    caption: "AppKit / SwiftUI on macOS",
+  lead: "Add the package, mount the toolbar in your dev build. The README walks through AppKit, SwiftUI and iOS.",
+  package: {
+    caption: "Add the dependency, or File ▸ Add Package Dependencies… in Xcode",
+    language: "swift",
+    code: `.package(url: "https://github.com/gpu-cli/annotkit", from: "0.8.0")`,
+  },
+  mount: {
+    caption: "Mount it once the app has a window",
     language: "swift",
     code: `import AnnotKit
 
@@ -61,26 +66,9 @@ export const install = {
 Annotation.install()   // floating toolbar; click a view, type a note
 #endif`,
   },
-  /**
-   * `#if` sits flush with the expression and the modifier is indented inside
-   * it. That is the form in SE-0308, the proposal that made postfix `#if`
-   * legal, and what Xcode's indenter produces.
-   */
-  swiftUI: {
-    caption: "SwiftUI on iOS: attach it to a view",
-    language: "swift",
-    code: `ContentView()
-#if DEBUG
-    .installAnnotation()
-#endif`,
-  },
-  sinkNote:
-    "`install()` reads the accessibility tree on macOS and walks the view hierarchy on iOS, and writes notes to `ANNOTKIT_NOTES.md` in the working directory. Pass a different sink to override:",
-  sink: {
-    caption: "Override the sink",
-    language: "swift",
-    code: `Annotation.install(sink: ClipboardSink(format: .json))`,
-  },
+  note: "`install()` mounts the floating toolbar and writes notes to `ANNOTKIT_NOTES.md` in the working directory. SwiftUI on iOS attaches it with `.installAnnotation()` instead.",
+  more: "Where to call it from AppKit, SwiftUI and UIKit, how to point the notes file at your repo, other sinks, and world context: all in the README.",
+  readme: "Setup guide in the README",
 } as const;
 
 export const annotate = {
@@ -251,9 +239,8 @@ export const skipLink = "Skip to content";
  */
 export type Snippet = { readonly caption: string; readonly language: string; readonly code: string };
 export const snippets: readonly Snippet[] = [
-  install.appKit,
-  install.swiftUI,
-  install.sink,
+  install.package,
+  install.mount,
   agentNotes.sample,
   mcpBridge.command,
 ];

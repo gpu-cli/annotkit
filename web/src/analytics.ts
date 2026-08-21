@@ -21,7 +21,7 @@ import { analytics as config } from "./config";
 /** The taxonomy is fixed. Adding an event means editing this union. */
 export type AnalyticsEvent =
   | { name: "landing_view" }
-  | { name: "cta_github_clicked"; props: { placement: "masthead" | "hero" | "footer" } }
+  | { name: "cta_github_clicked"; props: { placement: "masthead" | "hero" | "install" | "footer" } }
   | { name: "cta_updates_clicked"; props: { placement: "masthead" | "hero" } }
   | { name: "signup_submitted" }
   | { name: "signup_succeeded"; props: { status: "subscribed" | "already_subscribed" } }

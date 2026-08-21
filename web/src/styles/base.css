@@ -629,8 +629,11 @@ pre {
   padding-block: var(--space-2xl) var(--space-3xl);
 }
 
+/* The smaller display step: the loop shares the fold now, and at the full
+ * step the display ran to three lines and pushed the copy well below the
+ * figure it sits beside. */
 .hero__display {
-  font-size: var(--text-display);
+  font-size: var(--text-display-s);
   line-height: var(--lh-display);
   max-width: 18ch;
   margin-block-end: var(--space-lg);
@@ -663,7 +666,8 @@ pre {
 
 @media (min-width: 60rem) {
   .hero__grid {
-    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    /* An even split: the copy lost a display step, the loop gains the width. */
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--space-2xl);
   }
 }

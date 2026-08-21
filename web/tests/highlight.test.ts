@@ -40,7 +40,7 @@ describe("the highlighter", () => {
   });
 
   it("reads Swift the way Xcode does", () => {
-    const html = render(hl, install.appKit);
+    const html = render(hl, install.mount);
     expect(colour(html, "import")).toBe("var(--color-accent)");
     expect(colour(html, "#if")).toBe("var(--color-accent)");
     expect(colour(html, " AnnotKit")).toBe("var(--color-syntax-type)");
@@ -49,14 +49,9 @@ describe("the highlighter", () => {
     expect(colour(html, ".install\\(\\)   ")).toBe("var(--color-ink)");
     expect(html).toMatch(/color:var\(--color-muted\)">\/\/ floating/);
 
-    const sink = render(hl, install.sink);
-    expect(colour(sink, "ClipboardSink")).toBe("var(--color-syntax-type)");
-    expect(colour(sink, "\\.install\\(sink: ")).toBe("var(--color-ink)");
-    expect(colour(sink, "\\(format: \\.json\\)\\)")).toBe("var(--color-ink)");
-
-    const view = render(hl, install.swiftUI);
-    expect(colour(view, "ContentView")).toBe("var(--color-syntax-type)");
-    expect(colour(view, "    \\.installAnnotation\\(\\)")).toBe("var(--color-ink)");
+    const dep = render(hl, install.package);
+    expect(colour(dep, '"https://github.com/gpu-cli/annotkit"')).toBe("var(--color-syntax-string)");
+    expect(colour(dep, "\\.package\\(url: ")).toBe("var(--color-ink)");
   });
 
   it("sets the note block's heading and labels as labels", () => {

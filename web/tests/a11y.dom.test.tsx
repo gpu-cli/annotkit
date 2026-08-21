@@ -94,9 +94,12 @@ describe("typography discipline", () => {
     walk(copy);
 
     expect(strings.length).toBeGreaterThan(30);
+    // Code samples legitimately contain straight quotes and dashes. They are
+    // identified by membership, not by a newline: the one-line dependency
+    // snippet in §01 has quotes and no newline.
+    const code = new Set((copy.snippets as { code: string }[]).map((s) => s.code));
     for (const value of strings) {
-      // Code samples legitimately contain straight quotes and dashes.
-      if (/\n/.test(value)) continue;
+      if (code.has(value)) continue;
       expect(value, value).not.toMatch(/--/);
       expect(value, value).not.toMatch(/\.\.\./);
       expect(value, value).not.toMatch(/'/);

@@ -33,11 +33,12 @@ describe("withCode", () => {
   });
 
   it("marks every run on a line, not only the first", () => {
-    const { container } = render(<p>{withCode(install.sinkNote)}</p>);
+    const { container } = render(<p>{withCode(install.note)}</p>);
 
     expect([...container.querySelectorAll("code")].map((mark) => mark.textContent)).toEqual([
       "install()",
       "ANNOTKIT_NOTES.md",
+      ".installAnnotation()",
     ]);
   });
 
@@ -86,11 +87,11 @@ describe("the convention, across every string the page ships", () => {
     const marked = [...document.querySelectorAll("code")].map((node) => node.textContent);
 
     // One from a section lead, one from a term body, one from a code-block
-    // caption, one from a figure — the four call sites, spot-checked.
+    // caption, one from a body paragraph — the call sites, spot-checked.
     expect(marked).toContain("accessibilityIdentifier");
     expect(marked).toContain("JSONFileSink");
     expect(marked).toContain("AnnotationFormatter");
-    expect(marked).toContain("Settings.Profile.Avatar");
+    expect(marked).toContain(".installAnnotation()");
   });
 });
 

@@ -15,6 +15,8 @@ export const site = {
   org: "https://gpu-cli.sh",
   repo: "https://github.com/gpu-cli/annotkit",
   issues: "https://github.com/gpu-cli/annotkit/issues",
+  /** The README's step-by-step, for the install section's one link out. */
+  setup: "https://github.com/gpu-cli/annotkit#add-it-to-an-existing-swift-app",
   license: "https://github.com/gpu-cli/annotkit/blob/main/LICENSE",
   /**
    * Set false while the repo is still private — the GitHub CTA then reads as
