@@ -8,13 +8,19 @@ While a shot is missing, `src/captures.ts` marks it `pending` and the page
 renders a labelled empty plate naming the shot. That is deliberate: the hole
 is honest, a fake screenshot is not.
 
-## The shot list (L4)
+## The shots
 
-| File | Shot | Notes |
+| File | Where | Notes |
 |---|---|---|
-| `annotate-loop.webm` + `annotate-loop.png` | §02 lead — click a control, composer opens, note submitted | Muted, ≤ ~1.5 MB, one take, no cuts. The `.png` is the poster frame. |
-| `annotate-pin.avif` / `.webp` / `.png` | §02 — pin + composer detail, resolved selector visible | Crop tight; no window chrome in frame. |
-| `annotkit-notes.avif` / `.webp` / `.png` | §03 — the `ANNOTKIT_NOTES.md` the run wrote | Plain editor, no chrome in the crop. |
+| `annotate-loop.mp4` + `annotate-loop-poster.png` | §02 lead | 22 s, muted, H.264, 1274×820, 465 KB. The poster is shown to reduced-motion readers, who get a play control instead of autoplay. |
+| `annotate-click.png` | §02 | A click on the avatar: selector chip and composer. |
+| `annotate-frame.png` | §02 | A frame around the heading and Profile card, composer waiting. |
+| `notes-pins.png` | §03 | Five pins placed, copy button under the pointer. |
+| `annotate-hover.png` | unused | The Profile card under hover, chip `Settings.Profile`. Kept for a future slot. |
+
+Stills recorded from `task demo` at `b5f58cf`; the loop at `4db8fc6` (its help text still says `AGENTATION_NOTES.md`, so re-shoot it when convenient). The stills are PNG at 2×; re-encode
+to AVIF/WebP if the page's weight budget ever needs it (`Figure` takes a single
+`src`, so swap the path).
 
 ## Landing a capture
 

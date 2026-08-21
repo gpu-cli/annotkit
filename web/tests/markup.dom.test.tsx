@@ -90,7 +90,7 @@ describe("the convention, across every string the page ships", () => {
     expect(marked).toContain("accessibilityIdentifier");
     expect(marked).toContain("JSONFileSink");
     expect(marked).toContain("AnnotationFormatter");
-    expect(marked).toContain("task demo");
+    expect(marked).toContain("Settings.Profile.Avatar");
   });
 });
 
