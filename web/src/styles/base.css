@@ -722,6 +722,13 @@ pre {
     grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
   }
 
+  /* Two captures of the same shape, read as a pair. Equal on purpose: the
+   * asymmetric spans are for prose beside a figure, and here both tracks hold
+   * a figure. */
+  .section__body--6-6 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   /* §04 carries the page's shortest body — one command beside two tools, 125 px
    * of it. At the standard close (4rem) that body was followed by §05's heavier
    * open (6rem), so the WIDEST gap on the page sat under the THINNEST section
@@ -762,6 +769,10 @@ pre {
 
 .stack--lg {
   gap: var(--space-lg);
+}
+
+.stack--xl {
+  gap: var(--space-xl);
 }
 
 /* ══ CodeBlock — typographic frame, no re-drawn window chrome (gate 47) ══ */

@@ -53,10 +53,9 @@ export function Figure({ capture }: { capture: Capture }) {
           />
         )}
       </div>
-      <figcaption>
-        {withCode(capture.caption)}
-        {capture.buildHash ? ` · captured at ${capture.buildHash}` : ""}
-      </figcaption>
+      {/* The build hash stays in the manifest, for whoever re-shoots; it is
+       * not printed. A caption is for the reader, and says what to look at. */}
+      <figcaption>{withCode(capture.caption)}</figcaption>
     </figure>
   );
 }

@@ -17,9 +17,9 @@ export function AgentNotes() {
       <div className="section__body section__body--7-5">
         <div className="stack stack--lg">
           <CodeBlock {...agentNotes.sample} />
-          <Figure capture={notesPins} />
+          <TermList terms={agentNotes.sinks} />
         </div>
-        <TermList terms={agentNotes.sinks} />
+        <Figure capture={notesPins} />
       </div>
     </Section>
   );

@@ -5,9 +5,12 @@ import { annotate } from "../copy";
 import { annotateClick, annotateFrame, annotateLoop } from "../captures";
 
 /**
- * §02 — the targeting rules, led by the one moving figure on the page.
- * The loop sits directly under the hero fold; the two stills, a click and a
- * frame, stand beside the rules they illustrate.
+ * §02 — the targeting rules and the captures that show them.
+ *
+ * The loop takes the wide track with the three rules beside it, so the first
+ * moving figure on the page does not run the full measure and the rules are
+ * read while it plays. The two stills, a click and a frame, sit as a pair
+ * under it: same height, same frame, one rule each.
  */
 export function Annotate() {
   return (
@@ -18,14 +21,14 @@ export function Annotate() {
       lead={annotate.lead}
       modifier="section--annotate"
     >
-      <div className="stack stack--lg">
-        <Figure capture={annotateLoop} />
-        <div className="section__body section__body--5-7">
-          <div className="stack stack--lg">
-            <Figure capture={annotateClick} />
-            <Figure capture={annotateFrame} />
-          </div>
+      <div className="stack stack--xl">
+        <div className="section__body section__body--7-5">
+          <Figure capture={annotateLoop} />
           <TermList terms={annotate.points} />
+        </div>
+        <div className="section__body section__body--6-6">
+          <Figure capture={annotateClick} />
+          <Figure capture={annotateFrame} />
         </div>
       </div>
     </Section>
