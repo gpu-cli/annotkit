@@ -60,7 +60,7 @@ const HASH = "b5f58cf";
  * file, which `b5f58cf` renamed, so it was built from the commit before. */
 const LOOP_HASH = "4db8fc6";
 
-/** §02 lead — the one moving figure on the page. */
+/** The hero, right-hand track — the one moving figure on the page. */
 export const annotateLoop: Capture = {
   status: "ready",
   kind: "loop",
@@ -85,7 +85,7 @@ export const annotateClick: Capture = {
   buildHash: HASH,
 };
 
-/** §02 support still — a frame, and what it bound to. */
+/** Not placed. A frame, and what it bound to; kept for a future slot. */
 export const annotateFrame: Capture = {
   status: "ready",
   kind: "still",

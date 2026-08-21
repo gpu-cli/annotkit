@@ -3,17 +3,21 @@ import { Icon } from "../components/Icon";
 import { hero } from "../copy";
 import { site } from "../config";
 import { track } from "../analytics";
+import { Figure } from "../components/Figure";
+import { annotateLoop } from "../captures";
 
 /**
- * Typography only — no mockup in the fold (epic §6.1). The page's one
- * orchestrated entrance lives here: three elements, staggered by DOM index,
- * settling inside ~200 ms. Nothing below the fold animates on scroll except
- * the section rules.
+ * The display, the standfirst and the two CTAs on the left; the demo loop on
+ * the right, a real capture in a bare frame (gate 47 still holds — nothing is
+ * drawn). The page's one orchestrated entrance lives here: four elements,
+ * staggered by DOM index, settling inside ~200 ms. Nothing below the fold
+ * animates on scroll except the section rules.
  */
 export function Hero() {
   return (
     <section className="hero" aria-labelledby="hero-display">
-      <div className="u-shell">
+      <div className="u-shell hero__grid">
+        <div className="hero__copy">
         <h1 className="hero__display reveal" id="hero-display" style={{ "--i": 0 } as React.CSSProperties}>
           {hero.display}
         </h1>
@@ -43,6 +47,10 @@ export function Hero() {
             {hero.ctaSecondary}
             <Icon as={ArrowDown} />
           </a>
+        </div>
+        </div>
+        <div className="hero__figure reveal" style={{ "--i": 3 } as React.CSSProperties}>
+          <Figure capture={annotateLoop} />
         </div>
       </div>
     </section>

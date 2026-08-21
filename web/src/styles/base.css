@@ -650,6 +650,28 @@ pre {
   gap: var(--space-lg);
 }
 
+/* Copy left, the loop right, from the span breakpoint up. Centred on the
+ * cross axis: the copy is the taller of the two at most widths and the loop
+ * should sit against its middle, not hang off its first line. Below the
+ * breakpoint the loop follows the CTAs. */
+.hero__grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-xl);
+  align-items: center;
+}
+
+@media (min-width: 60rem) {
+  .hero__grid {
+    grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+    gap: var(--space-2xl);
+  }
+}
+
+.hero__figure {
+  min-width: 0;
+}
+
 /* ══ Section shell ══════════════════════════════════════════════════════ */
 
 .section {
@@ -720,13 +742,6 @@ pre {
 
   .section__body--7-5 {
     grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
-  }
-
-  /* Two captures of the same shape, read as a pair. Equal on purpose: the
-   * asymmetric spans are for prose beside a figure, and here both tracks hold
-   * a figure. */
-  .section__body--6-6 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   /* §04 carries the page's shortest body — one command beside two tools, 125 px
